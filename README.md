@@ -57,6 +57,8 @@ Here are some screenshots of the application in action:
 
 The battery must support the Sonnen API v2. Other APIs are currently not supported.
 
+Java 16 and above.
+
 ## License
 
 This software is provided under a proprietary license. For license details, see `LICENSE.txt`, `license_de.html`, or `license_en.html`.
