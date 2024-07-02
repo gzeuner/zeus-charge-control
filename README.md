@@ -36,6 +36,9 @@ Zeus Charge Control - A Java application for managing battery charging schedules
    ```sh
    ./zeus-charge-control.sh
    ```
+### Service
+
+The Service can be accessed via http://localhost:8080/charging-status
 
 ## Screenshots
 
