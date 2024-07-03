@@ -6,6 +6,9 @@ This software is provided to you free of charge and can be used and distributed 
 
 License: Proprietary.
 
+This product includes software developed by the Spring Boot project (http://spring.io/projects/spring-boot).
+Spring Boot components are licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0).
+
 The software contains affiliate links through which we may earn a commission if you click on them and make a purchase. For more information, please refer to our Privacy Policy. Advertisements are marked as such.
 
 All product names, logos, and brands mentioned in the app and on our blog are the property of their respective owners.
@@ -27,6 +30,9 @@ Lizenzbedingungen
 Diese Software wird Ihnen kostenlos zur Verfügung gestellt und kann in unveränderter Form sowohl privat als auch kommerziell genutzt und weitergegeben werden. Bitte beachten Sie, dass die Nutzung auf eigenes Risiko erfolgt. Es wird keine Garantie auf Fehlerfreiheit, keine Unterstützung und kein Anspruch auf Updates gewährt. Jegliche Haftungsansprüche sind ausgeschlossen. Eine Modifikation und/oder Weitergabe in veränderter Form oder unter einem anderen Namen ist untersagt.
 
 Lizenz: Proprietär.
+
+Dieses Produkt enthält Software, die im Rahmen des Spring Boot-Projekts (http://spring.io/projects/spring-boot) entwickelt wurde.
+Die Spring Boot-Komponenten stehen unter der Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0).
 
 Die Software enthält Affiliate-Links, durch die wir eine Provision verdienen können, wenn Sie auf diese klicken und einen Kauf tätigen. Weitere Informationen finden Sie in unseren Datenschutzhinweisen. Werbung ist als solche gekennzeichnet.
 
