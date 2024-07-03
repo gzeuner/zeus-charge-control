@@ -64,6 +64,11 @@ Java 16 and above.
 
 ## License
 
-This software is provided under a proprietary license. For license details, see `LICENSE.txt`, `license_de.html`, or `license_en.html`.
+This software is provided under a proprietary license.
+
+It includes software developed by the Spring Boot project <a href="http://spring.io/projects/spring-boot">(http://spring.io/projects/spring-boot)</a>.
+Spring Boot components are licensed under the Apache License, Version 2.0 <a href="http://www.apache.org/licenses/LICENSE-2.0">(http://www.apache.org/licenses/LICENSE-2.0)</a>
+
+For license details, see `LICENSE.txt`, `license_de.html`, or `license_en.html`.
 
 For more details, refer to the provided license files.
