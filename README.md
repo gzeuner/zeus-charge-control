@@ -16,7 +16,7 @@ Zeus Charge Control - A Java application for managing battery charging schedules
 - `zeus-charge-control.sh`: Linux script to set environment variables and run the application.
 - `license_de.html`: License file in German.
 - `license_en.html`: License file in English.
-- `LICENSE.txt`: License file in plain text.
+- `LICENSE`: License file in plain text.
 
 ## Usage
 
