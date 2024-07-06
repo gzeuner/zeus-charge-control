@@ -62,6 +62,35 @@ The battery must support the Sonnen API v2. Other APIs are currently not support
 
 Java 16 and above.
 
+### Environment Variables and Their Significance
+
+Our application uses a variety of environment variables to adapt flexibly to different configurations and scenarios. Here are some of the most important variables and their meanings:
+
+- **SERVER_ADDRESS**: This variable specifies the IP address on which the server accepts requests. By default, it is set to `0.0.0.0`, which means the server listens on all available network addresses.
+
+- **SERVER_PORT**: This variable sets the port on which the server runs. The default value is `8080`.
+
+- **BATTERY_URL**: The URL of the battery API. This API is used to query the current status of the battery and send charging commands.
+
+- **BATTERY_AUTH_TOKEN**: The authentication token for the battery API. This token is required to send authorized requests to the API.
+
+- **BATTERY_STATE_OF_CHARGE**: This variable specifies the starting state of charge of the battery in percentage. It determines at what state of charge the battery should begin a favorable charging cycle. If this variable is not set, a default value of 30% is used.
+
+- **BATTERY_TARGET_STATE_OF_CHARGE**: This variable specifies the target state of charge of the battery in percentage. It determines up to what state of charge the battery should be charged. Once this value is reached, the charging process stops. If this variable is not set, a default value of 100% is used.
+
+- **BATTERY_CHARGING_POINT**: This variable specifies the charging point of the battery in watts. It determines the power at which the battery should be charged to achieve an optimal balance between charging time and energy efficiency. If this variable is not set, a default value of 4000 W is used.
+
+- **AWATTAR_MARKETDATA_URL**: The URL of the aWATTar market price service. This URL is used to retrieve current and future electricity prices from aWATTar.
+
+- **AWATTAR_AUTH_TOKEN**: The authentication token for the aWATTar market price service. Currently, aWATTar provides prices publicly under the fair use principle without access restrictions.
+
+- **TIBBER_MARKETDATA_URL**: The URL of the Tibber market price service. This URL is used to retrieve current and future electricity prices from Tibber.
+
+- **TIBBER_AUTH_TOKEN**: The authentication token for the Tibber market price service. This token is required to send authorized requests to the Tibber API. Tibber customers can obtain electricity prices from the Tibber API.
+
+- **MARKETDATA_SOURCE**: This variable specifies which data source to use for market prices. Possible values are `awattar` or `tibber`. Depending on the selected source, the application will retrieve market prices either from aWATTar or Tibber.
+
+
 ## License
 
 This software is provided under a proprietary license.
