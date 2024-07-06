@@ -62,6 +62,12 @@ The battery must support the Sonnen API v2. Other APIs are currently not support
 
 Java 16 and above.
 
+### Download Binary
+
+You can download the latest version of Zeus Charge Control from the following link:
+
+[Zeus Charge Control v1.0](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.0/zeus-charge-control.zip)
+
 ### Environment Variables and Their Significance
 
 Our application uses a variety of environment variables to adapt flexibly to different configurations and scenarios. Here are some of the most important variables and their meanings:
