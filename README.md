@@ -40,6 +40,12 @@ Zeus Charge Control - A Java application for managing battery charging schedules
 
 The Service can be accessed via http://localhost:8080/charging-status
 
+### Download Binary
+
+You can download the latest version of Zeus Charge Control from the following link:
+
+[Zeus Charge Control v1.0](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.0/zeus-charge-control.zip)
+
 ## Screenshots
 
 Here are some screenshots of the application in action:
