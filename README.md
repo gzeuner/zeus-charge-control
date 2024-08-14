@@ -45,7 +45,7 @@ Der Service kann über http://localhost:8080/charging-status aufgerufen werden.
 
 Du kannst die neueste Version von Zeus Lade-Kontrolle über den folgenden Link herunterladen:
 
-[Zeus Lade-Kontrolle v1.0](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.0/zeus-charge-control.zip)
+[Zeus Charge Control v1.0](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.0/zeus-charge-control.zip)
 
 ## Screenshots
 
@@ -77,7 +77,7 @@ Behoben: Ein nicht konfiguriertes oder falsch konfiguriertes Ladesystem führte 
 
 Du kannst die neueste Version von Zeus Lade-Kontrolle über den folgenden Link herunterladen:
 
-[Zeus Lade-Kontrolle v1.0](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.0/zeus-charge-control.zip)
+[Zeus Charge Control v1.0](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.0/zeus-charge-control.zip)
 
 ### Umgebungsvariablen und ihre Bedeutung
 
@@ -116,7 +116,7 @@ Spring Boot-Komponenten sind unter der Apache License, Version 2.0 lizenziert <a
 
 Details zur Lizenz findest du in `LICENSE.txt`, `license_de.html` oder `license_en.html`.
 
-Für weitere Informationen, siehe die bereitgestellten Lizenzdateien.
+Für weitere Informationen, siehe bereitgestellte Lizenzdateien.
 
 --
 
