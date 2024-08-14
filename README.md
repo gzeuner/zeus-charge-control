@@ -1,6 +1,127 @@
 
 # Zeus Charge Control
 
+Zeus Charge Control - Eine Java-Anwendung zur Verwaltung von Ladeplänen für PV-Batteriespeicher basierend auf Marktpreisen. Diese Anwendung unterstützt die Sonnen API v2 für das Batteriemanagement.
+
+## Funktionen
+
+- **Batteriestatus**: Überwache den aktuellen Status deiner Batterie.
+- **Bester Preis im Zeitrahmen**: Identifiziere die besten Marktpreise zum Laden innerhalb eines festgelegten Zeitraums.
+- **Preisdiagramm**: Visualisiere Marktpreise über die Zeit hinweg.
+
+## Enthaltene Dateien
+
+- `zeus-charge-control-1.0.jar`: Die ausführbare JAR-Datei.
+- `zeus-charge-control.bat`: Windows-Skript zum Setzen von Umgebungsvariablen und zum Starten der Anwendung.
+- `zeus-charge-control.sh`: Linux-Skript zum Setzen von Umgebungsvariablen und zum Starten der Anwendung.
+- `license_de.html`: Lizenzdatei auf Deutsch.
+- `license_en.html`: Lizenzdatei auf Englisch.
+- `LICENSE`: Lizenzdatei im Klartext.
+
+## Nutzung
+
+### Windows
+
+1. Bearbeite `zeus-charge-control.bat`, um die Umgebungsvariablen festzulegen.
+2. Doppelklicke auf `zeus-charge-control.bat`, um die Anwendung zu starten.
+
+### Linux
+
+1. Bearbeite `zeus-charge-control.sh`, um die Umgebungsvariablen festzulegen.
+2. Mache das Skript ausführbar:
+   ```sh
+   chmod +x zeus-charge-control.sh
+   ```
+3. Führe das Skript aus:
+   ```sh
+   ./zeus-charge-control.sh
+   ```
+
+### Service
+
+Der Service kann über http://localhost:8080/charging-status aufgerufen werden.
+
+### Binärdatei herunterladen
+
+Du kannst die neueste Version von Zeus Lade-Kontrolle über den folgenden Link herunterladen:
+
+[Zeus Lade-Kontrolle v1.0](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.0/zeus-charge-control.zip)
+
+## Screenshots
+
+Hier sind einige Screenshots der Anwendung in Aktion:
+
+**Batteriestatus**
+
+<img src="images/battery_status.jpg" alt="images/battery_status.jpg" width="60%">
+
+**Bester Preis im Zeitrahmen**
+
+<img src="images/best_price_in_scope.jpg" alt="best_price_in_scope.jpg" width="60%">
+
+**Preisdiagramm**
+
+<img src="images/price_chart.jpg" alt="price_chart.jpg" width="60%">
+
+## Anforderungen
+
+Die Batterie muss die Sonnen API v2 unterstützen. Andere APIs werden derzeit nicht unterstützt.
+
+Java 16 und höher.
+
+## Änderungsprotokoll
+
+Behoben: Ein nicht konfiguriertes oder falsch konfiguriertes Ladesystem führte dazu, dass die Anwendung nicht gestartet werden konnte.
+
+### Binärdatei herunterladen
+
+Du kannst die neueste Version von Zeus Lade-Kontrolle über den folgenden Link herunterladen:
+
+[Zeus Lade-Kontrolle v1.0](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.0/zeus-charge-control.zip)
+
+### Umgebungsvariablen und ihre Bedeutung
+
+Unsere Anwendung verwendet eine Vielzahl von Umgebungsvariablen, um sich flexibel an unterschiedliche Konfigurationen und Szenarien anzupassen. Hier sind einige der wichtigsten Variablen und ihre Bedeutungen:
+
+- **SERVER_ADDRESS**: Diese Variable gibt die IP-Adresse an, unter der der Server Anfragen entgegennimmt. Standardmäßig ist sie auf `0.0.0.0` gesetzt, was bedeutet, dass der Server auf allen verfügbaren Netzwerkadressen lauscht.
+
+- **SERVER_PORT**: Diese Variable legt den Port fest, auf dem der Server läuft. Der Standardwert ist `8080`.
+
+- **BATTERY_URL**: Die URL der Batterie-API. Diese API wird verwendet, um den aktuellen Status der Batterie abzufragen und Ladebefehle zu senden.
+
+- **BATTERY_AUTH_TOKEN**: Das Authentifizierungstoken für die Batterie-API. Dieses Token ist erforderlich, um autorisierte Anfragen an die API zu senden.
+
+- **BATTERY_STATE_OF_CHARGE**: Diese Variable gibt den Startladezustand der Batterie in Prozent an. Sie bestimmt, bei welchem Ladezustand die Batterie einen günstigen Ladezyklus beginnen soll. Wenn diese Variable nicht gesetzt ist, wird ein Standardwert von 30 % verwendet.
+
+- **BATTERY_TARGET_STATE_OF_CHARGE**: Diese Variable gibt den Ziel-Ladezustand der Batterie in Prozent an. Sie bestimmt, bis zu welchem Ladezustand die Batterie geladen werden soll. Sobald dieser Wert erreicht ist, stoppt der Ladevorgang. Wenn diese Variable nicht gesetzt ist, wird ein Standardwert von 100 % verwendet.
+
+- **BATTERY_CHARGING_POINT**: Diese Variable gibt den Ladepunkt der Batterie in Watt an. Sie bestimmt die Leistung, mit der die Batterie geladen werden soll, um ein optimales Gleichgewicht zwischen Ladezeit und Energieeffizienz zu erreichen. Wenn diese Variable nicht gesetzt ist, wird ein Standardwert von 4000 W verwendet.
+
+- **AWATTAR_MARKETDATA_URL**: Die URL des aWATTar-Marktpreis-Dienstes. Diese URL wird verwendet, um aktuelle und zukünftige Strompreise von aWATTar abzurufen.
+
+- **AWATTAR_AUTH_TOKEN**: Das Authentifizierungstoken für den aWATTar-Marktpreis-Dienst. Derzeit stellt aWATTar Preise öffentlich nach dem Prinzip der fairen Nutzung ohne Zugangsbeschränkungen zur Verfügung.
+
+- **TIBBER_MARKETDATA_URL**: Die URL des Tibber-Marktpreis-Dienstes. Diese URL wird verwendet, um aktuelle und zukünftige Strompreise von Tibber abzurufen.
+
+- **TIBBER_AUTH_TOKEN**: Das Authentifizierungstoken für den Tibber-Marktpreis-Dienst. Dieses Token ist erforderlich, um autorisierte Anfragen an die Tibber-API zu senden. Tibber-Kunden können Strompreise von der Tibber-API beziehen.
+
+- **MARKETDATA_SOURCE**: Diese Variable gibt an, welche Datenquelle für Marktpreise verwendet werden soll. Mögliche Werte sind `awattar` oder `tibber`. Je nach ausgewählter Quelle wird die Anwendung Marktpreise entweder von aWATTar oder Tibber abrufen.
+
+## Lizenz
+
+Diese Software wird unter einer proprietären Lizenz bereitgestellt.
+
+Sie enthält Software, die vom Spring Boot-Projekt entwickelt wurde <a href="http://spring.io/projects/spring-boot">(http://spring.io/projects/spring-boot)</a>.
+Spring Boot-Komponenten sind unter der Apache License, Version 2.0 lizenziert <a href="http://www.apache.org/licenses/LICENSE-2.0">(http://www.apache.org/licenses/LICENSE-2.0)</a>.
+
+Details zur Lizenz findest du in `LICENSE.txt`, `license_de.html` oder `license_en.html`.
+
+Für weitere Informationen, siehe die bereitgestellten Lizenzdateien.
+
+--
+
+# Zeus Charge Control
+
 Zeus Charge Control - A Java application for managing battery charging schedules based on market prices. This application supports the Sonnen API v2 for battery management.
 
 ## Features
