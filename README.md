@@ -68,6 +68,10 @@ The battery must support the Sonnen API v2. Other APIs are currently not support
 
 Java 16 and above.
 
+## Change-Log
+
+Fixed: An unconfigured or incorrectly configured loading system caused the application not to start.
+
 ### Download Binary
 
 You can download the latest version of Zeus Charge Control from the following link:
