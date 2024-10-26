@@ -13,6 +13,7 @@ Zeus Charge Control - Eine Java-Anwendung zur Verwaltung von Ladeplänen für PV
 
 - **Feature**: Akku sofort über das Netz aufladen (Start/Stop)
 - **Bugfix**: Batterie in Leerlauf von Betriebsmodus 'Manuell' in 'Automatisch' zurück versetzen.
+- **Bugfix**: Ein nicht konfiguriertes oder falsch konfiguriertes Ladesystem führte dazu, dass die Anwendung nicht gestartet werden konnte.
 
 ## Enthaltene Dateien
 
@@ -74,10 +75,6 @@ Die Batterie muss die Sonnen API v2 unterstützen. Andere APIs werden derzeit ni
 
 Java 16 und höher.
 
-## Änderungsprotokoll
-
-Behoben: Ein nicht konfiguriertes oder falsch konfiguriertes Ladesystem führte dazu, dass die Anwendung nicht gestartet werden konnte.
-
 ### Binärdatei herunterladen
 
 Du kannst die neueste Version von Zeus Lade-Kontrolle über den folgenden Link herunterladen:
@@ -136,6 +133,7 @@ Zeus Charge Control - A Java application for managing battery charging schedules
 ## Change-Log
 - **Feature**: Charge the battery immediately via the grid (start/stop)
 - **Bugfix**: Reset battery in idle mode from 'Manual' to 'Automatic' operating mode.
+- **Bugfix**: An unconfigured or incorrectly configured loading system caused the application not to start.
 
 ## Files Included
 
@@ -195,10 +193,6 @@ Here are some screenshots of the application in action:
 The battery must support the Sonnen API v2. Other APIs are currently not supported.
 
 Java 16 and above.
-
-## Change-Log
-
-Fixed: An unconfigured or incorrectly configured loading system caused the application not to start.
 
 ### Download Binary
 
