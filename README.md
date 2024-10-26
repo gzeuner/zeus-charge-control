@@ -48,7 +48,7 @@ Der Service kann über http://localhost:8080/charging-status aufgerufen werden.
 
 ### Binärdatei herunterladen
 
-Du kannst die neueste Version von Zeus Lade-Kontrolle über den folgenden Link herunterladen:
+Du kannst die neueste Version von Zeus Charge Control über den folgenden Link herunterladen:
 
 [Zeus Charge Control v1.1](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.1/zeus-charge-control.zip)
 
