@@ -9,9 +9,14 @@ Zeus Charge Control - Eine Java-Anwendung zur Verwaltung von Ladeplänen für PV
 - **Bester Preis im Zeitrahmen**: Identifiziere die besten Marktpreise zum Laden innerhalb eines festgelegten Zeitraums.
 - **Preisdiagramm**: Visualisiere Marktpreise über die Zeit hinweg.
 
+## Change-Log
+
+- **Feature**: Akku sofort über das Netz aufladen (Start/Stop)
+- **Bugfix**: Batterie in Leerlauf von Betriebsmodus 'Manuell' in 'Automatisch' zurück versetzen.
+
 ## Enthaltene Dateien
 
-- `zeus-charge-control-1.0.jar`: Die ausführbare JAR-Datei.
+- `zeus-charge-control-1.1.jar`: Die ausführbare JAR-Datei.
 - `zeus-charge-control.bat`: Windows-Skript zum Setzen von Umgebungsvariablen und zum Starten der Anwendung.
 - `zeus-charge-control.sh`: Linux-Skript zum Setzen von Umgebungsvariablen und zum Starten der Anwendung.
 - `license_de.html`: Lizenzdatei auf Deutsch.
@@ -45,7 +50,7 @@ Der Service kann über http://localhost:8080/charging-status aufgerufen werden.
 
 Du kannst die neueste Version von Zeus Lade-Kontrolle über den folgenden Link herunterladen:
 
-[Zeus Charge Control v1.0](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.0/zeus-charge-control.zip)
+[Zeus Charge Control v1.1](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.1/zeus-charge-control.zip)
 
 ## Screenshots
 
@@ -77,7 +82,7 @@ Behoben: Ein nicht konfiguriertes oder falsch konfiguriertes Ladesystem führte 
 
 Du kannst die neueste Version von Zeus Lade-Kontrolle über den folgenden Link herunterladen:
 
-[Zeus Charge Control v1.0](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.0/zeus-charge-control.zip)
+[Zeus Charge Control v1.1](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.1/zeus-charge-control.zip)
 
 ### Umgebungsvariablen und ihre Bedeutung
 
@@ -90,8 +95,6 @@ Unsere Anwendung verwendet eine Vielzahl von Umgebungsvariablen, um sich flexibe
 - **BATTERY_URL**: Die URL der Batterie-API. Diese API wird verwendet, um den aktuellen Status der Batterie abzufragen und Ladebefehle zu senden.
 
 - **BATTERY_AUTH_TOKEN**: Das Authentifizierungstoken für die Batterie-API. Dieses Token ist erforderlich, um autorisierte Anfragen an die API zu senden.
-
-- **BATTERY_STATE_OF_CHARGE**: Diese Variable gibt den Startladezustand der Batterie in Prozent an. Sie bestimmt, bei welchem Ladezustand die Batterie einen günstigen Ladezyklus beginnen soll. Wenn diese Variable nicht gesetzt ist, wird ein Standardwert von 30 % verwendet.
 
 - **BATTERY_TARGET_STATE_OF_CHARGE**: Diese Variable gibt den Ziel-Ladezustand der Batterie in Prozent an. Sie bestimmt, bis zu welchem Ladezustand die Batterie geladen werden soll. Sobald dieser Wert erreicht ist, stoppt der Ladevorgang. Wenn diese Variable nicht gesetzt ist, wird ein Standardwert von 100 % verwendet.
 
@@ -130,9 +133,13 @@ Zeus Charge Control - A Java application for managing battery charging schedules
 - **Best Price in Scope**: Identify the best market prices for charging within a specified timeframe.
 - **Price Chart**: Visualize market prices over time.
 
+## Change-Log
+- **Feature**: Charge the battery immediately via the grid (start/stop)
+- **Bugfix**: Reset battery in idle mode from 'Manual' to 'Automatic' operating mode.
+
 ## Files Included
 
-- `zeus-charge-control-1.0.jar`: The main executable JAR file.
+- `zeus-charge-control-1.1.jar`: The main executable JAR file.
 - `zeus-charge-control.bat`: Windows script to set environment variables and run the application.
 - `zeus-charge-control.sh`: Linux script to set environment variables and run the application.
 - `license_de.html`: License file in German.
@@ -165,7 +172,7 @@ The Service can be accessed via http://localhost:8080/charging-status
 
 You can download the latest version of Zeus Charge Control from the following link:
 
-[Zeus Charge Control v1.0](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.0/zeus-charge-control.zip)
+[Zeus Charge Control v1.1](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.1/zeus-charge-control.zip)
 
 ## Screenshots
 
@@ -197,7 +204,7 @@ Fixed: An unconfigured or incorrectly configured loading system caused the appli
 
 You can download the latest version of Zeus Charge Control from the following link:
 
-[Zeus Charge Control v1.0](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.0/zeus-charge-control.zip)
+[Zeus Charge Control v1.1](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.1/zeus-charge-control.zip)
 
 ### Environment Variables and Their Significance
 
@@ -210,8 +217,6 @@ Our application uses a variety of environment variables to adapt flexibly to dif
 - **BATTERY_URL**: The URL of the battery API. This API is used to query the current status of the battery and send charging commands.
 
 - **BATTERY_AUTH_TOKEN**: The authentication token for the battery API. This token is required to send authorized requests to the API.
-
-- **BATTERY_STATE_OF_CHARGE**: This variable specifies the starting state of charge of the battery in percentage. It determines at what state of charge the battery should begin a favorable charging cycle. If this variable is not set, a default value of 30% is used.
 
 - **BATTERY_TARGET_STATE_OF_CHARGE**: This variable specifies the target state of charge of the battery in percentage. It determines up to what state of charge the battery should be charged. Once this value is reached, the charging process stops. If this variable is not set, a default value of 100% is used.
 
