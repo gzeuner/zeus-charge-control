@@ -93,9 +93,9 @@ Unsere Anwendung verwendet eine Vielzahl von Umgebungsvariablen, um sich flexibe
 
 - **BATTERY_AUTH_TOKEN**: Das Authentifizierungstoken für die Batterie-API. Dieses Token ist erforderlich, um autorisierte Anfragen an die API zu senden.
 
-- **BATTERY_TARGET_STATE_OF_CHARGE**: Diese Variable gibt den Ziel-Ladezustand der Batterie in Prozent an. Sie bestimmt, bis zu welchem Ladezustand die Batterie geladen werden soll. Sobald dieser Wert erreicht ist, stoppt der Ladevorgang. Wenn diese Variable nicht gesetzt ist, wird ein Standardwert von 100 % verwendet.
+- **BATTERY_TARGET_STATE_OF_CHARGE**: Diese Variable gibt den Ziel-Ladezustand der Batterie in Prozent an. Sie bestimmt, bis zu welchem Ladezustand die Batterie geladen werden soll. Sobald dieser Wert erreicht ist, stoppt der Ladevorgang. Wenn diese Variable nicht gesetzt ist, wird ein Standardwert von 70 % verwendet.
 
-- **BATTERY_CHARGING_POINT**: Diese Variable gibt den Ladepunkt der Batterie in Watt an. Sie bestimmt die Leistung, mit der die Batterie geladen werden soll, um ein optimales Gleichgewicht zwischen Ladezeit und Energieeffizienz zu erreichen. Wenn diese Variable nicht gesetzt ist, wird ein Standardwert von 4000 W verwendet.
+- **BATTERY_CHARGING_POINT**: Diese Variable gibt den Ladepunkt der Batterie in Watt an. Sie bestimmt die Leistung, mit der die Batterie geladen werden soll, um ein optimales Gleichgewicht zwischen Ladezeit und Energieeffizienz zu erreichen. Wenn diese Variable nicht gesetzt ist, wird ein Standardwert von 4600 W verwendet.
 
 - **AWATTAR_MARKETDATA_URL**: Die URL des aWATTar-Marktpreis-Dienstes. Diese URL wird verwendet, um aktuelle und zukünftige Strompreise von aWATTar abzurufen.
 
@@ -212,9 +212,9 @@ Our application uses a variety of environment variables to adapt flexibly to dif
 
 - **BATTERY_AUTH_TOKEN**: The authentication token for the battery API. This token is required to send authorized requests to the API.
 
-- **BATTERY_TARGET_STATE_OF_CHARGE**: This variable specifies the target state of charge of the battery in percentage. It determines up to what state of charge the battery should be charged. Once this value is reached, the charging process stops. If this variable is not set, a default value of 100% is used.
+- **BATTERY_TARGET_STATE_OF_CHARGE**: This variable specifies the target state of charge of the battery in percentage. It determines up to what state of charge the battery should be charged. Once this value is reached, the charging process stops. If this variable is not set, a default value of 70% is used.
 
-- **BATTERY_CHARGING_POINT**: This variable specifies the charging point of the battery in watts. It determines the power at which the battery should be charged to achieve an optimal balance between charging time and energy efficiency. If this variable is not set, a default value of 4000 W is used.
+- **BATTERY_CHARGING_POINT**: This variable specifies the charging point of the battery in watts. It determines the power at which the battery should be charged to achieve an optimal balance between charging time and energy efficiency. If this variable is not set, a default value of 4600 W is used.
 
 - **AWATTAR_MARKETDATA_URL**: The URL of the aWATTar market price service. This URL is used to retrieve current and future electricity prices from aWATTar.
 
