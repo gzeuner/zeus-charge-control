@@ -17,7 +17,7 @@ Zeus Charge Control - Eine Java-Anwendung zur Verwaltung von Ladeplänen für PV
 
 ## Enthaltene Dateien
 
-- `zeus-charge-control-1.1.jar`: Die ausführbare JAR-Datei.
+- `zeus-charge-control-1.2.jar`: Die ausführbare JAR-Datei.
 - `zeus-charge-control.bat`: Windows-Skript zum Setzen von Umgebungsvariablen und zum Starten der Anwendung.
 - `zeus-charge-control.sh`: Linux-Skript zum Setzen von Umgebungsvariablen und zum Starten der Anwendung.
 - `license_de.html`: Lizenzdatei auf Deutsch.
@@ -51,7 +51,7 @@ Der Service kann über http://localhost:8080/charging-status aufgerufen werden.
 
 Du kannst die neueste Version von Zeus Charge Control über den folgenden Link herunterladen:
 
-[Zeus Charge Control v1.1](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.1/zeus-charge-control.zip)
+[Zeus Charge Control v1.2](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.2/zeus-charge-control.zip)
 
 ## Screenshots
 
@@ -79,7 +79,7 @@ Java 16 und höher.
 
 Du kannst die neueste Version von Zeus Lade-Kontrolle über den folgenden Link herunterladen:
 
-[Zeus Charge Control v1.1](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.1/zeus-charge-control.zip)
+[Zeus Charge Control v1.2](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.2/zeus-charge-control.zip)
 
 ### Umgebungsvariablen und ihre Bedeutung
 
