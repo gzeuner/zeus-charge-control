@@ -30,10 +30,6 @@ import javax.annotation.PostConstruct;
  * limitations under the License.
  *
  * © 2024 - Guido Zeuner - https://tiny-tool.de
- *
- * ChargeControl - Release V 1.1
- *
- * Author: Guido Zeuner
  */
 
 
