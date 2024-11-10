@@ -28,9 +28,6 @@ import java.time.temporal.ChronoUnit;
  *
  * © 2024 - Guido Zeuner - https://tiny-tool.de
  *
- * ChargeControl - Release V 1.1
- *
- * Author: Guido Zeuner
  */
 
 @Service
@@ -213,11 +210,11 @@ public class BatteryManagementService {
             return null;
         }
 
-        // Prüfen, ob die gecachten Daten noch gültig sind
+        // Check whether the cached data is still valid
         if (cachedBatteryStatus != null && cacheTimestamp != null) {
             long secondsSinceLastUpdate = ChronoUnit.SECONDS.between(cacheTimestamp, Instant.now());
             if (secondsSinceLastUpdate <= cacheDurationInSeconds) {
-                logger.info("Returning cached battery status ({} seconds old)", secondsSinceLastUpdate);
+                logger.debug("Returning cached battery status ({} seconds old)", secondsSinceLastUpdate);
                 return cachedBatteryStatus;
             }
         }
@@ -241,7 +238,7 @@ public class BatteryManagementService {
     public void invalidateBatteryCache() {
         cachedBatteryStatus = null;
         cacheTimestamp = null;
-        logger.info("Battery status cache invalidated.");
+        logger.debug("Battery status cache invalidated.");
     }
 
 }

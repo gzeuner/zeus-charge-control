@@ -257,16 +257,17 @@
                     </div>
                 </div>
 
-                <!-- Container for Titel und Start/Stop Buttons -->
+                <!-- Buttons für Start und Stop -->
+                <!-- Container für den Titel und die Buttons -->
                 <div class="card mb-4">
                     <div class="card-header text-center" th:text="#{chargeFromGrid}">Charge from the grid</div>
                     <div class="card-body">
                         <div class="d-flex justify-content-center">
                             <!-- Buttons für Start und Stop -->
                             <form id="startForm" th:action="@{/start-charging}" method="post" class="mx-2">
-                                <button type="submit" class="btn btn-primary px-4 py-2" th:text="#{startCharging}">Start</button>
+                                <!-- Button für Start -->
+                                <button type="button" class="btn btn-primary px-4 py-2" onclick="confirmStartCharging()" th:text="#{startCharging}">Start</button>
                             </form>
-
                             <form id="resetForm" th:action="@{/reset-automatic}" method="post" class="mx-2">
                                 <button type="submit" class="btn btn-danger px-4 py-2" th:text="#{resetToAutomatic}">Stop</button>
                             </form>
@@ -274,7 +275,7 @@
                     </div>
                 </div>
 
-                <!-- Loading animation-->
+                <!-- Ladeanimation -->
                 <div class="d-flex justify-content-center mt-4">
                     <div class="spinner-border" id="loader" role="status">
                         <span class="sr-only">Loading...</span>
@@ -283,7 +284,7 @@
             </div>
         </div>
 
-        <!-- best price -->
+        <!-- Günstigster Preis -->
         <div class="card mb-4" th:if="${cheapestPrice != null}">
             <div class="card-header">
                 <h2 class="mb-0" th:text="#{lowestMarketPrice}">Lowest Market Price</h2>
@@ -430,16 +431,32 @@
         </div>
     </div>
 </div>
+<!-- Bestätigungs-Modal -->
+<div class="modal fade" id="confirmationModal" tabindex="-1" aria-labelledby="confirmationModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="confirmationModalLabel" th:text="#{confirm_start_charging_title}">Ladevorgang starten?</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" th:text="#{confirm_start_charging_message}"></div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="cancelStart" data-bs-dismiss="modal" th:text="#{confirm_start_charging_cancel}">Abbrechen</button>
+                <button type="button" class="btn btn-primary" id="confirmStart" th:text="#{confirm_start_charging_confirm}">OK</button>
+            </div>
+        </div>
+    </div>
+</div>
 <script th:inline="javascript">
     iFrameResize({ log: false, checkOrigin: false }, '.ad-banner');
 
     document.addEventListener("DOMContentLoaded", function () {
-        // Receive data from Thymeleaf templates and parse as JSON
+        // Daten von Thymeleaf Templates erhalten und als JSON parsen
         var cheapestPeriodsData = /*[[${cheapestPeriodsJson}]]*/ '[]';
         var marketPricesData = /*[[${marketPricesJson}]]*/ '[]';
         var chargingPeriodsData = /*[[${scheduledChargingPeriodsJson}]]*/ '[]';
 
-        // Check whether the data are arrays and convert if necessary
+        // Überprüfen, ob die Daten Arrays sind und falls nötig konvertieren
         if (typeof cheapestPeriodsData === 'string') {
             cheapestPeriodsData = JSON.parse(cheapestPeriodsData);
         }
@@ -641,6 +658,28 @@ document.addEventListener("DOMContentLoaded", function () {
         showLoader();
     });
 });
+function confirmStartCharging() {
+    // Erstelle ein Modal zur Bestätigung
+    let confirmationModal = new bootstrap.Modal(document.getElementById('confirmationModal'), {});
+    confirmationModal.show();
+
+    // Schließe Modal nach 5 Sekunden automatisch, falls keine Eingabe erfolgt
+    let autoCloseTimeout = setTimeout(() => confirmationModal.hide(), 5000);
+
+    // "OK"-Button Aktion
+    document.getElementById('confirmStart').onclick = function () {
+        clearTimeout(autoCloseTimeout); // Stoppe das automatische Schließen
+        document.getElementById('startForm').submit(); // Übermittle das Formular
+        confirmationModal.hide();
+    };
+
+    // "Abbrechen"-Button Aktion
+    document.getElementById('cancelStart').onclick = function () {
+        clearTimeout(autoCloseTimeout); // Stoppe das automatische Schließen
+        confirmationModal.hide();
+    };
+}
+
 </script>
 </body>
 </html>

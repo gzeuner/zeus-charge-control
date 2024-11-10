@@ -30,9 +30,6 @@ import java.util.List;
  *
  * © 2024 - Guido Zeuner - https://tiny-tool.de
  *
- * ChargeControl - Release V 1.1
- *
- * Author: Guido Zeuner
  */
 
 
@@ -58,9 +55,9 @@ public class DataManagementService {
 
     /**
      * Scheduled task to periodically update market prices. Runs at a fixed rate specified
-     * by the 'scheduled.marketdata.update.rate' property, defaulting to every 4 hours.
+     * by the 'scheduled.marketdata.update.rate' property, defaulting to every 2 hours.
      */
-    @Scheduled(fixedRateString = "${scheduled.marketdata.update.rate:14400000}")
+    @Scheduled(fixedRateString = "${scheduled.marketdata.update.rate:7200000}")
     public void periodicUpdateMarketPrices() {
         logger.info("Starting periodic update of market prices.");
         updateMarketPrices();
