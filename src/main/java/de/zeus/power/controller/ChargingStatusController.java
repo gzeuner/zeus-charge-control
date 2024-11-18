@@ -51,10 +51,12 @@ public class ChargingStatusController {
 
         BatteryStatusResponse batteryStatus = batteryManagementService.getCurrentBatteryStatus();
 
+        // Get the top 5 cheapest periods that are still in the future
         List<MarketPrice> cheapestPeriods = marketPriceService.getAllMarketPrices()
                 .stream()
-                .sorted(Comparator.comparingDouble(MarketPrice::getMarketPrice))
-                .sorted(Comparator.comparingLong(MarketPrice::getStartTimestamp))
+                .filter(price -> price.getStartTimestamp() > System.currentTimeMillis()) // Only future periods
+                .sorted(Comparator.comparingDouble(MarketPrice::getMarketPrice)) // Sort by price
+                .limit(5) // Take top 5
                 .toList();
 
         MarketPrice cheapestPrice = marketPriceService.getAllMarketPrices()
