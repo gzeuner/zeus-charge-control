@@ -17,7 +17,7 @@ Zeus Charge Control - Eine Java-Anwendung zur Verwaltung von Ladeplänen für PV
 
 ## Enthaltene Dateien
 
-- `zeus-charge-control-1.3.jar`: Die ausführbare JAR-Datei.
+- `zeus-charge-control-1.4.jar`: Die ausführbare JAR-Datei.
 - `zeus-charge-control.bat`: Windows-Skript zum Setzen von Umgebungsvariablen und zum Starten der Anwendung.
 - `zeus-charge-control.sh`: Linux-Skript zum Setzen von Umgebungsvariablen und zum Starten der Anwendung.
 - `license_de.html`: Lizenzdatei auf Deutsch.
@@ -51,7 +51,7 @@ Der Service kann über http://localhost:8080/charging-status aufgerufen werden.
 
 Du kannst die neueste Version von Zeus Charge Control über den folgenden Link herunterladen:
 
-[Zeus Charge Control v1.3](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.3/zeus-charge-control.zip)
+[Zeus Charge Control v1.4](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.4/zeus-charge-control.zip)
 
 ## Screenshots
 
@@ -79,7 +79,7 @@ Java 16 und höher.
 
 Du kannst die neueste Version von Zeus Lade-Kontrolle über den folgenden Link herunterladen:
 
-[Zeus Charge Control v1.3](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.3/zeus-charge-control.zip)
+[Zeus Charge Control v1.4](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.4/zeus-charge-control.zip)
 
 ### Umgebungsvariablen und ihre Bedeutung
 
@@ -138,7 +138,7 @@ Zeus Charge Control - A Java application for managing battery charging schedules
 
 ## Files Included
 
-- `zeus-charge-control-1.3.jar`: The main executable JAR file.
+- `zeus-charge-control-1.4.jar`: The main executable JAR file.
 - `zeus-charge-control.bat`: Windows script to set environment variables and run the application.
 - `zeus-charge-control.sh`: Linux script to set environment variables and run the application.
 - `license_de.html`: License file in German.
@@ -171,7 +171,7 @@ The Service can be accessed via http://localhost:8080/charging-status
 
 You can download the latest version of Zeus Charge Control from the following link:
 
-[Zeus Charge Control v1.3](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.3/zeus-charge-control.zip)
+[Zeus Charge Control v1.4](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.4/zeus-charge-control.zip)
 
 ## Screenshots
 
@@ -199,7 +199,7 @@ Java 16 and above.
 
 You can download the latest version of Zeus Charge Control from the following link:
 
-[Zeus Charge Control v1.3](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.3/zeus-charge-control.zip)
+[Zeus Charge Control v1.4](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.4/zeus-charge-control.zip)
 
 ### Environment Variables and Their Significance
 
