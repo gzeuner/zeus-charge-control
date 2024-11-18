@@ -56,7 +56,7 @@ public class ChargingStatusController {
                 .stream()
                 .filter(price -> price.getStartTimestamp() > System.currentTimeMillis()) // Only future periods
                 .sorted(Comparator.comparingDouble(MarketPrice::getMarketPrice)) // Sort by price
-                .limit(5) // Take top 5
+                .limit(10) // Take top 10
                 .toList();
 
         MarketPrice cheapestPrice = marketPriceService.getAllMarketPrices()
