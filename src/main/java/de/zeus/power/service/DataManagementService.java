@@ -1,6 +1,7 @@
 package de.zeus.power.service;
 
 import de.zeus.power.entity.MarketPrice;
+import de.zeus.power.event.MarketPricesUpdatedEvent;
 import de.zeus.power.model.ApiResponse;
 import de.zeus.power.model.MarketPriceResponse;
 import de.zeus.power.repository.MarketPriceRepository;
@@ -8,9 +9,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import javax.annotation.PostConstruct;
 import java.util.List;
 
 /**
@@ -42,39 +45,31 @@ public class DataManagementService {
     private static final Logger logger = LoggerFactory.getLogger(DataManagementService.class);
 
     @Autowired
+    private ApplicationEventPublisher eventPublisher;
+
+    @Autowired
     private MarketPriceService marketPriceService;
 
     @Autowired
     private MarketPriceRepository marketPriceRepository;
 
-    @Autowired
-    private ChargingManagementService chargingManagementService;
-
     @Value("${marketdata.print:false}")
     private boolean printMarketData;
-
-    /**
-     * Scheduled task to periodically update market prices. Runs at a fixed rate specified
-     * by the 'scheduled.marketdata.update.rate' property, defaulting to every 2 hours.
-     */
-    @Scheduled(fixedRateString = "${scheduled.marketdata.update.rate:7200000}")
-    public void periodicUpdateMarketPrices() {
-        logger.info("Starting periodic update of market prices.");
-        updateMarketPrices();
-    }
 
     /**
      * Updates the market prices by fetching new data from the MarketPriceService and
      * saving it to the repository. If the update is successful, schedules the charging
      * process. Optionally prints all market prices if 'printMarketData' is enabled.
      */
-    private void updateMarketPrices() {
+    @PostConstruct
+    @Scheduled(cron = "${scheduled.job.cron:0 15 14 * * *}")
+    public void updateMarketPrices() {
         ApiResponse<MarketPriceResponse> response = marketPriceService.getMarketPrices();
         if (response.success()) {
             marketPriceRepository.deleteAllInBatch();
             marketPriceService.saveMarketPrices(response.data());
+            eventPublisher.publishEvent(new MarketPricesUpdatedEvent(this));
             logger.info("Market prices updated successfully.");
-            chargingManagementService.scheduleCharging();
         } else {
             logger.error("Failed to update market prices: " + response.message());
         }

@@ -34,9 +34,6 @@ public class ChargingStatusController {
     @Value("${battery.target.stateOfCharge}")
     private int targetStateOfCharge;
 
-    @Value("${charging.periods.count}")
-    private int periodsCount;
-
     @GetMapping("/charging-status")
     public String getChargingStatus(HttpServletRequest request, @RequestParam(name = "lang", required = false) String lang, Model model) throws Exception {
 
@@ -57,7 +54,6 @@ public class ChargingStatusController {
         List<MarketPrice> cheapestPeriods = marketPriceService.getAllMarketPrices()
                 .stream()
                 .sorted(Comparator.comparingDouble(MarketPrice::getMarketPrice))
-                .limit(periodsCount)
                 .sorted(Comparator.comparingLong(MarketPrice::getStartTimestamp))
                 .toList();
 
@@ -88,26 +84,12 @@ public class ChargingStatusController {
     @PostMapping("/start-charging")
     public String startCharging(Model model) {
         batteryManagementService.initCharging(true);
-        int delayTimeInMillis = 5000;
-
-        try {
-            Thread.sleep(delayTimeInMillis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
         return "redirect:/charging-status";
     }
 
     @PostMapping("/reset-automatic")
     public String resetToAutomaticMode(Model model) {
         batteryManagementService.resetToAutomaticMode();
-        int delayTimeInMillis = 5000;
-
-        try {
-            Thread.sleep(delayTimeInMillis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
         return "redirect:/charging-status";
     }
 }
