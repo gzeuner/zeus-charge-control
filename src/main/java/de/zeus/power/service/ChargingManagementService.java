@@ -141,11 +141,23 @@ public class ChargingManagementService {
     }
 
     private void saveChargingSchedule(List<MarketPrice> periods) {
-        // Delete all existing load plans
-        logger.info("Deleting all existing charging schedules before creating a new plan...");
-        chargingScheduleRepository.deleteAll();
+        // Delete past charging schedules
+        logger.info("Deleting charging schedules from the past...");
+        long now = Instant.now().toEpochMilli();
+
+        List<ChargingSchedule> pastSchedules = chargingScheduleRepository.findAll().stream()
+                .filter(schedule -> schedule.getEndTimestamp() < now)
+                .collect(Collectors.toList());
+
+        if (!pastSchedules.isEmpty()) {
+            chargingScheduleRepository.deleteAll(pastSchedules);
+            logger.info("Deleted {} past charging schedules.", pastSchedules.size());
+        } else {
+            logger.info("No past charging schedules found to delete.");
+        }
 
         // Save new load plans
+        logger.info("Saving new charging schedules...");
         periods.forEach(period -> {
             ChargingSchedule schedule = new ChargingSchedule();
             schedule.setStartTimestamp(period.getStartTimestamp());
