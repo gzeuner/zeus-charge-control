@@ -90,19 +90,49 @@ public class MarketPriceService {
     }
 
     /**
-     * Retrieves market prices from the configured data source.
+     * Retrieves market prices from the configured data source, with a fallback mechanism.
+     * <p>
+     * The method attempts to fetch market prices from the primary data source specified by
+     * {@code marketDataSource}. If the primary source is "tibber", it tries to retrieve prices
+     * from Tibber. If the retrieval is unsuccessful or the data is invalid, it falls back to
+     * Awattar. If the primary source is "awattar", it directly fetches prices from Awattar.
+     * <p>
+     * The method returns an {@link ApiResponse} containing a {@link MarketPriceResponse} with
+     * the market price data or an error message if both sources fail.
      *
-     * @return ApiResponse containing the market price data or an error message.
+     * @return an {@link ApiResponse} containing the market price data or an error message.
      */
     public ApiResponse<MarketPriceResponse> getMarketPrices() {
-        switch (marketDataSource) {
-            case AWATTAR:
-                return getAwattarPrices();
-            case TIBBER:
-                return getTibberPrices();
-            default:
-                return new ApiResponse<>(false, HttpStatus.INTERNAL_SERVER_ERROR, "Invalid market data source", null);
+        MarketPriceResponse marketPriceResponse = null;
+
+        // Try Tibber first
+        if (TIBBER.equalsIgnoreCase(marketDataSource)) {
+            logger.info("Fetching market prices from Tibber...");
+            ApiResponse<MarketPriceResponse> tibberResponse = getTibberPrices();
+
+            if (tibberResponse.data() != null && !tibberResponse.data().getData().isEmpty()) {
+                logger.info("Successfully retrieved market prices from Tibber.");
+                return tibberResponse;
+            } else {
+                logger.warn("Failed to retrieve valid data from Tibber. Falling back to Awattar...");
+            }
         }
+
+        // Try Awattar if Tibber fails or is not configured as the primary source
+        if (AWATTAR.equalsIgnoreCase(marketDataSource) || marketPriceResponse == null) {
+            logger.info("Fetching market prices from Awattar...");
+            ApiResponse<MarketPriceResponse> awattarResponse = getAwattarPrices();
+
+            if (awattarResponse.data() != null && !awattarResponse.data().getData().isEmpty()) {
+                logger.info("Successfully retrieved market prices from Awattar.");
+                return awattarResponse;
+            } else {
+                logger.error("Failed to retrieve valid data from both Tibber and Awattar.");
+            }
+        }
+
+        // If all sources fail
+        return new ApiResponse<>(false, HttpStatus.INTERNAL_SERVER_ERROR, "No valid market prices retrieved", null);
     }
 
     /**
