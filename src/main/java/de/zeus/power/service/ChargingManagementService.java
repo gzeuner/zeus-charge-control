@@ -124,7 +124,8 @@ public class ChargingManagementService {
         }
 
         // Save the load plan for all relevant periods
-        relevantPeriods.forEach(this::saveChargingSchedule);
+        saveChargingSchedule(relevantPeriods);
+
 
         // Schedule charging attempts for all selected periods
         scheduleNextChargingAttempt(relevantPeriods, 0);
@@ -138,37 +139,35 @@ public class ChargingManagementService {
     @Scheduled(fixedDelayString = "${scheduled.check.fixedDelay:300000}")
     public void checkAndResetChargingMode() {
         int rsoc = batteryManagementService.getRelativeStateOfCharge();
+
         if (rsoc >= targetStateOfCharge) {
+            logger.info("RSOC is at or above target: {}%. Resetting to automatic mode.", targetStateOfCharge);
             batteryManagementService.resetToAutomaticMode();
+
+            // Immediately trigger a new charging plan
+            logger.info("Triggering a new charging schedule as RSOC reached the target.");
+            scheduleCharging();
+        } else {
+            logger.info("RSOC is below target: {}%. No action required.", targetStateOfCharge);
         }
     }
 
-    private void saveChargingSchedule(MarketPrice period) {
-        LocalDateTime now = LocalDateTime.now(ZoneId.systemDefault());
-        LocalDateTime twoDaysAgo = now.minusDays(TWO_DAYS);
-        chargingScheduleRepository.findAll().forEach(schedule -> {
-            LocalDateTime scheduleStart = LocalDateTime.ofInstant(Instant.ofEpochMilli(schedule.getStartTimestamp()), ZoneId.systemDefault());
-            if (scheduleStart.isBefore(twoDaysAgo)) {
-                chargingScheduleRepository.delete(schedule);
-            }
-        });
+    private void saveChargingSchedule(List<MarketPrice> periods) {
+        // Delete all existing load plans
+        logger.info("Deleting all existing charging schedules before creating a new plan...");
+        chargingScheduleRepository.deleteAll();
 
-        boolean exists = chargingScheduleRepository.findAll().stream().anyMatch(schedule ->
-                schedule.getStartTimestamp().equals(period.getStartTimestamp()) &&
-                        schedule.getEndTimestamp().equals(period.getEndTimestamp()) &&
-                        schedule.getPrice().equals(period.getMarketPrice())
-        );
-
-        if (!exists) {
+        // Save new load plans
+        periods.forEach(period -> {
             ChargingSchedule schedule = new ChargingSchedule();
             schedule.setStartTimestamp(period.getStartTimestamp());
             schedule.setEndTimestamp(period.getEndTimestamp());
             schedule.setPrice(period.getPriceInCentPerKWh());
             chargingScheduleRepository.save(schedule);
             logger.info("Saved new charging schedule for period starting at {}.", period.getFormattedStartTimestamp());
-        } else {
-            logger.debug("Identical charging schedule already exists. Skipping creation.");
-        }
+        });
+
+        logger.info("New charging schedules saved successfully.");
     }
 
     private void scheduleNextChargingAttempt(List<MarketPrice> periods, int index) {
