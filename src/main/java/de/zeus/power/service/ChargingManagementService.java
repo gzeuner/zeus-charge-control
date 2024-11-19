@@ -132,43 +132,104 @@ public class ChargingManagementService {
             logger.info("RSOC is at or above target: {}%. Resetting to automatic mode.", targetStateOfCharge);
             batteryManagementService.resetToAutomaticMode();
 
-            // Immediately trigger a new charging plan
+            // Start a new planning
             logger.info("Triggering a new charging schedule as RSOC reached the target.");
             scheduleCharging();
         } else {
-            logger.info("RSOC is below target: {}%. No action required.", targetStateOfCharge);
+            logger.debug("RSOC is below target: {}%. No action required.", targetStateOfCharge);
+            // Check fallback and optimize loading plan
+            optimizeChargingSchedule();
         }
     }
+
+
+    public void optimizeChargingSchedule() {
+        logger.info("Optimizing the charging schedule...");
+
+        // Get the current load plan
+        List<ChargingSchedule> currentSchedule = getSortedChargingSchedules();
+        if (currentSchedule.isEmpty()) {
+            logger.warn("No existing charging schedule found to optimize.");
+            return;
+        }
+
+        // Check market prices
+        List<MarketPrice> updatedPrices = marketPriceRepository.findAll();
+        if (updatedPrices.isEmpty()) {
+            logger.warn("No market prices available for optimization.");
+            return;
+        }
+
+        // Calculate the limit for the next 6 hours
+        long sixHoursFromNow = Instant.now().plusSeconds(6 * 3600).toEpochMilli();
+
+        // Find cheaper periods within the next 6 hours
+        MarketPrice cheaperPeriod = updatedPrices.stream()
+                .filter(price -> price.getStartTimestamp() <= sixHoursFromNow &&
+                        price.getPriceInCentPerKWh() < currentSchedule.get(0).getPrice())
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                .findFirst()
+                .orElse(null);
+
+        if (cheaperPeriod != null) {
+            logger.info("Found a cheaper period within the next 6 hours: {} at {} cent/kWh",
+                    cheaperPeriod.getFormattedStartTimestamp(), cheaperPeriod.getPriceInCentPerKWh());
+
+            // Update the charging plan with the more favorable period
+            saveChargingSchedule(List.of(cheaperPeriod));
+
+            // Start the new load planning
+            scheduleNextChargingAttempt(List.of(cheaperPeriod), 0);
+        } else {
+            logger.info("No cheaper period found within the next 6 hours. Existing schedule remains unchanged.");
+        }
+    }
+
 
     private void saveChargingSchedule(List<MarketPrice> periods) {
-        // Delete past charging schedules
-        logger.info("Deleting charging schedules from the past...");
+        logger.info("Updating charging schedules...");
+
         long now = Instant.now().toEpochMilli();
 
-        List<ChargingSchedule> pastSchedules = chargingScheduleRepository.findAll().stream()
+        // Delete outdated loading plans
+        logger.info("Deleting outdated charging schedules...");
+        List<ChargingSchedule> outdatedSchedules = chargingScheduleRepository.findAll().stream()
                 .filter(schedule -> schedule.getEndTimestamp() < now)
                 .collect(Collectors.toList());
-
-        if (!pastSchedules.isEmpty()) {
-            chargingScheduleRepository.deleteAll(pastSchedules);
-            logger.info("Deleted {} past charging schedules.", pastSchedules.size());
+        if (!outdatedSchedules.isEmpty()) {
+            chargingScheduleRepository.deleteAll(outdatedSchedules);
+            logger.info("Deleted {} outdated charging schedules.", outdatedSchedules.size());
         } else {
-            logger.info("No past charging schedules found to delete.");
+            logger.debug("No outdated charging schedules found.");
         }
 
-        // Save new load plans
-        logger.info("Saving new charging schedules...");
+        // Load current loading plans from the database
+        List<ChargingSchedule> existingSchedules = chargingScheduleRepository.findAll();
+
+        // Save new load plans if they do not yet exist
+        logger.info("Saving new charging schedules, avoiding duplicates...");
         periods.forEach(period -> {
-            ChargingSchedule schedule = new ChargingSchedule();
-            schedule.setStartTimestamp(period.getStartTimestamp());
-            schedule.setEndTimestamp(period.getEndTimestamp());
-            schedule.setPrice(period.getPriceInCentPerKWh());
-            chargingScheduleRepository.save(schedule);
-            logger.info("Saved new charging schedule for period starting at {}.", period.getFormattedStartTimestamp());
+            boolean alreadyExists = existingSchedules.stream().anyMatch(schedule ->
+                    Objects.equals(schedule.getStartTimestamp(), period.getStartTimestamp()) &&
+                            Objects.equals(schedule.getEndTimestamp(), period.getEndTimestamp()) &&
+                            Double.compare(schedule.getPrice(), period.getPriceInCentPerKWh()) == 0);
+
+            if (!alreadyExists) {
+                ChargingSchedule schedule = new ChargingSchedule();
+                schedule.setStartTimestamp(period.getStartTimestamp());
+                schedule.setEndTimestamp(period.getEndTimestamp());
+                schedule.setPrice(period.getPriceInCentPerKWh());
+                chargingScheduleRepository.save(schedule);
+                logger.info("Saved new charging schedule for period starting at {}.", period.getFormattedStartTimestamp());
+            } else {
+                logger.debug("Skipping duplicate charging schedule for period starting at {}.", period.getFormattedStartTimestamp());
+            }
         });
 
-        logger.info("New charging schedules saved successfully.");
+        logger.info("Charging schedules updated successfully.");
     }
+
+
 
     private void scheduleNextChargingAttempt(List<MarketPrice> periods, int index) {
         logger.debug("scheduleNextChargingAttempt called with index {} out of {} periods.", index, periods.size());
