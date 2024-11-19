@@ -20,6 +20,7 @@ import java.time.ZoneId;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
@@ -91,41 +92,28 @@ public class ChargingManagementService {
             return;
         }
 
-        // Calculate the limit for the next 12 hours
-        long twelveHoursFromNow = Instant.now().plusSeconds(12 * 3600).toEpochMilli();
-
-        // Find the cheapest period within the next 12 hours
-        MarketPrice cheapestPeriod = filteredPeriods.stream()
-                .filter(price -> price.getStartTimestamp() <= twelveHoursFromNow)
-                .min(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .orElse(null);
-
-        if (cheapestPeriod == null) {
-            logger.warn("No suitable charging periods found within the next 12 hours. Skipping scheduling.");
-            return;
-        }
-
-        logger.info("Cheapest period within the next 12 hours: {} at {} cent/kWh",
+        // Identify the cheapest period
+        MarketPrice cheapestPeriod = filteredPeriods.get(0);
+        logger.info("Cheapest period: {} at {} cent/kWh",
                 cheapestPeriod.getFormattedStartTimestamp(), cheapestPeriod.getPriceInCentPerKWh());
 
-        // Define the time window for additional periods (2 hours after the cheapest period ends)
-        long additionalPeriodLimit = Instant.ofEpochMilli(cheapestPeriod.getEndTimestamp()).plusSeconds(2 * 3600).toEpochMilli();
+        // Initialize the relevant periods list with the cheapest period
+        List<MarketPrice> relevantPeriods = List.of(cheapestPeriod);
 
-        // Filter periods that occur directly after the cheapest period and within 2 hours
-        List<MarketPrice> relevantPeriods = filteredPeriods.stream()
-                .filter(price -> price.getStartTimestamp() >= cheapestPeriod.getStartTimestamp() &&
-                        price.getStartTimestamp() <= additionalPeriodLimit)
-                .limit(4) // Limit to 4 periods, including the cheapest
-                .collect(Collectors.toList());
+        // Find the directly next period (if it exists)
+        MarketPrice nextPeriod = filteredPeriods.stream()
+                .filter(price -> Objects.equals(price.getStartTimestamp(), cheapestPeriod.getEndTimestamp()))
+                .findFirst()
+                .orElse(null);
 
-        if (relevantPeriods.isEmpty()) {
-            logger.warn("No suitable charging periods found after filtering. Skipping scheduling.");
-            return;
+        if (nextPeriod != null) {
+            logger.info("Adding the next period: {} at {} cent/kWh",
+                    nextPeriod.getFormattedStartTimestamp(), nextPeriod.getPriceInCentPerKWh());
+            relevantPeriods = List.of(cheapestPeriod, nextPeriod);
         }
 
         // Save the load plan for all relevant periods
         saveChargingSchedule(relevantPeriods);
-
 
         // Schedule charging attempts for all selected periods
         scheduleNextChargingAttempt(relevantPeriods, 0);
