@@ -143,48 +143,64 @@ public class ChargingManagementService {
     }
 
 
+    @Scheduled(fixedDelayString = "${scheduled.optimization.fixedDelay:3600000}") // Stündlich
     public void optimizeChargingSchedule() {
         logger.info("Optimizing the charging schedule...");
 
-        // Get the current load plan
+        // Load current loading plan
         List<ChargingSchedule> currentSchedule = getSortedChargingSchedules();
         if (currentSchedule.isEmpty()) {
             logger.warn("No existing charging schedule found to optimize.");
             return;
         }
 
-        // Check market prices
+        // Remove duplicate entries
+        List<ChargingSchedule> uniqueSchedule = currentSchedule.stream()
+                .distinct()
+                .collect(Collectors.toList());
+
+        if (uniqueSchedule.size() < currentSchedule.size()) {
+            logger.info("Removed duplicate entries from the charging schedule.");
+            chargingScheduleRepository.deleteAll(currentSchedule);
+            chargingScheduleRepository.saveAll(uniqueSchedule);
+            logger.info("Charging schedule deduplicated successfully.");
+        }
+
+        // Get updated market prices
         List<MarketPrice> updatedPrices = marketPriceRepository.findAll();
         if (updatedPrices.isEmpty()) {
             logger.warn("No market prices available for optimization.");
             return;
         }
 
-        // Calculate the limit for the next 6 hours
+        // Iterate over the current loading plan
         long sixHoursFromNow = Instant.now().plusSeconds(6 * 3600).toEpochMilli();
 
-        // Find cheaper periods within the next 6 hours
-        MarketPrice cheaperPeriod = updatedPrices.stream()
-                .filter(price -> price.getStartTimestamp() <= sixHoursFromNow &&
-                        price.getPriceInCentPerKWh() < currentSchedule.get(0).getPrice())
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .findFirst()
-                .orElse(null);
+        // Iteriere über den aktuellen Ladeplan
+        for (ChargingSchedule schedule : uniqueSchedule) {
+            long scheduleStart = schedule.getStartTimestamp();
 
-        if (cheaperPeriod != null) {
-            logger.info("Found a cheaper period within the next 6 hours: {} at {} cent/kWh",
-                    cheaperPeriod.getFormattedStartTimestamp(), cheaperPeriod.getPriceInCentPerKWh());
+            // Find cheaper periods within 6 hours
+            MarketPrice cheaperPeriod = updatedPrices.stream()
+                    .filter(price -> price.getStartTimestamp() > scheduleStart &&
+                            price.getStartTimestamp() <= sixHoursFromNow &&
+                            price.getPriceInCentPerKWh() < schedule.getPrice())
+                    .min(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                    .orElse(null);
 
-            // Update the charging plan with the more favorable period
-            saveChargingSchedule(List.of(cheaperPeriod));
+            if (cheaperPeriod != null) {
+                logger.info("Found a cheaper period to replace the current schedule:");
+                logger.info("Current: {} - {} at {} cent/kWh", schedule.getFormattedStartTimestamp(), schedule.getFormattedEndTimestamp(), schedule.getPrice());
+                logger.info("Replacement: {} - {} at {} cent/kWh", cheaperPeriod.getFormattedStartTimestamp(), cheaperPeriod.getFormattedEndTimestamp(), cheaperPeriod.getPriceInCentPerKWh());
 
-            // Start the new load planning
-            scheduleNextChargingAttempt(List.of(cheaperPeriod), 0);
-        } else {
-            logger.info("No cheaper period found within the next 6 hours. Existing schedule remains unchanged.");
+                // Replace the old period with the new one
+                chargingScheduleRepository.delete(schedule);
+                saveChargingSchedule(List.of(cheaperPeriod));
+            }
         }
-    }
 
+        logger.info("Charging schedule optimization completed.");
+    }
 
     private void saveChargingSchedule(List<MarketPrice> periods) {
         logger.info("Updating charging schedules...");
