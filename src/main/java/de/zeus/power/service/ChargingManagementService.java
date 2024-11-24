@@ -65,6 +65,15 @@ public class ChargingManagementService {
     @Value("${night.end:6}")
     private int nightEndHour;
 
+    @Value("${daytime.preferred.start:10}")
+    private int preferredStartHour;
+
+    @Value("${daytime.preferred.end:15}")
+    private int preferredEndHour;
+
+    @Value("${daytime.weighting.bonus:0.3}")
+    private double daytimeWeightingBonus;
+
     private final AtomicBoolean resetScheduled = new AtomicBoolean(false);
 
     /**
@@ -127,7 +136,7 @@ public class ChargingManagementService {
 
 
         if (currentRSOC < minimumStateOfCharge) {
-            logger.warn("Current RSOC ({}) is below the minimum allowed level ({}). Scheduling emergency reduced power charging.",
+            logger.warn("Current RSOC ({}) is below the minimum allowed level ({}). Scheduling charging.",
                     currentRSOC, minimumStateOfCharge);
             scheduleEmergencyCharging();
             return;
@@ -166,7 +175,7 @@ public class ChargingManagementService {
             return;
         }
 
-        // Ignore weather data during nighttime
+        // Determine whether it's nighttime and adjust planning logic accordingly
         if (!isNightPeriod() && cloudCover.isPresent()) {
             double currentCloudCover = cloudCover.get();
             logger.info("Current cloud cover: {}%, threshold: {}%", currentCloudCover, cloudCoverThreshold);
@@ -176,6 +185,16 @@ public class ChargingManagementService {
             } else {
                 logger.info("Optimal solar conditions detected. Planning with minimal network charging.");
             }
+
+            // Apply additional filtering for daytime periods
+            validPeriods = filterPreferredDaytimePeriods(validPeriods);
+            logger.info("Filtered preferred daytime periods: {}",
+                    validPeriods.stream()
+                            .map(p -> String.format("%s - %s (%.2f cents/kWh)",
+                                    dateFormat.format(new Date(p.getStartTimestamp())),
+                                    dateFormat.format(new Date(p.getEndTimestamp())),
+                                    p.getPriceInCentPerKWh()))
+                            .collect(Collectors.joining(", ")));
         } else {
             logger.warn("Ignoring weather data as it is nighttime or unavailable.");
         }
@@ -231,6 +250,30 @@ public class ChargingManagementService {
             // Reset to default after all charging tasks
             schedulePostChargingReset();
         }
+    }
+
+    private List<MarketPrice> filterPreferredDaytimePeriods(List<MarketPrice> periods) {
+        Calendar calendar = Calendar.getInstance();
+
+        // List of periods that fall within the time of day
+        List<MarketPrice> filteredPeriods = new ArrayList<>();
+
+        for (MarketPrice period : periods) {
+            // Start time of the period
+            calendar.setTimeInMillis(period.getStartTimestamp());
+            int startHour = calendar.get(Calendar.HOUR_OF_DAY);
+
+            // End time of the period
+            calendar.setTimeInMillis(period.getEndTimestamp());
+            int endHour = calendar.get(Calendar.HOUR_OF_DAY);
+
+            // Check whether the period is completely within the time of day
+            if (startHour >= preferredStartHour && endHour <= preferredEndHour) {
+                filteredPeriods.add(period);
+            }
+        }
+
+        return filteredPeriods;
     }
 
 
@@ -299,15 +342,6 @@ public class ChargingManagementService {
         logger.info("All reduced power charging tasks successfully scheduled.");
     }
 
-    private boolean isDuplicateEntry(ChargingSchedule newSchedule) {
-        return chargingScheduleRepository.findAll().stream()
-                .anyMatch(existingSchedule ->
-                        existingSchedule.getStartTimestamp() == newSchedule.getStartTimestamp() &&
-                                existingSchedule.getEndTimestamp() == newSchedule.getEndTimestamp() &&
-                                Double.compare(existingSchedule.getPrice(), newSchedule.getPrice()) == 0);
-    }
-
-
     /**
      * Schedules a task to reset to default charge point and enable automatic mode at the end of the night period.
      */
@@ -344,13 +378,13 @@ public class ChargingManagementService {
     }
 
     private void schedulePostChargingReset() {
-        // Überprüfen, ob bereits ein Reset geplant ist
+        // Check whether a reset is already planned
         if (resetScheduled.get()) {
             logger.info("Reset task is already scheduled. Skipping duplicate scheduling.");
             return;
         }
 
-        // Hole alle geplanten Einträge und sortiere sie nach Endzeitpunkt
+        // Get all scheduled entries and sort them by end time
         List<ChargingSchedule> schedules = chargingScheduleRepository.findAll().stream()
                 .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp))
                 .collect(Collectors.toList());
@@ -362,35 +396,35 @@ public class ChargingManagementService {
             return;
         }
 
-        // Liste für die Endzeitpunkte, die einen Reset benötigen
+        // List for the end times that require a reset
         List<Long> resetTimes = new ArrayList<>();
 
-        // Verarbeite die geplanten Perioden
-        long blockEndTime = schedules.get(0).getEndTimestamp(); // Initialer Endzeitpunkt des ersten Blocks
+        // Process the planned periods
+        long blockEndTime = schedules.get(0).getEndTimestamp(); // Initial end time of the first block
 
         for (int i = 1; i < schedules.size(); i++) {
             long gap = schedules.get(i).getStartTimestamp() - blockEndTime;
 
-            if (gap > 15 * 60 * 1000) { // Lücke größer als 15 Minuten erkannt
-                // Füge den Endzeitpunkt des aktuellen Blocks zur Reset-Liste hinzu
+            if (gap > 15 * 60 * 1000) { // Gap greater than 15 minutes detected
+                // Add the end time of the current block to the reset list
                 resetTimes.add(blockEndTime);
                 logger.info("Block end detected. Scheduling reset after last block ends at {}", dateFormat.format(new Date(blockEndTime + 1000)));
 
-                // Start eines neuen Blocks
+                // Start a new block
                 blockEndTime = schedules.get(i).getEndTimestamp();
             } else {
-                // Aktualisiere den Endzeitpunkt des aktuellen Blocks
+                // Update the end time of the current block
                 blockEndTime = Math.max(blockEndTime, schedules.get(i).getEndTimestamp());
             }
         }
 
-        // Füge den letzten Block zur Reset-Liste hinzu
+        // Add the last block to the reset list
         resetTimes.add(blockEndTime);
         logger.info("Final block detected. Scheduling reset after last block ends at {}", dateFormat.format(new Date(blockEndTime + 1000)));
 
-        // Plane Resets für alle in der Liste enthaltenen Zeitpunkte
+        // Schedule resets for all times contained in the list
         for (Long resetTime : resetTimes) {
-            scheduleResetTask(new Date(resetTime + 1000)); // Plane eine Sekunde nach dem Endzeitpunkt
+            scheduleResetTask(new Date(resetTime + 1000)); // Schedule one second after the end time
         }
     }
 
@@ -437,12 +471,19 @@ public class ChargingManagementService {
         List<MarketPrice> selectedPeriods = new ArrayList<>();
         int accumulatedTime = 0;
 
-        logger.info("Starting selection of optimal periods. Required charging time: {} minutes.", requiredChargingTime);
+        logger.info("Starting selection of optimal periods with daytime weighting. Required charging time: {} minutes.", requiredChargingTime);
 
-        // Sort periods by price (ascending), then by start time
+        // Apply effective price calculation with daytime weighting
         periods = periods.stream()
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh)
-                        .thenComparingLong(MarketPrice::getStartTimestamp))
+                .sorted((p1, p2) -> {
+                    double effectivePrice1 = isPreferredDaytimePeriod(p1)
+                            ? p1.getPriceInCentPerKWh() - daytimeWeightingBonus
+                            : p1.getPriceInCentPerKWh();
+                    double effectivePrice2 = isPreferredDaytimePeriod(p2)
+                            ? p2.getPriceInCentPerKWh() - daytimeWeightingBonus
+                            : p2.getPriceInCentPerKWh();
+                    return Double.compare(effectivePrice1, effectivePrice2);
+                })
                 .collect(Collectors.toList());
 
         for (MarketPrice period : periods) {
@@ -456,32 +497,56 @@ public class ChargingManagementService {
             selectedPeriods.add(period);
             accumulatedTime += 60; // Each period is assumed to be 60 minutes
 
-            logger.info("Added period {} - {} (Price: {} cents/kWh). Accumulated time: {} minutes.",
+            logger.info("Added period {} - {} (Actual Price: {} cents/kWh, Effective Price: {}). Accumulated time: {} minutes.",
                     dateFormat.format(new Date(period.getStartTimestamp())),
                     dateFormat.format(new Date(period.getEndTimestamp())),
                     period.getPriceInCentPerKWh(),
+                    isPreferredDaytimePeriod(period)
+                            ? period.getPriceInCentPerKWh() - daytimeWeightingBonus
+                            : period.getPriceInCentPerKWh(),
                     accumulatedTime);
         }
 
         if (selectedPeriods.isEmpty()) {
             logger.warn("No periods selected. Ensure that available periods and constraints are properly configured.");
         } else {
-            logger.info("Total selected periods: {}. Final accumulated time: {} minutes.",
-                    selectedPeriods.size(), accumulatedTime);
+            logger.info("Total selected periods: {}. Final accumulated time: {} minutes.", selectedPeriods.size(), accumulatedTime);
         }
 
         return selectedPeriods;
     }
 
+    /**
+     * Checks if the given period falls entirely within the preferred daytime period.
+     *
+     * @param period The MarketPrice period to check.
+     * @return True if the period is within the preferred daytime hours, false otherwise.
+     */
+    private boolean isPreferredDaytimePeriod(MarketPrice period) {
+        Calendar calendar = Calendar.getInstance();
+
+        // Extract the start hour of the period
+        calendar.setTimeInMillis(period.getStartTimestamp());
+        int startHour = calendar.get(Calendar.HOUR_OF_DAY);
+
+        // Extract the end hour of the period
+        calendar.setTimeInMillis(period.getEndTimestamp());
+        int endHour = calendar.get(Calendar.HOUR_OF_DAY);
+
+        // Check if the entire period is within the preferred daytime hours
+        return startHour >= preferredStartHour && endHour <= preferredEndHour;
+    }
+
 
     /**
-     * Schedules emergency charging for the next immediate period.
+     * Schedules emergency charging for the next immediate periods based on price and availability.
      */
     private void scheduleEmergencyCharging() {
         List<MarketPrice> emergencyPeriods = marketPriceRepository.findAll().stream()
                 .filter(p -> p.getStartTimestamp() > System.currentTimeMillis()) // Future periods only
-                .sorted(Comparator.comparingLong(MarketPrice::getStartTimestamp))
-                .limit(1) // Select the next immediate period
+                .filter(p -> p.getPriceInCentPerKWh() <= maxAcceptableMarketPriceInCent) // Price threshold
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh)
+                        .thenComparingLong(MarketPrice::getStartTimestamp)) // Sort by price, then start time
                 .collect(Collectors.toList());
 
         if (emergencyPeriods.isEmpty()) {
@@ -489,9 +554,21 @@ public class ChargingManagementService {
             return;
         }
 
-        saveChargingSchedule(emergencyPeriods);
+        // Calculate required charging time for minimum state of charge
+        int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
+        int requiredChargingTime = calculateRequiredChargingTime(currentRSOC, minimumStateOfCharge);
 
-        for (MarketPrice period : emergencyPeriods) {
+        // Select periods until the required charging time is met
+        List<MarketPrice> selectedPeriods = selectOptimalPeriods(emergencyPeriods, requiredChargingTime);
+
+        if (selectedPeriods.isEmpty()) {
+            logger.error("No suitable periods found for emergency charging after applying constraints.");
+            return;
+        }
+
+        saveChargingSchedule(selectedPeriods);
+
+        for (MarketPrice period : selectedPeriods) {
             Date startTime = new Date(period.getStartTimestamp());
             Date endTime = new Date(period.getEndTimestamp());
 
@@ -615,28 +692,27 @@ public class ChargingManagementService {
      */
     private void saveChargingSchedule(List<MarketPrice> periods) {
         logger.info("Saving planned charging schedules...");
-        periods.forEach(period -> {
+        for (MarketPrice period : periods) {
+            if (chargingScheduleRepository.existsByStartEndAndPrice(
+                    period.getStartTimestamp(), period.getEndTimestamp(), period.getPriceInCentPerKWh())) {
+                logger.info("Duplicate schedule detected. Skipping: {} - {} at {} cents/kWh.",
+                        dateFormat.format(new Date(period.getStartTimestamp())),
+                        dateFormat.format(new Date(period.getEndTimestamp())),
+                        period.getPriceInCentPerKWh());
+                continue;
+            }
+
             ChargingSchedule schedule = new ChargingSchedule();
             schedule.setStartTimestamp(period.getStartTimestamp());
             schedule.setEndTimestamp(period.getEndTimestamp());
             schedule.setPrice(period.getPriceInCentPerKWh());
 
-            // Skip duplicate entries
-            if (isDuplicateEntry(schedule)) {
-                logger.info("Duplicate schedule detected. Skipping: {} - {} at {} cents/kWh.",
-                        dateFormat.format(new Date(schedule.getStartTimestamp())),
-                        dateFormat.format(new Date(schedule.getEndTimestamp())),
-                        schedule.getPrice());
-                return;
-            }
-
-            // Save and log non-duplicate schedule
             chargingScheduleRepository.save(schedule);
             logger.info("Saved charging schedule: {} - {} at {} cents/kWh.",
                     dateFormat.format(new Date(schedule.getStartTimestamp())),
                     dateFormat.format(new Date(schedule.getEndTimestamp())),
                     schedule.getPrice());
-        });
+        }
     }
 
     /**

@@ -1,15 +1,15 @@
 package de.zeus.power.entity;
 
-import javax.persistence.Entity;
-import javax.persistence.GeneratedValue;
-import javax.persistence.GenerationType;
-import javax.persistence.Id;
+import javax.persistence.*;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 
 @Entity
+@Table(name = "charging_schedule", uniqueConstraints = {
+        @UniqueConstraint(columnNames = {"startTimestamp", "endTimestamp", "price"})
+})
 public class ChargingSchedule {
 
     @Id
