@@ -260,13 +260,6 @@ public class BatteryManagementService {
             return false;
         }
 
-        // Set charging point to default
-        ApiResponse<?> chargePointResponse = commandService.setChargePoint(chargingPointInWatt);
-        if (!chargePointResponse.success()) {
-            logger.error("Failed to reset ChargingPoint to default value ({} Watt) while switching to AutomaticMode.", chargingPointInWatt);
-            return false;
-        }
-
         invalidateBatteryCache();
         logger.info("Successfully returned to automatic operating mode and reset ChargingPoint to {} Watt.", chargingPointInWatt);
         return true;
