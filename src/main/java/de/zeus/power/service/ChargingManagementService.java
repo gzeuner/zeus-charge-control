@@ -44,9 +44,6 @@ public class ChargingManagementService {
     @Autowired
     private TaskScheduler taskScheduler;
 
-    @Value("${battery.minimum.stateOfCharge:40}")
-    private int minimumStateOfCharge;
-
     @Value("${battery.target.stateOfCharge:90}")
     private int targetStateOfCharge;
 
@@ -55,6 +52,9 @@ public class ChargingManagementService {
 
     @Value("${battery.reduced.charge.factor:0.5}")
     private double reducedChargeFactor;
+
+    @Value("${battery.capacity:10000}")
+    private int totalBatteryCapacity;
 
     @Value("${weather.api.cloudcover.threshold:60}")
     private double cloudCoverThreshold;
@@ -143,7 +143,7 @@ public class ChargingManagementService {
 
                 // Reschedule the monitor task until the end of the charging period
                 if (new Date().before(endTime)) {
-                    taskScheduler.schedule(this, new Date(System.currentTimeMillis() + 60 * 1000)); // Check every minute
+                    taskScheduler.schedule(this, new Date(System.currentTimeMillis() + 5 * 60 * 1000)); // Check every 5 minutes
                 } else {
                     logger.info("Charging period ended. Stopping RSOC monitoring.");
                 }
@@ -151,7 +151,7 @@ public class ChargingManagementService {
         };
 
         // Initial scheduling of the monitor task
-        taskScheduler.schedule(monitorTask, new Date(System.currentTimeMillis() + 60 * 1000)); // Start monitoring after 1 minute
+        taskScheduler.schedule(monitorTask, new Date(System.currentTimeMillis() + 5 * 60 * 1000)); // Start monitoring after 5 minutes
     }
 
 
@@ -189,14 +189,6 @@ public class ChargingManagementService {
 
         if (currentRSOC >= targetStateOfCharge) {
             logger.info("Skipping optimization: Current RSOC ({}) already meets or exceeds target RSOC ({}).", currentRSOC, targetStateOfCharge);
-            return;
-        }
-
-
-        if (currentRSOC < minimumStateOfCharge) {
-            logger.warn("Current RSOC ({}) is below the minimum allowed level ({}). Scheduling charging.",
-                    currentRSOC, minimumStateOfCharge);
-            scheduleEmergencyCharging();
             return;
         }
 
@@ -508,16 +500,16 @@ public class ChargingManagementService {
      * Selects optimal periods for charging based on required charging time, allowing partial utilization of periods.
      *
      * @param periods              Available market periods.
-     * @param requiredChargingTime Total required charging time in minutes.
+     * @param requiredRSOC         Target charging level in %
      * @return A list of optimal periods for charging.
      */
-    private List<MarketPrice> selectOptimalPeriods(List<MarketPrice> periods, int requiredChargingTime) {
+    private List<MarketPrice> selectOptimalPeriods(List<MarketPrice> periods, int requiredRSOC) {
         List<MarketPrice> selectedPeriods = new ArrayList<>();
-        int accumulatedTime = 0;
+        int accumulatedRSOC = 0;
 
-        logger.info("Starting selection of optimal periods with daytime weighting. Required charging time: {} minutes.", requiredChargingTime);
+        logger.info("Selecting optimal periods based on required RSOC: {}%.", requiredRSOC);
 
-        // Sort periods by effective price (accounting for daytime weighting)
+        // Sort periods by price and daytime preference
         periods = periods.stream()
                 .sorted((p1, p2) -> {
                     double effectivePrice1 = isPreferredDaytimePeriod(p1)
@@ -531,46 +523,43 @@ public class ChargingManagementService {
                 .collect(Collectors.toList());
 
         for (MarketPrice period : periods) {
-            int periodDuration = 60; // Each period is assumed to last 60 minutes
-            int remainingTime = requiredChargingTime - accumulatedTime;
+            int periodRSOC = calculatePeriodRSOC(period);
 
-            if (remainingTime <= 0) {
-                break; // No more charging time required
-            }
-
-            if (remainingTime < periodDuration) {
-                // If the remaining time is less than the full period duration, add only the required portion
-                logger.info("Partially utilizing period: {} - {} for {} minutes (Remaining time: {} minutes).",
+            if (accumulatedRSOC + periodRSOC >= requiredRSOC) {
+                logger.info("Partially utilizing period {} - {} for {}% RSOC.",
                         dateFormat.format(new Date(period.getStartTimestamp())),
                         dateFormat.format(new Date(period.getEndTimestamp())),
-                        remainingTime,
-                        remainingTime);
-                accumulatedTime += remainingTime;
+                        requiredRSOC - accumulatedRSOC);
+                selectedPeriods.add(period);
+                break; // Target RSOC achieved
             } else {
-                // Otherwise, utilize the full period
-                accumulatedTime += periodDuration;
-                logger.info("Added full period: {} - {} (Actual Price: {} cents/kWh, Effective Price: {}). Accumulated time: {} minutes.",
+                logger.info("Added full period {} - {} for {}% RSOC. Remaining: {}%.",
                         dateFormat.format(new Date(period.getStartTimestamp())),
                         dateFormat.format(new Date(period.getEndTimestamp())),
-                        period.getPriceInCentPerKWh(),
-                        isPreferredDaytimePeriod(period)
-                                ? period.getPriceInCentPerKWh() - daytimeWeightingBonus
-                                : period.getPriceInCentPerKWh(),
-                        accumulatedTime);
+                        periodRSOC, requiredRSOC - (accumulatedRSOC + periodRSOC));
+                selectedPeriods.add(period);
+                accumulatedRSOC += periodRSOC;
             }
-
-            // Add the period to the selected list
-            selectedPeriods.add(period);
-        }
-
-        if (selectedPeriods.isEmpty()) {
-            logger.warn("No periods selected. Ensure that available periods and constraints are properly configured.");
-        } else {
-            logger.info("Total selected periods: {}. Final accumulated time: {} minutes.", selectedPeriods.size(), accumulatedTime);
         }
 
         return selectedPeriods;
     }
+
+    private int calculatePeriodRSOC(MarketPrice period) {
+        double chargingPowerInWatt = batteryManagementService.getChargingPointInWatt();
+        double periodDurationInHours = (period.getEndTimestamp() - period.getStartTimestamp()) / 3600_000.0;
+        double periodEnergyWh = chargingPowerInWatt * periodDurationInHours;
+
+        int periodRSOC = (int) Math.round((periodEnergyWh / totalBatteryCapacity) * 100);
+
+        logger.debug("Calculated RSOC contribution for period {} - {}: {}%.",
+                dateFormat.format(new Date(period.getStartTimestamp())),
+                dateFormat.format(new Date(period.getEndTimestamp())),
+                periodRSOC);
+
+        return periodRSOC;
+    }
+
 
     /**
      * Checks if the given period falls entirely within the preferred daytime period.
@@ -591,83 +580,6 @@ public class ChargingManagementService {
 
         // Check if the entire period is within the preferred daytime hours
         return startHour >= preferredStartHour && endHour <= preferredEndHour;
-    }
-
-
-    /**
-     * Schedules emergency charging for the next immediate periods based on price and availability.
-     */
-    private void scheduleEmergencyCharging() {
-        List<MarketPrice> emergencyPeriods = marketPriceRepository.findAll().stream()
-                .filter(p -> p.getStartTimestamp() > System.currentTimeMillis()) // Future periods only
-                .filter(p -> p.getPriceInCentPerKWh() <= maxAcceptableMarketPriceInCent) // Price threshold
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh)
-                        .thenComparingLong(MarketPrice::getStartTimestamp)) // Sort by price, then start time
-                .collect(Collectors.toList());
-
-        if (emergencyPeriods.isEmpty()) {
-            logger.error("No valid periods available for emergency charging.");
-            return;
-        }
-
-        // Calculate required charging time for minimum state of charge
-        int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
-        int requiredChargingTime = calculateRequiredChargingTime(currentRSOC, minimumStateOfCharge);
-
-        // Select periods until the required charging time is met
-        List<MarketPrice> selectedPeriods = selectOptimalPeriods(emergencyPeriods, requiredChargingTime);
-
-        if (selectedPeriods.isEmpty()) {
-            logger.error("No suitable periods found for emergency charging after applying constraints.");
-            return;
-        }
-
-        saveChargingSchedule(selectedPeriods);
-
-        for (MarketPrice period : selectedPeriods) {
-            Date startTime = new Date(period.getStartTimestamp());
-            Date endTime = new Date(period.getEndTimestamp());
-
-            taskScheduler.schedule(() -> {
-                logger.info("Emergency charging task started for period: {} - {}.",
-                        dateFormat.format(startTime), dateFormat.format(endTime));
-
-                batteryManagementService.initCharging(true);
-
-                // Task to execute at the end of the emergency period
-                taskScheduler.schedule(() -> {
-                    logger.info("Emergency charging task ended.");
-
-                    boolean largeConsumerActive = batteryManagementService.isLargeConsumerActive();
-
-                    if (!largeConsumerActive) {
-                        logger.info("No large consumer active. Switching to AutomaticMode.");
-                        boolean resetSuccess = batteryManagementService.resetToDefaultChargePoint();
-                        if (resetSuccess) {
-                            logger.info("ChargingPoint successfully reset to default after emergency charging.");
-                        } else {
-                            logger.error("Failed to reset ChargingPoint to default after emergency charging.");
-                        }
-
-                        batteryManagementService.resetToAutomaticMode();
-                    } else {
-                        logger.info("Large consumer active. Setting ChargingPoint to 0.");
-                        boolean resetSuccess = batteryManagementService.setDynamicChargingPoint(0);
-                        if (resetSuccess) {
-                            logger.info("ChargingPoint successfully set to 0 after emergency charging.");
-                        } else {
-                            logger.error("Failed to set ChargingPoint to 0 after emergency charging.");
-                        }
-
-                        // Schedule the switch to AutomaticMode at nightEndHour
-                        scheduleAutomaticModeReset();
-                    }
-                }, endTime);
-
-            }, startTime);
-        }
-
-        logger.info("Emergency charging tasks successfully scheduled.");
     }
 
 
@@ -711,6 +623,13 @@ public class ChargingManagementService {
                 continue;
             }
 
+            if (batteryManagementService.isBatteryCharging()
+                    && batteryManagementService.getRelativeStateOfCharge() < targetStateOfCharge) {
+                logger.info("Continuing charging since target RSOC is not yet reached and battery is already charging.");
+                continueChargingIfAffordable(period);
+            }
+
+
             taskScheduler.schedule(() -> {
                 logger.info("Scheduled charging task started for period: {} - {}.",
                         dateFormat.format(startTime), dateFormat.format(endTime));
@@ -727,6 +646,35 @@ public class ChargingManagementService {
         }
 
         logger.info("All charging tasks successfully scheduled.");
+    }
+
+    private void continueChargingIfAffordable(MarketPrice currentPeriod) {
+        List<MarketPrice> subsequentPeriods = marketPriceRepository.findAll().stream()
+                .filter(p -> p.getStartTimestamp() > currentPeriod.getEndTimestamp())
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                .collect(Collectors.toList());
+
+        if (subsequentPeriods.isEmpty()) {
+            logger.info("No subsequent periods available for continued charging.");
+            return;
+        }
+
+        MarketPrice nextPeriod = subsequentPeriods.get(0);
+        if (nextPeriod.getPriceInCentPerKWh() <= currentPeriod.getPriceInCentPerKWh() * 1.3) {
+            logger.info("Scheduling next charging period: {} - {} at {} cents/kWh.",
+                    dateFormat.format(new Date(nextPeriod.getStartTimestamp())),
+                    dateFormat.format(new Date(nextPeriod.getEndTimestamp())),
+                    nextPeriod.getPriceInCentPerKWh());
+
+            taskScheduler.schedule(() -> {
+                logger.info("Continued charging started for period: {} - {}.",
+                        dateFormat.format(new Date(nextPeriod.getStartTimestamp())),
+                        dateFormat.format(new Date(nextPeriod.getEndTimestamp())));
+                batteryManagementService.initCharging(false);
+            }, new Date(nextPeriod.getStartTimestamp()));
+        } else {
+            logger.info("Skipping subsequent charging period: Price increase exceeds 30% threshold.");
+        }
     }
 
     /**
