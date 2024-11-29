@@ -10,10 +10,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.AbstractMap;
-import java.util.LinkedList;
-import java.util.Map;
-import java.util.Queue;
+import java.util.*;
 
 /**
  * Service for managing battery operations, such as charging and mode switching.
@@ -43,6 +40,7 @@ public class BatteryManagementService {
     public static final String OP_MODE_AUTOMATIC = "2";
 
     private final BatteryCommandService commandService;
+    private final OpenMeteoService weatherService;
     private final boolean batteryNotConfigured;
 
     @Value("${battery.target.stateOfCharge}")
@@ -63,6 +61,9 @@ public class BatteryManagementService {
     @Value("${battery.large.consumer.threshold:0.5}")
     private double largeConsumerThreshold;
 
+    @Value("${weather.api.cloudcover.threshold:40}")
+    private double cloudCoverThreshold;
+
     private BatteryStatusResponse cachedBatteryStatus;
     private Instant cacheTimestamp;
 
@@ -73,9 +74,10 @@ public class BatteryManagementService {
      *
      * @param commandService The service to interact with the battery commands.
      */
-    public BatteryManagementService(BatteryCommandService commandService) {
+    public BatteryManagementService(BatteryCommandService commandService, OpenMeteoService weatherService) {
         this.commandService = commandService;
         this.batteryNotConfigured = commandService.isBatteryNotConfigured();
+        this.weatherService = weatherService;
     }
 
     @Scheduled(fixedRateString = "${large.consumer.check.interval:300000}") // Every 5 minutes (default)
@@ -168,27 +170,6 @@ public class BatteryManagementService {
 
 
     /**
-     * Resets the charging point to its default value.
-     *
-     * @return True if the charging point was successfully reset, false otherwise.
-     */
-    public boolean resetToDefaultChargePoint() {
-        if (isBatteryNotConfigured()) {
-            logger.warn("Battery not configured. Cannot reset to default charge point.");
-            return false;
-        }
-
-        ApiResponse<?> response = commandService.setChargePoint(chargingPointInWatt);
-        if (response.success()) {
-            logger.info("Charging point successfully reset to default value: {} Watt.", chargingPointInWatt);
-            return true;
-        } else {
-            logger.error("Failed to reset charging point to default value: {} Watt. Response: {}", chargingPointInWatt, response.message());
-            return false;
-        }
-    }
-
-    /**
      * Initializes charging with an option to force charging even if not strictly needed.
      *
      * @param forceCharging Flag to force charging regardless of conditions.
@@ -203,6 +184,21 @@ public class BatteryManagementService {
             return false;
         }
 
+        // Additional check before loading begins
+        Optional<Double> cloudCover = weatherService.getCurrentCloudCover();
+        if (cloudCover.isPresent()) {
+            double currentCloudCover = cloudCover.get();
+            if (currentCloudCover >= cloudCoverThreshold) {
+                logger.info("High cloud cover detected ({}%). Adjusting charging power.", currentCloudCover);
+                setReducedChargePoint();
+            } else {
+                logger.info("Low cloud cover detected ({}%). Optimal solar conditions.", currentCloudCover);
+            }
+        } else {
+            logger.warn("No weather data available. Proceeding with current configuration.");
+        }
+
+        // Continue charging process
         int relativeStateOfCharge = getRelativeStateOfCharge();
         if (relativeStateOfCharge > targetStateOfChargeInPercent) {
             logger.info("Charging initiation skipped: Battery charge level ({}) is above the threshold ({}%).",
@@ -229,7 +225,8 @@ public class BatteryManagementService {
 
     private boolean isBatteryChargingAllowed(boolean forceCharging) {
         if (!forceCharging && isBatteryCharging()) {
-            logger.info("Charging initiation skipped: Battery is already charging.");
+            logger.info("Battery is already charging. Current RSOC: {}%, Target RSOC: {}%. Verifying if continuation is needed.",
+                    getRelativeStateOfCharge(), targetStateOfChargeInPercent);
             return false;
         }
         return true;
