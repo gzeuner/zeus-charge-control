@@ -284,24 +284,32 @@ public class ChargingManagementService {
     private void optimizeNighttimeCharging() {
         logger.info("Optimizing nighttime charging to ensure the two cheapest periods are used.");
 
+        // Get all market prices at night time sorted by price (ascending)
         List<MarketPrice> nighttimePrices = marketPriceRepository.findAll().stream()
-                .filter(price -> isNighttimePeriod(price.getStartTimestamp())) // Extract startTimestamp
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh)) // Sort by price (ascending)
+                .filter(price -> {
+                    ChargingSchedule tempSchedule = new ChargingSchedule();
+                    tempSchedule.setStartTimestamp(price.getStartTimestamp());
+                    tempSchedule.setEndTimestamp(price.getEndTimestamp());
+                    return isNighttimePeriod(tempSchedule);
+                })
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
                 .collect(Collectors.toList());
+
 
         if (nighttimePrices.size() < 2) {
             logger.warn("Not enough nighttime periods available for optimization.");
             return;
         }
 
-        // Select the two cheapest periods
+        // Select the two most favorable night time periods
         List<MarketPrice> selectedNighttimePeriods = nighttimePrices.subList(0, 2);
 
-        // Remove less optimal nighttime schedules
+        // Find existing night time schedules
         List<ChargingSchedule> existingNighttimeSchedules = chargingScheduleRepository.findAll().stream()
-                .filter(schedule -> isNighttimePeriod(schedule.getStartTimestamp()))
+                .filter(schedule -> isNighttimePeriod(schedule))  // Night-time schedules only
                 .collect(Collectors.toList());
 
+        // Remove night time schedules that are not among the two most favorable
         for (ChargingSchedule schedule : existingNighttimeSchedules) {
             if (selectedNighttimePeriods.stream().noneMatch(p -> p.getStartTimestamp() == schedule.getStartTimestamp())) {
                 logger.info("Removing less optimal nighttime schedule: {} - {}.",
@@ -311,9 +319,10 @@ public class ChargingManagementService {
             }
         }
 
-        // Schedule the two cheapest nighttime periods
+        // Save the two most favorable night time periods
         saveChargingSchedule(selectedNighttimePeriods);
 
+        // Plan the loading tasks for the optimized night time periods
         for (MarketPrice period : selectedNighttimePeriods) {
             logger.info("Scheduling charging task for optimized nighttime period: {} - {} at {} cents/kWh.",
                     dateFormat.format(new Date(period.getStartTimestamp())),
@@ -325,14 +334,27 @@ public class ChargingManagementService {
         }
     }
 
-    private boolean isNighttimePeriod(long timestamp) {
+    private boolean isNighttimePeriod(ChargingSchedule schedule) {
         Calendar calendar = Calendar.getInstance();
-        calendar.setTimeInMillis(timestamp);
-        int hour = calendar.get(Calendar.HOUR_OF_DAY);
-        return (nightStartHour <= nightEndHour)
-                ? hour >= nightStartHour && hour < nightEndHour
-                : hour >= nightStartHour || hour < nightEndHour;
+
+        // Check the start time of the schedule
+        calendar.setTimeInMillis(schedule.getStartTimestamp());
+        int startHour = calendar.get(Calendar.HOUR_OF_DAY);
+
+        // Check the end time of the schedule
+        calendar.setTimeInMillis(schedule.getEndTimestamp());
+        int endHour = calendar.get(Calendar.HOUR_OF_DAY);
+
+        // Night time (e.g. from 10 p.m. to 6 a.m.)
+        if (nightStartHour <= nightEndHour) {
+            // Night time does not go past midnight
+            return startHour >= nightStartHour && endHour <= nightEndHour;
+        } else {
+            //Night time goes past midnight
+            return startHour >= nightStartHour || endHour <= nightEndHour;
+        }
     }
+
 
     /**
      * Plans and schedules optimized charging for both day and night periods
