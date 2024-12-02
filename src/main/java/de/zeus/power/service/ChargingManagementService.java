@@ -910,11 +910,13 @@ public class ChargingManagementService {
      * @return True if the task is already scheduled, false otherwise.
      */
     private boolean isDuplicateTask(MarketPrice marketPrice) {
+        ChargingSchedule tempSchedule = new ChargingSchedule();
+        tempSchedule.setStartTimestamp(marketPrice.getStartTimestamp());
+        tempSchedule.setEndTimestamp(marketPrice.getEndTimestamp());
+        tempSchedule.setPrice(marketPrice.getPriceInCentPerKWh());
+
         return chargingScheduleRepository.findAll().stream()
-                .anyMatch(existingSchedule ->
-                        existingSchedule.getStartTimestamp() == marketPrice.getStartTimestamp() &&
-                                existingSchedule.getEndTimestamp() == marketPrice.getEndTimestamp() &&
-                                Double.compare(existingSchedule.getPrice(), marketPrice.getPriceInCentPerKWh()) == 0);
+                .anyMatch(existingSchedule -> existingSchedule.equals(tempSchedule));
     }
 
     /**
