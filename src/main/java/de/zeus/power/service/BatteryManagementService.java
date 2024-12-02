@@ -1,7 +1,9 @@
 package de.zeus.power.service;
 
+import de.zeus.power.entity.ChargingSchedule;
 import de.zeus.power.model.ApiResponse;
 import de.zeus.power.model.BatteryStatusResponse;
+import de.zeus.power.repository.ChargingScheduleRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -66,6 +68,9 @@ public class BatteryManagementService {
 
     private BatteryStatusResponse cachedBatteryStatus;
     private Instant cacheTimestamp;
+    private volatile boolean isReducedChargingActive = false;
+    private ChargingScheduleRepository chargingScheduleRepository;
+
 
     private final Queue<Map.Entry<Long, Integer>> rsocHistory = new LinkedList<>();
 
@@ -74,10 +79,11 @@ public class BatteryManagementService {
      *
      * @param commandService The service to interact with the battery commands.
      */
-    public BatteryManagementService(BatteryCommandService commandService, OpenMeteoService weatherService) {
+    public BatteryManagementService(BatteryCommandService commandService, OpenMeteoService weatherService, ChargingScheduleRepository chargingScheduleRepositor) {
         this.commandService = commandService;
         this.batteryNotConfigured = commandService.isBatteryNotConfigured();
         this.weatherService = weatherService;
+        this.chargingScheduleRepository = chargingScheduleRepositor;
     }
 
     @Scheduled(fixedRateString = "${large.consumer.check.interval:300000}") // Every 5 minutes (default)
@@ -134,6 +140,7 @@ public class BatteryManagementService {
 
         ApiResponse<?> response = commandService.setChargePoint(reducedChargePoint);
         if (response.success()) {
+            isReducedChargingActive = true;
             logger.info("Reduced charging point successfully set to {} Watt using factor {}.", reducedChargePoint, reducedChargeFactor);
             return true;
         } else {
@@ -144,47 +151,78 @@ public class BatteryManagementService {
     /**
      * Dynamically sets the charging point in Watt.
      *
-     * @param chargingPoint The desired charging point value in Watt.
+     * @param currentChargingPoint The desired charging point value in Watt.
      * @return True if the charging point was successfully set, false otherwise.
      */
-    public boolean setDynamicChargingPoint(int chargingPoint) {
+    public boolean setDynamicChargingPoint(int currentChargingPoint) {
         if (isBatteryNotConfigured()) {
             logger.warn("Battery not configured. Cannot set charging point.");
             return false;
         }
 
-        if (chargingPoint < 0) {
-            logger.warn("Invalid charging point value: {}. Charging point must be 0 or greater.", chargingPoint);
+        if (currentChargingPoint < 0) {
+            logger.warn("Invalid charging point value: {}. Charging point must be 0 or greater.", currentChargingPoint);
             return false;
         }
 
-        ApiResponse<?> response = commandService.setChargePoint(chargingPoint);
+        ApiResponse<?> response = commandService.setChargePoint(currentChargingPoint);
         if (response.success()) {
-            logger.info("Charging point successfully set to {} Watt.", chargingPoint);
+            logger.info("Charging point successfully set to {} Watt.", currentChargingPoint);
+            isReducedChargingActive = currentChargingPoint == chargingPointInWatt;
             return true;
         } else {
-            logger.error("Failed to set charging point to {} Watt. Response: {}", chargingPoint, response.message());
+            logger.error("Failed to set charging point to {} Watt. Response: {}", currentChargingPoint, response.message());
             return false;
         }
     }
 
 
-    /**
-     * Initializes charging with an option to force charging even if not strictly needed.
-     *
-     * @param forceCharging Flag to force charging regardless of conditions.
-     * @return True if charging initiation was successful, false otherwise.
-     */
     public boolean initCharging(boolean forceCharging) {
+        // Invalidate cached battery status
+        invalidateBatteryCache();
+
+        // Prüfe Grundvoraussetzungen
         if (!checkPreconditions()) {
             return false;
         }
 
+        long currentTime = System.currentTimeMillis();
+
+        // Für geplantes Laden: Sicherstellen, dass die aktuelle Zeit in einer geplanten Periode liegt
+        Optional<ChargingSchedule> activeSchedule = chargingScheduleRepository.findAll().stream()
+                .filter(schedule -> currentTime >= schedule.getStartTimestamp() && currentTime < schedule.getEndTimestamp())
+                .findFirst();
+
+        if (activeSchedule.isEmpty()) {
+            if (forceCharging) {
+                // Wenn Forced Mode aktiv ist, aber keine aktuelle Periode existiert, abbrechen
+                logger.error("No active charging schedule for the current time. Forced charging cannot be initiated for future periods.");
+                return false;
+            }
+            logger.info("No active charging schedule for the current time. Skipping charging.");
+            return false;
+        }
+
+        // Überprüfen, ob der Ladezustand das Ziel erreicht hat
+        int relativeStateOfCharge = getRelativeStateOfCharge();
+        if (relativeStateOfCharge >= targetStateOfChargeInPercent) {
+            logger.info("Charging skipped: Battery charge level ({}) is at or above the target ({}%).",
+                    relativeStateOfCharge, targetStateOfChargeInPercent);
+            return false;
+        }
+
+        // Prüfen, ob bereits geladen wird und ob dies erlaubt ist
         if (!isBatteryChargingAllowed(forceCharging)) {
             return false;
         }
 
-        // Additional check before loading begins
+        // Prüfen, ob Solarstrom aktiv ist und Netzladung verhindert werden sollte
+        if (isBatteryCharging() && !forceCharging) {
+            logger.info("Solar charging already active. Preventing additional grid charging.");
+            return false;
+        }
+
+        // Wetterdaten prüfen, falls verfügbar
         Optional<Double> cloudCover = weatherService.getCurrentCloudCover();
         if (cloudCover.isPresent()) {
             double currentCloudCover = cloudCover.get();
@@ -195,37 +233,32 @@ public class BatteryManagementService {
                 logger.info("Low cloud cover detected ({}%). Optimal solar conditions.", currentCloudCover);
             }
         } else {
-            logger.warn("No weather data available. Proceeding with current configuration.");
+            logger.warn("No weather data available. Proceeding with default charging configuration.");
         }
 
-        // Continue charging process
-        int relativeStateOfCharge = getRelativeStateOfCharge();
-        if (relativeStateOfCharge > targetStateOfChargeInPercent) {
-            logger.info("Charging initiation skipped: Battery charge level ({}) is above the threshold ({}%).",
-                    relativeStateOfCharge, targetStateOfChargeInPercent);
-            return false;
-        }
-
+        // Aktivieren des manuellen Ladebetriebs
         ApiResponse<?> manualModeResponse = activateManualOperatingMode();
         if (!manualModeResponse.success()) {
-            logger.info("Failed to activate manual operating mode for charging.");
+            logger.error("Failed to activate manual operating mode for charging.");
             return false;
         }
 
+        // Ladepunkt setzen
         ApiResponse<?> chargePointResponse = commandService.setChargePoint(chargingPointInWatt);
         if (!chargePointResponse.success()) {
-            logger.info("Failed to set charge point to {} Watt.", chargingPointInWatt);
+            logger.error("Failed to set charge point to {} Watt.", chargingPointInWatt);
             return false;
         }
 
-        invalidateBatteryCache();
-        logger.info("Charging initiated successfully at {} Watt.", chargingPointInWatt);
+        isReducedChargingActive = false; // Rücksetzen der reduzierten Ladung
+        logger.info("Charging initiated successfully at {} Watt in {} mode.", chargingPointInWatt, forceCharging ? "Forced" : "Planned");
         return true;
     }
 
+
     private boolean isBatteryChargingAllowed(boolean forceCharging) {
         if (!forceCharging && isBatteryCharging()) {
-            logger.info("Battery is already charging. Current RSOC: {}%, Target RSOC: {}%. Verifying if continuation is needed.",
+            logger.info("Battery is already charging. Current RSOC: {}%, Target RSOC: {}%.",
                     getRelativeStateOfCharge(), targetStateOfChargeInPercent);
             return false;
         }
@@ -241,6 +274,9 @@ public class BatteryManagementService {
     }
 
     public boolean resetToAutomaticMode() {
+
+        invalidateBatteryCache();
+
         if (isBatteryNotConfigured()) {
             return false;
         }
@@ -257,7 +293,6 @@ public class BatteryManagementService {
             return false;
         }
 
-        invalidateBatteryCache();
         logger.info("Successfully returned to automatic operating mode and reset ChargingPoint to {} Watt.", chargingPointInWatt);
         return true;
     }
@@ -315,16 +350,31 @@ public class BatteryManagementService {
         return batteryStatusResponse != null && OP_MODE_MANUAL.equals(batteryStatusResponse.getOperatingMode());
     }
 
+    public boolean isAutomaticOperatingMode() {
+        if (isBatteryNotConfigured()) {
+            return false;
+        }
+
+        BatteryStatusResponse batteryStatusResponse = getCurrentBatteryStatus();
+        return batteryStatusResponse != null && OP_MODE_AUTOMATIC.equals(batteryStatusResponse.getOperatingMode());
+    }
+
     public ApiResponse<?> activateManualOperatingMode() {
+        invalidateBatteryCache();
         return commandService.setConfiguration(OPERATING_MODE, OP_MODE_MANUAL);
     }
 
     public ApiResponse<?> activateAutomaticOperatingMode() {
+        invalidateBatteryCache();
         return commandService.setConfiguration(OPERATING_MODE, OP_MODE_AUTOMATIC);
     }
 
     public int getChargingPointInWatt() {
         return chargingPointInWatt;
+    }
+
+    public boolean isReducedChargingCurrentlyActive() {
+        return isReducedChargingActive;
     }
 
     public BatteryStatusResponse getCurrentBatteryStatus() {

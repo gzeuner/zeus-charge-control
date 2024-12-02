@@ -95,5 +95,12 @@ public class ChargingStatusController {
         batteryManagementService.resetToAutomaticMode();
         return "redirect:/charging-status";
     }
+
+    @PostMapping("/reset-idle")
+    public String resetToIdleMode(Model model) {
+        batteryManagementService.activateManualOperatingMode();
+        batteryManagementService.setDynamicChargingPoint(0);
+        return "redirect:/charging-status";
+    }
 }
 
