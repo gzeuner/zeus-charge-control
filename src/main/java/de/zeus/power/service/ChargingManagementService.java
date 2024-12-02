@@ -282,35 +282,33 @@ public class ChargingManagementService {
     }
 
     private void optimizeNighttimeCharging() {
-        logger.info("Optimizing nighttime charging to ensure the two cheapest periods are used.");
+        logger.info("Optimizing nighttime charging to ensure the two cheapest future periods are used.");
 
-        // Get all market prices at night time sorted by price (ascending)
+        long currentTime = System.currentTimeMillis();
+
+        // Get all market prices that fall within the nighttime period and are in the future
         List<MarketPrice> nighttimePrices = marketPriceRepository.findAll().stream()
-                .filter(price -> {
-                    ChargingSchedule tempSchedule = new ChargingSchedule();
-                    tempSchedule.setStartTimestamp(price.getStartTimestamp());
-                    tempSchedule.setEndTimestamp(price.getEndTimestamp());
-                    return isNighttimePeriod(tempSchedule);
-                })
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                .filter(price -> isNighttimePeriod(price.getStartTimestamp())) // Only nighttime periods
+                .filter(price -> price.getStartTimestamp() > currentTime) // Only future periods
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh)) // Sort by price (ascending)
                 .collect(Collectors.toList());
 
-
         if (nighttimePrices.size() < 2) {
-            logger.warn("Not enough nighttime periods available for optimization.");
+            logger.warn("Not enough future nighttime periods available for optimization.");
             return;
         }
 
-        // Select the two most favorable night time periods
+        // Select the two cheapest future nighttime periods
         List<MarketPrice> selectedNighttimePeriods = nighttimePrices.subList(0, 2);
 
-        // Find existing night time schedules
+        // Remove less optimal existing nighttime schedules
         List<ChargingSchedule> existingNighttimeSchedules = chargingScheduleRepository.findAll().stream()
-                .filter(schedule -> isNighttimePeriod(schedule))  // Night-time schedules only
+                .filter(schedule -> isNighttimePeriod(schedule.getStartTimestamp())) // Only nighttime schedules
+                .filter(schedule -> schedule.getStartTimestamp() > currentTime) // Only future schedules
                 .collect(Collectors.toList());
 
-        // Remove night time schedules that are not among the two most favorable
         for (ChargingSchedule schedule : existingNighttimeSchedules) {
+            // Remove any schedule that does not match one of the selected periods
             if (selectedNighttimePeriods.stream().noneMatch(p -> p.getStartTimestamp() == schedule.getStartTimestamp())) {
                 logger.info("Removing less optimal nighttime schedule: {} - {}.",
                         dateFormat.format(new Date(schedule.getStartTimestamp())),
@@ -319,10 +317,9 @@ public class ChargingManagementService {
             }
         }
 
-        // Save the two most favorable night time periods
+        // Save and schedule the two cheapest future nighttime periods
         saveChargingSchedule(selectedNighttimePeriods);
 
-        // Plan the loading tasks for the optimized night time periods
         for (MarketPrice period : selectedNighttimePeriods) {
             logger.info("Scheduling charging task for optimized nighttime period: {} - {} at {} cents/kWh.",
                     dateFormat.format(new Date(period.getStartTimestamp())),
@@ -334,24 +331,24 @@ public class ChargingManagementService {
         }
     }
 
-    private boolean isNighttimePeriod(ChargingSchedule schedule) {
+    /**
+     * Checks if the given timestamp falls within the nighttime period.
+     *
+     * @param timestamp The timestamp to check.
+     * @return True if the timestamp falls within the configured nighttime hours, otherwise False.
+     */
+    private boolean isNighttimePeriod(long timestamp) {
         Calendar calendar = Calendar.getInstance();
+        calendar.setTimeInMillis(timestamp);
+        int hourOfDay = calendar.get(Calendar.HOUR_OF_DAY);
 
-        // Check the start time of the schedule
-        calendar.setTimeInMillis(schedule.getStartTimestamp());
-        int startHour = calendar.get(Calendar.HOUR_OF_DAY);
-
-        // Check the end time of the schedule
-        calendar.setTimeInMillis(schedule.getEndTimestamp());
-        int endHour = calendar.get(Calendar.HOUR_OF_DAY);
-
-        // Night time (e.g. from 10 p.m. to 6 a.m.)
+        // Check if the hour is within the nighttime range
         if (nightStartHour <= nightEndHour) {
-            // Night time does not go past midnight
-            return startHour >= nightStartHour && endHour <= nightEndHour;
+            // Nighttime does not span midnight
+            return hourOfDay >= nightStartHour && hourOfDay < nightEndHour;
         } else {
-            //Night time goes past midnight
-            return startHour >= nightStartHour || endHour <= nightEndHour;
+            // Nighttime spans midnight
+            return hourOfDay >= nightStartHour || hourOfDay < nightEndHour;
         }
     }
 
