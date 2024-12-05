@@ -18,6 +18,7 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * ChargingManagementService handles the scheduling and optimization of charging tasks
@@ -132,20 +133,23 @@ public class ChargingManagementService {
             return;
         }
 
-        if (isNightPeriod() || batteryManagementService.isLargeConsumerActive()) {
-            logger.info("Night period or large consumer detected. Setting charging point to 0.");
-            boolean chargingPointReset = batteryManagementService.setDynamicChargingPoint(0);
+        if (isWithinNighttimeWindow(System.currentTimeMillis()) && batteryManagementService.isLargeConsumerActive()) {
+            if (currentRSOC >= targetStateOfChargeInPercent) {
+                logger.info("Night period and large consumer detected, and target RSOC ({}) reached. Setting charging point to 0.",
+                        targetStateOfChargeInPercent);
+                boolean chargingPointReset = batteryManagementService.setDynamicChargingPoint(0);
 
-            if (chargingPointReset) {
-                logger.info("Charging point set to 0 successfully.");
-                scheduleEndOfNightReset(); // Scheduler für Automatikmodus nach der Nacht
-            } else {
-                logger.error("Failed to set charging point to 0.");
+                if (chargingPointReset) {
+                    logger.info("Charging point set to 0 successfully.");
+                    scheduleEndOfNightReset();
+                } else {
+                    logger.error("Failed to set charging point to 0.");
+                }
+                return;
             }
-            return;
         }
 
-        // Bedingungen für den Automatikmodus sind erfüllt
+        // Conditions for automatic mode are met
         boolean resetSuccessful = batteryManagementService.resetToAutomaticMode();
         if (resetSuccessful) {
             logger.info("Successfully switched back to automatic mode after reaching target RSOC.");
@@ -163,7 +167,7 @@ public class ChargingManagementService {
 
         Date resetTime = calendar.getTime();
         if (resetTime.before(new Date())) {
-            resetTime = new Date(resetTime.getTime() + 24 * 60 * 60 * 1000); // Auf den nächsten Tag verschieben
+            resetTime = new Date(resetTime.getTime() + 24 * 60 * 60 * 1000);
         }
 
         taskScheduler.schedule(() -> {
@@ -206,7 +210,7 @@ public class ChargingManagementService {
                     }
 
                     // Return to Automatic Mode
-                    if (!isNightPeriod()) {
+                    if (!isWithinNighttimeWindow(System.currentTimeMillis())) {
                         logger.info("Not nighttime and Large Consumer detected. Returning to Automatic Mode.");
                         batteryManagementService.resetToAutomaticMode();
                     }
@@ -216,9 +220,8 @@ public class ChargingManagementService {
                 }
 
                 // Check if we are outside the night period and a large consumer is active
-                if (!isNightPeriod() && largeConsumerActive) {
+                if (!isWithinNighttimeWindow(System.currentTimeMillis()) && largeConsumerActive) {
                     logger.info("Large consumer detected outside nighttime. Stopping charging and returning to Automatic Mode.");
-                    batteryManagementService.setDynamicChargingPoint(0);
                     batteryManagementService.resetToAutomaticMode();
                     return;
                 }
@@ -286,72 +289,108 @@ public class ChargingManagementService {
 
         long currentTime = System.currentTimeMillis();
 
-        // Get all market prices that fall within the nighttime period and are in the future
+        // Berechne das Nachtzeitfenster
+        Calendar nightStart = Calendar.getInstance();
+        nightStart.set(Calendar.HOUR_OF_DAY, nightStartHour);
+        nightStart.set(Calendar.MINUTE, 0);
+        nightStart.set(Calendar.SECOND, 0);
+        nightStart.set(Calendar.MILLISECOND, 0);
+
+        Calendar nightEnd = (Calendar) nightStart.clone();
+        nightEnd.add(Calendar.DATE, 1); // Ende der Nacht ist am nächsten Tag um 06:00 Uhr
+        nightEnd.set(Calendar.HOUR_OF_DAY, nightEndHour);
+
+        logger.info("Nighttime window: Start={}, End={}",
+                dateFormat.format(new Date(nightStart.getTimeInMillis())),
+                dateFormat.format(new Date(nightEnd.getTimeInMillis())));
+
+        // Filtere und sortiere Marktpreise innerhalb der Nachtzeit
         List<MarketPrice> nighttimePrices = marketPriceRepository.findAll().stream()
-                .filter(price -> isNighttimePeriod(price.getStartTimestamp())) // Only nighttime periods
-                .filter(price -> price.getStartTimestamp() > currentTime) // Only future periods
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh)) // Sort by price (ascending)
+                .filter(price -> price.getStartTimestamp() >= nightStart.getTimeInMillis()) // Nach 19:00 Uhr
+                .filter(price -> price.getStartTimestamp() < nightEnd.getTimeInMillis())    // Vor 06:00 Uhr
+                .filter(price -> price.getStartTimestamp() > currentTime)                  // In der Zukunft
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))     // Sortiere nach Preis
                 .collect(Collectors.toList());
 
-        if (nighttimePrices.size() < 2) {
-            logger.warn("Not enough future nighttime periods available for optimization.");
+        if (nighttimePrices.isEmpty()) {
+            logger.warn("No nighttime periods available for optimization.");
             return;
         }
 
-        // Select the two cheapest future nighttime periods
-        List<MarketPrice> selectedNighttimePeriods = nighttimePrices.subList(0, 2);
+        // Begrenze auf die zwei günstigsten Perioden
+        List<MarketPrice> cheapestPeriods = nighttimePrices.stream()
+                .limit(2)
+                .collect(Collectors.toList());
 
-        // Remove less optimal existing nighttime schedules
+        if (cheapestPeriods.size() < 2) {
+            logger.warn("Not enough nighttime periods available. Found only {} period(s).", cheapestPeriods.size());
+        }
+
+        // Entferne teurere Perioden innerhalb der Nachtzeit
         List<ChargingSchedule> existingNighttimeSchedules = chargingScheduleRepository.findAll().stream()
-                .filter(schedule -> isNighttimePeriod(schedule.getStartTimestamp())) // Only nighttime schedules
-                .filter(schedule -> schedule.getStartTimestamp() > currentTime) // Only future schedules
+                .filter(schedule -> schedule.getStartTimestamp() >= nightStart.getTimeInMillis()) // Innerhalb der Nachtzeit
+                .filter(schedule -> schedule.getStartTimestamp() < nightEnd.getTimeInMillis())   // Vor dem Nachtende
                 .collect(Collectors.toList());
 
         for (ChargingSchedule schedule : existingNighttimeSchedules) {
-            // Remove any schedule that does not match one of the selected periods
-            if (selectedNighttimePeriods.stream().noneMatch(p -> p.getStartTimestamp() == schedule.getStartTimestamp())) {
-                logger.info("Removing less optimal nighttime schedule: {} - {}.",
+            // Behalte nur die günstigsten Perioden
+            boolean isCheapest = cheapestPeriods.stream()
+                    .anyMatch(p -> p.getStartTimestamp() == schedule.getStartTimestamp());
+
+            if (!isCheapest) {
+                logger.info("Removing nighttime schedule: {} - {} at {} cents/kWh.",
                         dateFormat.format(new Date(schedule.getStartTimestamp())),
-                        dateFormat.format(new Date(schedule.getEndTimestamp())));
+                        dateFormat.format(new Date(schedule.getEndTimestamp())),
+                        schedule.getPrice());
                 chargingScheduleRepository.delete(schedule);
             }
         }
 
-        // Save and schedule the two cheapest future nighttime periods
-        saveChargingSchedule(selectedNighttimePeriods);
+        // Speichere die zwei günstigsten Perioden
+        saveChargingSchedule(cheapestPeriods);
 
-        for (MarketPrice period : selectedNighttimePeriods) {
-            logger.info("Scheduling charging task for optimized nighttime period: {} - {} at {} cents/kWh.",
-                    dateFormat.format(new Date(period.getStartTimestamp())),
-                    dateFormat.format(new Date(period.getEndTimestamp())),
-                    period.getPriceInCentPerKWh());
-            taskScheduler.schedule(() -> executeChargingTask(
-                    new Date(period.getStartTimestamp()),
-                    new Date(period.getEndTimestamp())), new Date(period.getStartTimestamp()));
+        // Plane Ladeaufgaben für die zwei günstigsten Perioden
+        for (MarketPrice period : cheapestPeriods) {
+            Date startTime = new Date(period.getStartTimestamp());
+            Date endTime = new Date(period.getEndTimestamp());
+
+            logger.info("Scheduling charging task for nighttime period: {} - {} at {} cents/kWh.",
+                    dateFormat.format(startTime), dateFormat.format(endTime), period.getPriceInCentPerKWh());
+
+            taskScheduler.schedule(() -> executeChargingTask(startTime, endTime), startTime);
         }
     }
 
-    /**
-     * Checks if the given timestamp falls within the nighttime period.
-     *
-     * @param timestamp The timestamp to check.
-     * @return True if the timestamp falls within the configured nighttime hours, otherwise False.
-     */
-    private boolean isNighttimePeriod(long timestamp) {
-        Calendar calendar = Calendar.getInstance();
-        calendar.setTimeInMillis(timestamp);
-        int hourOfDay = calendar.get(Calendar.HOUR_OF_DAY);
 
-        // Check if the hour is within the nighttime range
-        if (nightStartHour <= nightEndHour) {
-            // Nighttime does not span midnight
-            return hourOfDay >= nightStartHour && hourOfDay < nightEndHour;
-        } else {
-            // Nighttime spans midnight
-            return hourOfDay >= nightStartHour || hourOfDay < nightEndHour;
+    private boolean isWithinNighttimeWindow(long timestamp) {
+        Calendar now = Calendar.getInstance();
+
+        // Beginn der Nacht (heute oder gestern, abhängig von der Uhrzeit)
+        Calendar nightStart = (Calendar) now.clone();
+        nightStart.set(Calendar.HOUR_OF_DAY, nightStartHour);
+        nightStart.set(Calendar.MINUTE, 0);
+        nightStart.set(Calendar.SECOND, 0);
+        nightStart.set(Calendar.MILLISECOND, 0);
+
+        if (now.get(Calendar.HOUR_OF_DAY) < nightStartHour) {
+            // Falls die aktuelle Uhrzeit vor dem Nachtstart liegt, auf gestern setzen
+            nightStart.add(Calendar.DATE, -1);
         }
-    }
 
+        // Ende der Nacht (immer am nächsten Tag nach dem Nachtstart)
+        Calendar nightEnd = (Calendar) nightStart.clone();
+        nightEnd.add(Calendar.DATE, 1); // Ende der Nacht ist immer am nächsten Tag
+        nightEnd.set(Calendar.HOUR_OF_DAY, nightEndHour);
+
+        logger.info("Checking if timestamp {} ({}) is within nighttime window: Start={} End={}",
+                timestamp,
+                dateFormat.format(new Date(timestamp)),
+                dateFormat.format(nightStart.getTime()),
+                dateFormat.format(nightEnd.getTime()));
+
+
+        return timestamp >= nightStart.getTimeInMillis() && timestamp < nightEnd.getTimeInMillis();
+    }
 
     /**
      * Plans and schedules optimized charging for both day and night periods
@@ -383,48 +422,24 @@ public class ChargingManagementService {
             return;
         }
 
-        boolean optimalSolarConditions = false;
+        // Separate day and night periods for further optimization
+        List<MarketPrice> dayPeriods = filterPreferredDaytimePeriods(validPeriods);
+        List<MarketPrice> nightPeriods = validPeriods.stream()
+                .filter(p -> !isPreferredDaytimePeriod(p)) // Night periods
+                .collect(Collectors.toList());
 
-        // Check if it is daytime and weather data is available
-        if (!isNightPeriod() && cloudCover.isPresent()) {
-            double currentCloudCover = cloudCover.get();
-            logger.info("Current cloud cover: {}%, threshold: {}%", currentCloudCover, cloudCoverThreshold);
+        // Calculate the two cheapest periods for day and night
+        dayPeriods = selectCheapestPeriods(dayPeriods, 2);
+        nightPeriods = selectCheapestPeriods(nightPeriods, 2);
 
-            // Check if cloud cover exceeds the threshold for optimal solar charging
-            if (currentCloudCover >= cloudCoverThreshold) {
-                logger.warn("Cloud cover exceeds or equals threshold ({}%). Planning reduced network charging.", cloudCoverThreshold);
-
-                // Reduce charging point dynamically due to high cloud cover
-                boolean reducedChargeSet = batteryManagementService.setReducedChargePoint();
-                if (reducedChargeSet) {
-                    logger.info("Charging point successfully reduced due to high cloud cover.");
-                } else {
-                    logger.error("Failed to set reduced charging point under high cloud cover.");
-                }
-            } else {
-                // Optimal solar conditions detected, but we will still plan future charging tasks
-                logger.info("Optimal solar conditions detected. Charging tasks will be scheduled but may be skipped if conditions remain optimal.");
-                optimalSolarConditions = true; // Set the flag
-            }
-
-            // Apply additional filtering to prioritize preferred daytime periods
-            validPeriods = filterPreferredDaytimePeriods(validPeriods);
-            logger.info("Filtered preferred daytime periods: {}",
-                    validPeriods.stream()
-                            .map(p -> String.format("%s - %s (%.2f cents/kWh)",
-                                    dateFormat.format(new Date(p.getStartTimestamp())),
-                                    dateFormat.format(new Date(p.getEndTimestamp())),
-                                    p.getPriceInCentPerKWh()))
-                            .collect(Collectors.joining(", ")));
-        } else {
-            logger.warn("Ignoring weather data as it is nighttime or unavailable.");
-        }
+        // Combine day and night periods with additional constraints
+        List<MarketPrice> selectedPeriods = applyPriceDifferenceConstraint(dayPeriods, nightPeriods);
 
         // Calculate the required charging time based on the current and target RSOC
         int requiredChargingTime = calculateRequiredChargingTime(currentRSOC, targetStateOfCharge);
 
-        // Select optimal charging periods based on calculated requirements
-        List<MarketPrice> selectedPeriods = selectOptimalPeriods(validPeriods, requiredChargingTime);
+        // Select optimal charging periods
+        List<MarketPrice> finalSelectedPeriods = selectOptimalPeriods(selectedPeriods, requiredChargingTime);
 
         // Handle the scenario where target RSOC has been reached and no large consumers are active
         if (currentRSOC >= targetStateOfCharge && !batteryManagementService.isLargeConsumerActive()) {
@@ -433,13 +448,13 @@ public class ChargingManagementService {
             return; // No further action needed as the target is already achieved
         }
 
-        if (selectedPeriods.isEmpty()) {
+        if (finalSelectedPeriods.isEmpty()) {
             logger.warn("No suitable periods selected after applying constraints.");
             return;
         }
 
         logger.info("Selected periods for charging: {}",
-                selectedPeriods.stream()
+                finalSelectedPeriods.stream()
                         .map(p -> String.format("%s - %s (%.2f cents/kWh)",
                                 dateFormat.format(new Date(p.getStartTimestamp())),
                                 dateFormat.format(new Date(p.getEndTimestamp())),
@@ -447,10 +462,10 @@ public class ChargingManagementService {
                         .collect(Collectors.joining(", ")));
 
         // Save the planned charging schedule to the database
-        saveChargingSchedule(selectedPeriods);
+        saveChargingSchedule(finalSelectedPeriods);
 
         // Schedule charging tasks
-        for (MarketPrice period : selectedPeriods) {
+        for (MarketPrice period : finalSelectedPeriods) {
             Date startTime = new Date(period.getStartTimestamp());
             Date endTime = new Date(period.getEndTimestamp());
 
@@ -461,6 +476,55 @@ public class ChargingManagementService {
 
         // Schedule post-charging reset if necessary
         schedulePostChargingReset();
+    }
+
+    /**
+     * Selects the two cheapest periods from a given list of market prices.
+     *
+     * @param periods List of market prices to select from.
+     * @param limit   Number of cheapest periods to select.
+     * @return A list of the cheapest periods.
+     */
+    private List<MarketPrice> selectCheapestPeriods(List<MarketPrice> periods, int limit) {
+        return periods.stream()
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                .limit(limit)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Applies a price difference constraint between day and night periods.
+     *
+     * @param dayPeriods  Daytime periods.
+     * @param nightPeriods Nighttime periods.
+     * @return The final list of periods after applying the constraint.
+     */
+    private List<MarketPrice> applyPriceDifferenceConstraint(List<MarketPrice> dayPeriods, List<MarketPrice> nightPeriods) {
+        double averageDayPrice = calculateAveragePrice(dayPeriods);
+        double averageNightPrice = calculateAveragePrice(nightPeriods);
+
+        if (Math.abs(averageDayPrice - averageNightPrice) > 10.0) {
+            return Stream.concat(dayPeriods.stream(), nightPeriods.stream())
+                    .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                    .limit(2) // Only keep the two cheapest periods overall
+                    .collect(Collectors.toList());
+        } else {
+            return Stream.concat(dayPeriods.stream(), nightPeriods.stream())
+                    .collect(Collectors.toList());
+        }
+    }
+
+    /**
+     * Calculates the average price of a list of market prices.
+     *
+     * @param periods List of market prices.
+     * @return The average price.
+     */
+    private double calculateAveragePrice(List<MarketPrice> periods) {
+        return periods.stream()
+                .mapToDouble(MarketPrice::getPriceInCentPerKWh)
+                .average()
+                .orElse(Double.MAX_VALUE); // Default to max value if no periods
     }
 
 
@@ -493,27 +557,6 @@ public class ChargingManagementService {
 
         return filteredPeriods;
     }
-
-
-    /**
-     * Determines if the current time falls within the configured nighttime period.
-     *
-     * @return True if the current time is within the nighttime hours, false otherwise.
-     */
-    private boolean isNightPeriod() {
-        Calendar calendar = Calendar.getInstance();
-        int currentHour = calendar.get(Calendar.HOUR_OF_DAY);
-
-        // Check if the current hour is within the nighttime range
-        if (nightStartHour <= nightEndHour) {
-            // Night period does not cross midnight
-            return currentHour >= nightStartHour && currentHour < nightEndHour;
-        } else {
-            // Night period crosses midnight
-            return currentHour >= nightStartHour || currentHour < nightEndHour;
-        }
-    }
-
 
     /**
      * Schedules reduced power charging tasks and saves the planned periods.
@@ -773,6 +816,38 @@ public class ChargingManagementService {
                     dateFormat.format(new Date(schedule.getEndTimestamp())));
             chargingScheduleRepository.delete(schedule);
         });
+
+        // Additional logic for daily schedules
+        long twoHoursBeforeNight = calculateTwoHoursBeforeNight();
+        List<ChargingSchedule> daySchedulesToEvaluate = chargingScheduleRepository.findAll().stream()
+                .filter(price -> !isWithinNighttimeWindow(price.getStartTimestamp())) // Nur Tagespläne
+                .filter(schedule -> schedule.getStartTimestamp() < twoHoursBeforeNight) // Beginnt vor der Nachtzeit
+                .collect(Collectors.toList());
+
+        daySchedulesToEvaluate.forEach(schedule -> {
+            if (hasCheaperNightSchedule(schedule)) {
+                logger.info("Removing daytime schedule due to cheaper nighttime options: {} - {}.",
+                        dateFormat.format(new Date(schedule.getStartTimestamp())),
+                        dateFormat.format(new Date(schedule.getEndTimestamp())));
+                chargingScheduleRepository.delete(schedule);
+            }
+        });
+    }
+
+    private long calculateTwoHoursBeforeNight() {
+        Calendar calendar = Calendar.getInstance();
+        calendar.set(Calendar.HOUR_OF_DAY, nightStartHour);
+        calendar.set(Calendar.MINUTE, 0);
+        calendar.set(Calendar.SECOND, 0);
+        calendar.set(Calendar.MILLISECOND, 0);
+
+        return calendar.getTimeInMillis() - (2 * 60 * 60 * 1000);
+    }
+
+    private boolean hasCheaperNightSchedule(ChargingSchedule daySchedule) {
+        return chargingScheduleRepository.findAll().stream()
+                .filter(schedule -> isWithinNighttimeWindow(schedule.getStartTimestamp()))
+                .anyMatch(nightSchedule -> nightSchedule.getPrice() < daySchedule.getPrice());
     }
 
     /**
