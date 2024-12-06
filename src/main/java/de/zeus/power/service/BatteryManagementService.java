@@ -10,6 +10,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.time.LocalTime;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 
@@ -48,8 +49,7 @@ public class BatteryManagementService {
     @Value("${battery.chargingPoint}")
     private int chargingPointInWatt;
 
-    @Value("${battery.reduced.charge.factor:0.5}")
-    private double reducedChargeFactor;
+    private int currentChargingPoint;
 
     @Value("${battery.status.cache.duration.seconds:60}")
     private int cacheDurationInSeconds;
@@ -60,8 +60,11 @@ public class BatteryManagementService {
     @Value("${battery.large.consumer.threshold:0.5}")
     private double largeConsumerThreshold;
 
-    @Value("${weather.api.cloudcover.threshold:40}")
-    private double cloudCoverThreshold;
+    @Value("${night.start:22}")
+    private int nightStartHour;
+
+    @Value("${night.end:6}")
+    private int nightEndHour;
 
     private BatteryStatusResponse cachedBatteryStatus;
     private Instant cacheTimestamp;
@@ -137,31 +140,6 @@ public class BatteryManagementService {
     }
 
     /**
-     * Sets a reduced charging point based on the configured reduction factor.
-     *
-     * @return True if the reduced charging point was successfully set, false otherwise.
-     */
-    public boolean setReducedChargePoint() {
-        if (isBatteryNotConfigured()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "Battery not configured. Cannot set reduced charge point.");
-            return false;
-        }
-
-        int reducedChargePoint = (int) (getChargingPointInWatt() * reducedChargeFactor);
-
-        ApiResponse<?> response = commandService.setChargePoint(reducedChargePoint);
-        if (response.success()) {
-            isReducedChargingActive = true;
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                    String.format("Reduced charging point successfully set to %d Watt using factor %.2f.", reducedChargePoint, reducedChargeFactor));
-            return true;
-        } else {
-            LogFilter.log(LogFilter.LOG_LEVEL_ERROR,
-                    String.format("Failed to set reduced charge point to %d Watt using factor %.2f. Response: %s", reducedChargePoint, reducedChargeFactor, response.message()));
-            return false;
-        }
-    }
-    /**
      * Dynamically sets the charging point in Watt.
      *
      * @param currentChargingPoint The desired charging point value in Watt.
@@ -204,14 +182,13 @@ public class BatteryManagementService {
 
         long currentTime = System.currentTimeMillis();
 
-        // For scheduled loading: Ensure that the current time is within a scheduled period
+        // Ensure that the current time is within a scheduled period
         Optional<ChargingSchedule> activeSchedule = chargingScheduleRepository.findAll().stream()
                 .filter(schedule -> currentTime >= schedule.getStartTimestamp() && currentTime < schedule.getEndTimestamp())
                 .findFirst();
 
         if (activeSchedule.isEmpty()) {
             if (forceCharging) {
-                // If forced mode is active but no current period exists, cancel
                 LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "No active charging schedule for the current time. Forced charging cannot be initiated for future periods.");
                 return false;
             }
@@ -233,27 +210,14 @@ public class BatteryManagementService {
             return false;
         }
 
-        // Check whether solar power is active and grid charging should be prevented
+        // Check solar activity
         if (isBatteryCharging() && !forceCharging) {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Solar charging already active. Preventing additional grid charging.");
             return false;
         }
 
-        // Check weather data, if available
-        Optional<Double> cloudCover = weatherService.getCurrentCloudCover();
-        if (cloudCover.isPresent()) {
-            double currentCloudCover = cloudCover.get();
-            if (currentCloudCover >= cloudCoverThreshold) {
-                LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                        String.format("High cloud cover detected (%.2f%%). Adjusting charging power.", currentCloudCover));
-                setReducedChargePoint();
-            } else {
-                LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                        String.format("Low cloud cover detected (%.2f%%). Optimal solar conditions.", currentCloudCover));
-            }
-        } else {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "No weather data available. Proceeding with default charging configuration.");
-        }
+        // Adjust the charging point based on weather data
+        adjustChargingPointBasedOnWeather();
 
         // Activate manual charging mode
         ApiResponse<?> manualModeResponse = activateManualOperatingMode();
@@ -262,18 +226,17 @@ public class BatteryManagementService {
             return false;
         }
 
-        // Set charging point
-        ApiResponse<?> chargePointResponse = commandService.setChargePoint(chargingPointInWatt);
-        if (!chargePointResponse.success()) {
+        // Set charging point dynamically
+        boolean success = setDynamicChargingPoint(currentChargingPoint);
+        if (!success) {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                    String.format("Failed to set charge point to %d Watt.", chargingPointInWatt));
+                    String.format("Failed to set charge point to %d Watt.", currentChargingPoint));
             return false;
         }
 
-        // Reset the reduced charge
         isReducedChargingActive = false;
         LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                String.format("Charging initiated successfully at %d Watt in %s mode.", chargingPointInWatt, forceCharging ? "Forced" : "Planned"));
+                String.format("Charging initiated successfully at %d Watt in %s mode.", currentChargingPoint, forceCharging ? "Forced" : "Planned"));
         return true;
     }
 
@@ -435,6 +398,56 @@ public class BatteryManagementService {
         cachedBatteryStatus = null;
         cacheTimestamp = null;
         LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "Battery status cache invalidated.");
+    }
+
+    public void setCurrentChargingPoint(int chargingPoint) {
+        this.currentChargingPoint = chargingPoint;
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format("Dynamic charging point set to %d Watt.", chargingPoint));
+    }
+
+
+    private void adjustChargingPointBasedOnWeather() {
+        LocalTime now = LocalTime.now();
+
+        if (isNightTime(now) && !isLargeConsumerActive()) {
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Nighttime detected. Skipping weather-based charging point adjustment.");
+            currentChargingPoint = chargingPointInWatt;
+        }
+
+        Optional<Double> optionalCloudCover = weatherService.getCurrentCloudCover();
+
+        if (optionalCloudCover.isEmpty()) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No cloud cover data available. Using default charging point.");
+            currentChargingPoint = chargingPointInWatt;
+            return;
+        }
+
+        double cloudCover = optionalCloudCover.get();
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                String.format("Current cloud cover: %.2f%%. Calculating charging point dynamically.", cloudCover));
+
+        if (cloudCover < 30.0) {
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Cloud cover is below 30%. Skipping scheduled charging (solar power only).");
+            currentChargingPoint = 0;
+            return;
+        }
+
+        currentChargingPoint = (int) Math.round((cloudCover / 100.0) * chargingPointInWatt);
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                String.format("Dynamically adjusted charging point: %d Watt (based on %.2f%% cloud cover).",
+                        currentChargingPoint, cloudCover));
+    }
+
+
+    private boolean isNightTime(LocalTime currentTime) {
+        LocalTime nightStart = LocalTime.of(nightStartHour, 0);
+        LocalTime nightEnd = LocalTime.of(nightEndHour, 0);
+
+        if (nightStartHour > nightEndHour) {
+            return currentTime.isAfter(nightStart) || currentTime.isBefore(nightEnd);
+        } else {
+            return currentTime.isAfter(nightStart) && currentTime.isBefore(nightEnd);
+        }
     }
 
 }

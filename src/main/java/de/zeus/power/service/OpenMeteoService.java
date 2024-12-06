@@ -39,9 +39,6 @@ public class OpenMeteoService {
     @Value("${night.end}")
     private int nightEndHour;
 
-    @Value("${weather.api.cloudcover.threshold}")
-    private int cloudCoverThreshold;
-
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
 
@@ -108,7 +105,4 @@ public class OpenMeteoService {
         }
     }
 
-    public int getCloudCoverThreshold() {
-        return cloudCoverThreshold;
-    }
 }
