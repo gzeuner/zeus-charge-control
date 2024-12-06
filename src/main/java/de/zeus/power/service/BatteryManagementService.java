@@ -100,6 +100,12 @@ public class BatteryManagementService {
             rsocHistory.poll();
         }
 
+        // Check if the history has at least one entry
+        if (rsocHistory.isEmpty()) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "RSOC history is empty. Cannot determine large consumer activity.");
+            return false;
+        }
+
         // If not enough data points exist, a large consumer cannot be determined
         if (rsocHistory.size() < 2) {
             LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "Not enough RSOC data points to determine large consumer activity.");
@@ -108,6 +114,11 @@ public class BatteryManagementService {
 
         // Analyze RSOC data
         Map.Entry<Long, Integer> oldest = rsocHistory.peek();
+        if (oldest == null) {
+            LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Failed to retrieve the oldest RSOC entry from history.");
+            return false;
+        }
+
         double timeDifferenceInMinutes = (currentTime - oldest.getKey()) / 60000.0;
         double rsocDifference = oldest.getValue() - currentRSOC;
 
@@ -124,6 +135,7 @@ public class BatteryManagementService {
         }
         return largeConsumerDetected;
     }
+
     /**
      * Sets a reduced charging point based on the configured reduction factor.
      *
