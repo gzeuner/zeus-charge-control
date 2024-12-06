@@ -58,9 +58,6 @@ public class ChargingManagementService {
     private BatteryManagementService batteryManagementService;
 
     @Autowired
-    private OpenMeteoService openMeteoService;
-
-    @Autowired
     private TaskScheduler taskScheduler;
 
     @Value("${battery.target.stateOfCharge:90}")
@@ -69,14 +66,8 @@ public class ChargingManagementService {
     @Value("${marketdata.acceptable.price.cents:15}")
     private int maxAcceptableMarketPriceInCent;
 
-    @Value("${battery.reduced.charge.factor:0.5}")
-    private double reducedChargeFactor;
-
     @Value("${battery.capacity:10000}")
     private int totalBatteryCapacity;
-
-    @Value("${weather.api.cloudcover.threshold:60}")
-    private double cloudCoverThreshold;
 
     @Value("${night.start:22}")
     private int nightStartHour;
@@ -92,9 +83,6 @@ public class ChargingManagementService {
 
     @Value("${daytime.weighting.bonus:0.3}")
     private double daytimeWeightingBonus;
-
-    @Value("${battery.target.stateOfCharge}")
-    private int targetStateOfChargeInPercent;
 
     private final AtomicBoolean resetScheduled = new AtomicBoolean(false);
     private final AtomicBoolean nightResetScheduled = new AtomicBoolean(false);
@@ -203,7 +191,7 @@ public class ChargingManagementService {
                         )
                 );
 
-// Check if RSOC has reached or exceeded the target
+                // Check if RSOC has reached or exceeded the target
                 if (currentRSOC >= targetStateOfCharge) {
                     LogFilter.log(
                             LogFilter.LOG_LEVEL_INFO,
@@ -472,7 +460,6 @@ public class ChargingManagementService {
         }
 
         long currentTime = System.currentTimeMillis();
-        Optional<Double> cloudCover = openMeteoService.getCurrentCloudCover();
 
         // Filter valid charging periods based on time and price thresholds
         List<MarketPrice> validPeriods = marketPrices.stream()
@@ -690,7 +677,6 @@ public class ChargingManagementService {
                         )
                 );
 
-                batteryManagementService.setReducedChargePoint();
                 batteryManagementService.initCharging(true);
 
                 // Set ChargingPoint to 0 after the end of the charging period
