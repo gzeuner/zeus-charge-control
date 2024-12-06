@@ -276,8 +276,10 @@ public class ChargingManagementService {
      */
     public void optimizeChargingSchedule() {
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Starting optimization of charging schedule...");
+
         int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
 
+        // Überspringe Optimierung, wenn Ziel erreicht
         if (currentRSOC >= targetStateOfCharge) {
             LogFilter.log(
                     LogFilter.LOG_LEVEL_INFO,
@@ -289,23 +291,77 @@ public class ChargingManagementService {
             return;
         }
 
-        planOptimizedCharging(currentRSOC);
+        // Optimierung der Daytime-Perioden
+        optimizeDaytimeCharging();
 
-        // Nighttime-specific optimization
+        // Optimierung der Nighttime-Perioden
         optimizeNighttimeCharging();
 
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Optimization of charging schedule completed.");
     }
 
-    private void optimizeNighttimeCharging() {
-        LogFilter.log(
-                LogFilter.LOG_LEVEL_INFO,
-                "Optimizing nighttime charging to ensure the two cheapest future periods are used."
-        );
+    private void optimizeDaytimeCharging() {
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Optimizing daytime charging with priority for solar-friendly periods.");
 
         long currentTime = System.currentTimeMillis();
+        Calendar dayStart = Calendar.getInstance();
+        dayStart.set(Calendar.HOUR_OF_DAY, preferredStartHour); // Beginn der bevorzugten Tageszeit
+        dayStart.set(Calendar.MINUTE, 0);
+        dayStart.set(Calendar.SECOND, 0);
+        dayStart.set(Calendar.MILLISECOND, 0);
 
-        // Calculate the night time window
+        Calendar dayEnd = (Calendar) dayStart.clone();
+        dayEnd.set(Calendar.HOUR_OF_DAY, preferredEndHour); // Ende der bevorzugten Tageszeit
+
+        LogFilter.log(
+                LogFilter.LOG_LEVEL_INFO,
+                String.format(
+                        "Daytime window: Start=%s, End=%s",
+                        dateFormat.format(dayStart.getTime()),
+                        dateFormat.format(dayEnd.getTime())
+                )
+        );
+
+        // Wähle die günstigsten Perioden innerhalb der Tageszeit
+        List<MarketPrice> cheapestDaytimePeriods = marketPriceRepository.findAll().stream()
+                .filter(price -> price.getStartTimestamp() >= dayStart.getTimeInMillis())
+                .filter(price -> price.getStartTimestamp() < dayEnd.getTimeInMillis())
+                .filter(price -> price.getStartTimestamp() > currentTime)
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                .limit(2) // Wähle die zwei günstigsten Tagesperioden
+                .collect(Collectors.toList());
+
+        if (cheapestDaytimePeriods.isEmpty()) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No daytime periods available for optimization.");
+            return;
+        }
+
+        saveChargingSchedule(cheapestDaytimePeriods);
+
+        for (MarketPrice period : cheapestDaytimePeriods) {
+            Date startTime = new Date(period.getStartTimestamp());
+            Date endTime = new Date(period.getEndTimestamp());
+
+            LogFilter.log(
+                    LogFilter.LOG_LEVEL_INFO,
+                    String.format(
+                            "Scheduling charging task for daytime period: %s - %s at %.2f cents/kWh.",
+                            dateFormat.format(startTime),
+                            dateFormat.format(endTime),
+                            period.getPriceInCentPerKWh()
+                    )
+            );
+
+            taskScheduler.schedule(() -> executeChargingTask(startTime, endTime), startTime);
+        }
+
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Daytime charging optimization completed.");
+    }
+
+    private void optimizeNighttimeCharging() {
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Optimizing nighttime charging with priority for cheapest periods.");
+
+        long currentTime = System.currentTimeMillis();
         Calendar nightStart = Calendar.getInstance();
         nightStart.set(Calendar.HOUR_OF_DAY, nightStartHour);
         nightStart.set(Calendar.MINUTE, 0);
@@ -313,7 +369,7 @@ public class ChargingManagementService {
         nightStart.set(Calendar.MILLISECOND, 0);
 
         Calendar nightEnd = (Calendar) nightStart.clone();
-        nightEnd.add(Calendar.DATE, 1); // The end of the night is the next day at the configured time
+        nightEnd.add(Calendar.DATE, 1);
         nightEnd.set(Calendar.HOUR_OF_DAY, nightEndHour);
 
         LogFilter.log(
@@ -325,59 +381,22 @@ public class ChargingManagementService {
                 )
         );
 
-        // Filter and sort market prices within the night time
-        List<MarketPrice> nighttimePrices = marketPriceRepository.findAll().stream()
+        List<MarketPrice> cheapestNighttimePeriods = marketPriceRepository.findAll().stream()
                 .filter(price -> price.getStartTimestamp() >= nightStart.getTimeInMillis())
                 .filter(price -> price.getStartTimestamp() < nightEnd.getTimeInMillis())
                 .filter(price -> price.getStartTimestamp() > currentTime)
                 .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                .limit(2) // Wähle die zwei günstigsten Perioden
                 .collect(Collectors.toList());
 
-        if (nighttimePrices.isEmpty()) {
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_WARN,
-                    "No nighttime periods available for optimization."
-            );
+        if (cheapestNighttimePeriods.isEmpty()) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No nighttime periods available for optimization.");
             return;
         }
 
-        // Limit to the two most favorable periods
-        List<MarketPrice> cheapestPeriods = nighttimePrices.stream()
-                .limit(2)
-                .collect(Collectors.toList());
+        saveChargingSchedule(cheapestNighttimePeriods);
 
-        if (cheapestPeriods.size() < 2) {
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_WARN,
-                    String.format("Not enough nighttime periods available. Found only %d period(s).", cheapestPeriods.size())
-            );
-        }
-
-        // Remove more expensive periods within the night time
-        List<ChargingSchedule> existingNighttimeSchedules = chargingScheduleRepository.findAll().stream()
-                .filter(schedule -> schedule.getStartTimestamp() >= nightStart.getTimeInMillis()) // Innerhalb der Nachtzeit
-                .filter(schedule -> schedule.getStartTimestamp() < nightEnd.getTimeInMillis())   // Vor dem Nachtende
-                .collect(Collectors.toList());
-
-        for (ChargingSchedule schedule : existingNighttimeSchedules) {
-            // Keep only the most favorable periods
-            boolean isCheapest = cheapestPeriods.stream()
-                    .anyMatch(p -> p.getStartTimestamp() == schedule.getStartTimestamp());
-
-            if (!isCheapest) {
-                logger.info("Removing nighttime schedule: {} - {} at {} cents/kWh.",
-                        dateFormat.format(new Date(schedule.getStartTimestamp())),
-                        dateFormat.format(new Date(schedule.getEndTimestamp())),
-                        schedule.getPrice());
-                chargingScheduleRepository.delete(schedule);
-            }
-        }
-
-        // Save the most favorable periods
-        saveChargingSchedule(cheapestPeriods);
-
-        /// Schedule charging tasks for the two most favorable periods
-        for (MarketPrice period : cheapestPeriods) {
+        for (MarketPrice period : cheapestNighttimePeriods) {
             Date startTime = new Date(period.getStartTimestamp());
             Date endTime = new Date(period.getEndTimestamp());
 
@@ -393,7 +412,10 @@ public class ChargingManagementService {
 
             taskScheduler.schedule(() -> executeChargingTask(startTime, endTime), startTime);
         }
+
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Nighttime charging optimization completed.");
     }
+
 
 
     private boolean isWithinNighttimeWindow(long timestamp) {
@@ -431,121 +453,6 @@ public class ChargingManagementService {
         return timestamp >= nightStart.getTimeInMillis() && timestamp < nightEnd.getTimeInMillis();
     }
 
-    /**
-     * Plans and schedules optimized charging for both day and night periods
-     * based on market prices, weather conditions, and the current state of charge (RSOC).
-     *
-     * @param currentRSOC Current battery state of charge as a percentage.
-     */
-    private void planOptimizedCharging(int currentRSOC) {
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Planning optimized charging...");
-
-        if (currentRSOC >= targetStateOfCharge) {
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    String.format(
-                            "Skipping optimization: Current RSOC (%d) already meets or exceeds target RSOC (%d).",
-                            currentRSOC,
-                            targetStateOfCharge
-                    )
-            );
-            return;
-        }
-
-        // Fetch all available market prices
-        List<MarketPrice> marketPrices = marketPriceRepository.findAll();
-        if (marketPrices.isEmpty()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No market prices available for charging.");
-            return;
-        }
-
-        long currentTime = System.currentTimeMillis();
-
-        // Filter valid charging periods based on time and price thresholds
-        List<MarketPrice> validPeriods = marketPrices.stream()
-                .filter(p -> p.getStartTimestamp() > currentTime) // Only future periods
-                .filter(p -> p.getPriceInCentPerKWh() <= maxAcceptableMarketPriceInCent) // Within price threshold
-                .collect(Collectors.toList());
-
-        if (validPeriods.isEmpty()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "No suitable periods found for charging.");
-            return;
-        }
-
-        // Separate day and night periods for further optimization
-        List<MarketPrice> dayPeriods = filterPreferredDaytimePeriods(validPeriods);
-        List<MarketPrice> nightPeriods = validPeriods.stream()
-                .filter(p -> !isPreferredDaytimePeriod(p)) // Night periods
-                .collect(Collectors.toList());
-
-        // Calculate the two cheapest periods for day and night
-        dayPeriods = selectCheapestPeriods(dayPeriods, 2);
-        nightPeriods = selectCheapestPeriods(nightPeriods, 2);
-
-        // Combine day and night periods with additional constraints
-        List<MarketPrice> selectedPeriods = applyPriceDifferenceConstraint(dayPeriods, nightPeriods);
-
-        // Calculate the required charging time based on the current and target RSOC
-        int requiredChargingTime = calculateRequiredChargingTime(currentRSOC, targetStateOfCharge);
-
-        // Select optimal charging periods
-        List<MarketPrice> finalSelectedPeriods = selectOptimalPeriods(selectedPeriods, requiredChargingTime);
-
-        // Handle the scenario where target RSOC has been reached and no large consumers are active
-        if (currentRSOC >= targetStateOfCharge && !batteryManagementService.isLargeConsumerActive()) {
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    String.format(
-                            "TargetStateOfCharge (%d) reached without large consumer. Activating AutomaticMode.",
-                            targetStateOfCharge
-                    )
-            );
-            batteryManagementService.resetToAutomaticMode();
-            return; // No further action needed as the target is already achieved
-        }
-
-        if (finalSelectedPeriods.isEmpty()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No suitable periods selected after applying constraints.");
-            return;
-        }
-
-        LogFilter.log(
-                LogFilter.LOG_LEVEL_INFO,
-                String.format(
-                        "Selected periods for charging: %s",
-                        finalSelectedPeriods.stream()
-                                .map(p -> String.format(
-                                        "%s - %s (%.2f cents/kWh)",
-                                        dateFormat.format(new Date(p.getStartTimestamp())),
-                                        dateFormat.format(new Date(p.getEndTimestamp())),
-                                        p.getPriceInCentPerKWh()))
-                                .collect(Collectors.joining(", "))
-                )
-        );
-
-        // Save the planned charging schedule to the database
-        saveChargingSchedule(finalSelectedPeriods);
-
-        // Schedule charging tasks
-        for (MarketPrice period : finalSelectedPeriods) {
-            Date startTime = new Date(period.getStartTimestamp());
-            Date endTime = new Date(period.getEndTimestamp());
-
-            // Schedule charging tasks regardless of current conditions
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    String.format(
-                            "Scheduling charging task for period: %s - %s.",
-                            dateFormat.format(startTime),
-                            dateFormat.format(endTime)
-                    )
-            );
-            taskScheduler.schedule(() -> executeChargingTask(startTime, endTime), startTime);
-        }
-
-        // Schedule post-charging reset if necessary
-        schedulePostChargingReset();
-    }
 
     /**
      * Selects the two cheapest periods from a given list of market prices.
@@ -559,28 +466,6 @@ public class ChargingManagementService {
                 .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
                 .limit(limit)
                 .collect(Collectors.toList());
-    }
-
-    /**
-     * Applies a price difference constraint between day and night periods.
-     *
-     * @param dayPeriods  Daytime periods.
-     * @param nightPeriods Nighttime periods.
-     * @return The final list of periods after applying the constraint.
-     */
-    private List<MarketPrice> applyPriceDifferenceConstraint(List<MarketPrice> dayPeriods, List<MarketPrice> nightPeriods) {
-        double averageDayPrice = calculateAveragePrice(dayPeriods);
-        double averageNightPrice = calculateAveragePrice(nightPeriods);
-
-        if (Math.abs(averageDayPrice - averageNightPrice) > 10.0) {
-            return Stream.concat(dayPeriods.stream(), nightPeriods.stream())
-                    .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                    .limit(2) // Only keep the two cheapest periods overall
-                    .collect(Collectors.toList());
-        } else {
-            return Stream.concat(dayPeriods.stream(), nightPeriods.stream())
-                    .collect(Collectors.toList());
-        }
     }
 
     /**
@@ -625,84 +510,6 @@ public class ChargingManagementService {
         }
 
         return filteredPeriods;
-    }
-
-    /**
-     * Schedules reduced power charging tasks and saves the planned periods.
-     *
-     * @param plannedPeriods Selected charging periods.
-     */
-    private void scheduleChargingTasksWithReducedPower(List<MarketPrice> plannedPeriods) {
-        long currentTime = System.currentTimeMillis();
-
-        for (MarketPrice period : plannedPeriods) {
-            Date startTime = new Date(period.getStartTimestamp());
-            Date endTime = new Date(period.getEndTimestamp());
-
-            if (period.getStartTimestamp() <= currentTime) {
-                LogFilter.log(
-                        LogFilter.LOG_LEVEL_WARN,
-                        String.format(
-                                "Skipping task for period %s - %s: Start time is in the past.",
-                                dateFormat.format(new Date(period.getStartTimestamp())),
-                                dateFormat.format(new Date(period.getEndTimestamp()))
-                        )
-                );
-                continue;
-            }
-
-            if (period.getStartTimestamp() >= (currentTime + 24 * 60 * 60 * 1000)) {
-                LogFilter.log(
-                        LogFilter.LOG_LEVEL_INFO,
-                        String.format(
-                                "Skipping task for period %s - %s: Start time is scheduled for tomorrow or later.",
-                                dateFormat.format(new Date(period.getStartTimestamp())),
-                                dateFormat.format(new Date(period.getEndTimestamp()))
-                        )
-                );
-                continue;
-            }
-
-            // Save the planned loading time
-            saveChargingSchedule(Collections.singletonList(period));
-
-            // Scheduling the charging process with reduced power
-            taskScheduler.schedule(() -> {
-                LogFilter.log(
-                        LogFilter.LOG_LEVEL_INFO,
-                        String.format(
-                                "Scheduled reduced power charging task started for period: %s - %s.",
-                                dateFormat.format(startTime),
-                                dateFormat.format(endTime)
-                        )
-                );
-
-                batteryManagementService.initCharging(true);
-
-                // Set ChargingPoint to 0 after the end of the charging period
-                taskScheduler.schedule(() -> {
-                    LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Reduced power charging task ended. Setting ChargingPoint to 0.");
-                    boolean resetSuccess = batteryManagementService.setDynamicChargingPoint(0);
-                    if (resetSuccess) {
-                        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "ChargingPoint successfully set to 0 after reduced charging.");
-                    } else {
-                        LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Failed to set ChargingPoint to 0 after reduced charging.");
-                    }
-                }, endTime);
-
-            }, startTime);
-
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    String.format(
-                            "Reduced power charging task scheduled for period: %s - %s.",
-                            dateFormat.format(startTime),
-                            dateFormat.format(endTime)
-                    )
-            );
-        }
-
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "All reduced power charging tasks successfully scheduled.");
     }
 
     /**
@@ -837,60 +644,16 @@ public class ChargingManagementService {
     }
 
 
-    private List<MarketPrice> selectOptimalPeriods(List<MarketPrice> periods, int requiredRSOC) {
-        List<MarketPrice> selectedPeriods = new ArrayList<>();
-        int accumulatedRSOC = 0;
+    private List<MarketPrice> selectOptimalPeriods(List<MarketPrice> periods) {
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Selecting optimal periods purely based on price.");
 
-        LogFilter.log(
-                LogFilter.LOG_LEVEL_INFO,
-                String.format("Selecting optimal periods based on required RSOC: %d%%.", requiredRSOC)
-        );
-
-        periods = periods.stream()
-                .sorted((p1, p2) -> {
-                    double effectivePrice1 = isPreferredDaytimePeriod(p1)
-                            ? p1.getPriceInCentPerKWh() - daytimeWeightingBonus
-                            : p1.getPriceInCentPerKWh();
-                    double effectivePrice2 = isPreferredDaytimePeriod(p2)
-                            ? p2.getPriceInCentPerKWh() - daytimeWeightingBonus
-                            : p2.getPriceInCentPerKWh();
-                    return Double.compare(effectivePrice1, effectivePrice2);
-                })
+        // Sortiere Perioden ausschließlich nach dem Preis
+        return periods.stream()
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                .limit(2) // Wähle die zwei günstigsten Perioden
                 .collect(Collectors.toList());
-
-        for (MarketPrice period : periods) {
-            int periodRSOC = calculatePeriodRSOC(period);
-
-            if (accumulatedRSOC + periodRSOC >= requiredRSOC) {
-                LogFilter.log(
-                        LogFilter.LOG_LEVEL_INFO,
-                        String.format(
-                                "Partially utilizing period %s - %s for %d%% RSOC.",
-                                dateFormat.format(new Date(period.getStartTimestamp())),
-                                dateFormat.format(new Date(period.getEndTimestamp())),
-                                requiredRSOC - accumulatedRSOC
-                        )
-                );
-                selectedPeriods.add(period);
-                break;
-            } else {
-                LogFilter.log(
-                        LogFilter.LOG_LEVEL_INFO,
-                        String.format(
-                                "Added full period %s - %s for %d%% RSOC. Remaining: %d%%.",
-                                dateFormat.format(new Date(period.getStartTimestamp())),
-                                dateFormat.format(new Date(period.getEndTimestamp())),
-                                periodRSOC,
-                                requiredRSOC - (accumulatedRSOC + periodRSOC)
-                        )
-                );
-                selectedPeriods.add(period);
-                accumulatedRSOC += periodRSOC;
-            }
-        }
-
-        return selectedPeriods;
     }
+
 
     private int calculatePeriodRSOC(MarketPrice period) {
         double chargingPowerInWatt = batteryManagementService.getChargingPointInWatt();
@@ -1020,58 +783,6 @@ public class ChargingManagementService {
     }
 
     /**
-     * Schedules charging tasks, ensuring no duplicate tasks are planned.
-     *
-     * @param plannedPeriods Selected charging periods.
-     */
-    private void scheduleChargingTasks(List<MarketPrice> plannedPeriods) {
-        long currentTime = System.currentTimeMillis();
-
-        for (MarketPrice period : plannedPeriods) {
-            Date startTime = new Date(period.getStartTimestamp());
-            Date endTime = new Date(period.getEndTimestamp());
-
-            // Skip tasks if the start time is in the past
-            if (period.getStartTimestamp() <= currentTime) {
-                logSkippedTask("Start time is in the past", startTime, endTime);
-                continue;
-            }
-
-            // Skip tasks if the start time is scheduled for tomorrow or later
-            if (period.getStartTimestamp() >= (currentTime + 24 * 60 * 60 * 1000)) {
-                logSkippedTask("Start time is scheduled for tomorrow or later", startTime, endTime);
-                continue;
-            }
-
-            // Skip tasks if they are duplicates
-            if (isDuplicateTask(period)) {
-                logSkippedTask("Duplicate task detected", startTime, endTime);
-                continue;
-            }
-
-            // Handle active charging scenarios
-            if (shouldContinueCharging()) {
-                continueChargingIfAffordable(period);
-            }
-
-            // Schedule the task
-            taskScheduler.schedule(() -> executeChargingTask(startTime, endTime), startTime);
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    String.format("Task scheduled for period: %s - %s.",
-                            dateFormat.format(startTime),
-                            dateFormat.format(endTime))
-            );
-        }
-
-        LogFilter.log(
-                LogFilter.LOG_LEVEL_INFO,
-                "All charging tasks successfully scheduled."
-        );
-
-    }
-
-    /**
      * Logs skipped tasks with a specific reason.
      *
      * @param reason    The reason for skipping the task.
@@ -1148,61 +859,6 @@ public class ChargingManagementService {
     }
 
 
-    private void continueChargingIfAffordable(MarketPrice currentPeriod) {
-        List<MarketPrice> subsequentPeriods = marketPriceRepository.findAll().stream()
-                .filter(p -> p.getStartTimestamp() > currentPeriod.getEndTimestamp())
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .collect(Collectors.toList());
-
-        if (subsequentPeriods.isEmpty()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "No subsequent periods available for continued charging.");
-            return;
-        }
-
-        MarketPrice nextPeriod = subsequentPeriods.get(0);
-        if (nextPeriod.getPriceInCentPerKWh() <= currentPeriod.getPriceInCentPerKWh() * 1.3) {
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    String.format(
-                            "Scheduling next charging period: %s - %s at %.2f cents/kWh.",
-                            dateFormat.format(new Date(nextPeriod.getStartTimestamp())),
-                            dateFormat.format(new Date(nextPeriod.getEndTimestamp())),
-                            nextPeriod.getPriceInCentPerKWh()
-                    )
-            );
-
-            taskScheduler.schedule(() -> {
-                LogFilter.log(
-                        LogFilter.LOG_LEVEL_INFO,
-                        String.format(
-                                "Continued charging started for period: %s - %s.",
-                                dateFormat.format(new Date(nextPeriod.getStartTimestamp())),
-                                dateFormat.format(new Date(nextPeriod.getEndTimestamp()))
-                        )
-                );
-                batteryManagementService.initCharging(false);
-            }, new Date(nextPeriod.getStartTimestamp()));
-        } else {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Skipping subsequent charging period: Price increase exceeds 30% threshold.");
-        }
-    }
-
-    /**
-     * Checks if a task for the given market price has already been scheduled.
-     *
-     * @param marketPrice The market price for the task.
-     * @return True if the task is already scheduled, false otherwise.
-     */
-    private boolean isDuplicateTask(MarketPrice marketPrice) {
-        ChargingSchedule tempSchedule = new ChargingSchedule();
-        tempSchedule.setStartTimestamp(marketPrice.getStartTimestamp());
-        tempSchedule.setEndTimestamp(marketPrice.getEndTimestamp());
-        tempSchedule.setPrice(marketPrice.getPriceInCentPerKWh());
-
-        return chargingScheduleRepository.findAll().stream()
-                .anyMatch(existingSchedule -> existingSchedule.equals(tempSchedule));
-    }
-
     /**
      * Saves the selected charging periods to the database, avoiding duplicate entries.
      *
@@ -1210,103 +866,52 @@ public class ChargingManagementService {
      */
     private void saveChargingSchedule(List<MarketPrice> periods) {
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Saving planned charging schedules...");
+
+        // Iteriere über die neuen Perioden
         for (MarketPrice period : periods) {
-            // Check whether an entry with an identical start, end and price already exists
-            boolean isDuplicate = chargingScheduleRepository.existsByStartEndAndPrice(
-                    period.getStartTimestamp(),
-                    period.getEndTimestamp(),
-                    period.getPriceInCentPerKWh()
-            );
+            long periodStart = period.getStartTimestamp();
 
-            if (isDuplicate) {
+            // Suche existierende Perioden, die innerhalb von 6 Stunden vor oder nach der neuen Periode liegen
+            List<ChargingSchedule> overlappingSchedules = chargingScheduleRepository.findAll().stream()
+                    .filter(schedule -> Math.abs(schedule.getStartTimestamp() - periodStart) <= 6 * 60 * 60 * 1000) // Innerhalb von 6 Stunden
+                    .filter(schedule -> schedule.getPrice() > period.getPriceInCentPerKWh()) // Teurer als die neue Periode
+                    .collect(Collectors.toList());
+
+            // Lösche alle teureren, sich überschneidenden Perioden
+            for (ChargingSchedule schedule : overlappingSchedules) {
+                chargingScheduleRepository.delete(schedule);
                 LogFilter.log(
                         LogFilter.LOG_LEVEL_INFO,
                         String.format(
-                                "Duplicate schedule detected. Skipping: %s - %s at %.2f cents/kWh.",
-                                dateFormat.format(new Date(period.getStartTimestamp())),
-                                dateFormat.format(new Date(period.getEndTimestamp())),
-                                period.getPriceInCentPerKWh()
-                        )
-                );
-                continue;
-            }
-
-            // Create and save a new loading interval
-            ChargingSchedule schedule = new ChargingSchedule();
-            schedule.setStartTimestamp(period.getStartTimestamp());
-            schedule.setEndTimestamp(period.getEndTimestamp());
-            schedule.setPrice(period.getPriceInCentPerKWh());
-
-            try {
-                chargingScheduleRepository.save(schedule);
-                LogFilter.log(
-                        LogFilter.LOG_LEVEL_INFO,
-                        String.format(
-                                "Saved charging schedule: %s - %s at %.2f cents/kWh.",
+                                "Removed more expensive overlapping schedule: %s - %s at %.2f cents/kWh.",
                                 dateFormat.format(new Date(schedule.getStartTimestamp())),
                                 dateFormat.format(new Date(schedule.getEndTimestamp())),
                                 schedule.getPrice()
                         )
                 );
-            } catch (Exception e) {
-                LogFilter.log(
-                        LogFilter.LOG_LEVEL_ERROR,
-                        String.format(
-                                "Failed to save charging schedule: %s - %s at %.2f cents/kWh. Error: %s",
-                                dateFormat.format(new Date(schedule.getStartTimestamp())),
-                                dateFormat.format(new Date(schedule.getEndTimestamp())),
-                                schedule.getPrice(),
-                                e.getMessage()
-                        )
-                );
             }
-        }
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Charging schedules saving completed.");
-    }
 
+            // Speichere die neue Periode
+            ChargingSchedule schedule = new ChargingSchedule();
+            schedule.setStartTimestamp(period.getStartTimestamp());
+            schedule.setEndTimestamp(period.getEndTimestamp());
+            schedule.setPrice(period.getPriceInCentPerKWh());
+            chargingScheduleRepository.save(schedule);
 
-    /**
-     * Calculates the required charging time based on the target and current state of charge.
-     *
-     * @param currentRSOC Current state of charge.
-     * @param targetRSOC  Target state of charge.
-     * @return Required charging time in minutes.
-     */
-    private int calculateRequiredChargingTime(int currentRSOC, int targetRSOC) {
-        // Check whether the target has already been reached or exceeded
-        if (currentRSOC >= targetRSOC) {
             LogFilter.log(
                     LogFilter.LOG_LEVEL_INFO,
                     String.format(
-                            "No charging required: currentRSOC (%d) >= targetRSOC (%d).",
-                            currentRSOC,
-                            targetRSOC
+                            "Saved charging schedule: %s - %s at %.2f cents/kWh.",
+                            dateFormat.format(new Date(schedule.getStartTimestamp())),
+                            dateFormat.format(new Date(schedule.getEndTimestamp())),
+                            schedule.getPrice()
                     )
             );
-            return 0; // No charging time required
         }
 
-        // Calculation of the remaining capacity
-        int remainingCapacityWh = batteryManagementService.getRemainingCapacityWh() * (targetRSOC - currentRSOC) / 100;
-        double chargingPointInWatt = batteryManagementService.getChargingPointInWatt();
-
-        // Calculation of the charging time in minutes
-        int chargingTime = (int) Math.ceil((double) remainingCapacityWh / chargingPointInWatt * 60);
-
-        LogFilter.log(
-                LogFilter.LOG_LEVEL_INFO,
-                String.format(
-                        "Calculating required charging time: currentRSOC=%d, targetRSOC=%d, remainingCapacityWh=%d, chargingPointInWatt=%.2f, chargingTime=%d",
-                        currentRSOC,
-                        targetRSOC,
-                        remainingCapacityWh,
-                        chargingPointInWatt,
-                        chargingTime
-                )
-        );
-
-        return chargingTime;
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Charging schedules saving completed.");
     }
+
 
     /**
      * Retrieves and sorts all existing charging schedules.
