@@ -119,7 +119,7 @@ public class ChargingManagementService {
         cleanUpExpiredSchedules();
     }
 
-    @Scheduled(fixedRateString = "${battery.automatic.mode.check.interval:300000}") // Alle 5 Minuten
+    @Scheduled(fixedRateString = "${battery.automatic.mode.check.interval:300000}") // // Every 5 minutes
     public void checkAndResetToAutomaticMode() {
         if (batteryManagementService.isBatteryNotConfigured()) {
             logger.info("Battery not configured. Skipping automatic mode check.");
@@ -127,34 +127,19 @@ public class ChargingManagementService {
         }
 
         int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
-        if (currentRSOC < targetStateOfChargeInPercent) {
-            logger.info("Current RSOC ({}) is below the target RSOC ({}). Skipping action.",
-                    currentRSOC, targetStateOfChargeInPercent);
-            return;
-        }
 
-        if (isWithinNighttimeWindow(System.currentTimeMillis()) && batteryManagementService.isLargeConsumerActive()) {
-            if (currentRSOC >= targetStateOfChargeInPercent) {
-                logger.info("Night period and large consumer detected, and target RSOC ({}) reached. Setting charging point to 0.",
-                        targetStateOfChargeInPercent);
-                boolean chargingPointReset = batteryManagementService.setDynamicChargingPoint(0);
-
-                if (chargingPointReset) {
-                    logger.info("Charging point set to 0 successfully.");
-                    scheduleEndOfNightReset();
-                } else {
-                    logger.error("Failed to set charging point to 0.");
-                }
+        if (isWithinNighttimeWindow(System.currentTimeMillis())) {
+            if (batteryManagementService.isLargeConsumerActive()) {
+                logger.info("Night period and large consumer detected. Setting charging point to 0.");
+                batteryManagementService.setDynamicChargingPoint(0);
+                scheduleEndOfNightReset();
                 return;
             }
         }
 
-        // Conditions for automatic mode are met
-        boolean resetSuccessful = batteryManagementService.resetToAutomaticMode();
-        if (resetSuccessful) {
-            logger.info("Successfully switched back to automatic mode after reaching target RSOC.");
-        } else {
-            logger.error("Failed to switch back to automatic mode.");
+        if (currentRSOC >= targetStateOfCharge) {
+            logger.info("Target RSOC ({}) reached. Resetting to automatic mode.", targetStateOfCharge);
+            batteryManagementService.resetToAutomaticMode();
         }
     }
 
@@ -400,6 +385,12 @@ public class ChargingManagementService {
      */
     private void planOptimizedCharging(int currentRSOC) {
         logger.info("Planning optimized charging...");
+
+        if (currentRSOC >= targetStateOfCharge) {
+            logger.info("Skipping optimization: Current RSOC ({}) already meets or exceeds target RSOC ({}).", currentRSOC, targetStateOfCharge);
+            return;
+        }
+
 
         // Fetch all available market prices
         List<MarketPrice> marketPrices = marketPriceRepository.findAll();
@@ -803,11 +794,16 @@ public class ChargingManagementService {
 
 
     /**
-     * Cleans up expired charging schedules.
+     * Cleans up expired charging schedules and optimizes remaining schedules.
      */
     private void cleanUpExpiredSchedules() {
+        long currentTime = System.currentTimeMillis();
+
+        logger.info("Starting cleanup of expired charging schedules...");
+
+        // Step 1: Remove expired schedules
         List<ChargingSchedule> expiredSchedules = chargingScheduleRepository.findAll().stream()
-                .filter(schedule -> schedule.getEndTimestamp() < System.currentTimeMillis())
+                .filter(schedule -> schedule.getEndTimestamp() < currentTime) // Expired schedules
                 .collect(Collectors.toList());
 
         expiredSchedules.forEach(schedule -> {
@@ -817,11 +813,13 @@ public class ChargingManagementService {
             chargingScheduleRepository.delete(schedule);
         });
 
-        // Additional logic for daily schedules
+        logger.info("Expired schedules cleanup completed. Removed: {}", expiredSchedules.size());
+
+        // Step 2: Evaluate and clean up daytime schedules before nighttime starts
         long twoHoursBeforeNight = calculateTwoHoursBeforeNight();
         List<ChargingSchedule> daySchedulesToEvaluate = chargingScheduleRepository.findAll().stream()
-                .filter(price -> !isWithinNighttimeWindow(price.getStartTimestamp())) // Nur Tagespläne
-                .filter(schedule -> schedule.getStartTimestamp() < twoHoursBeforeNight) // Beginnt vor der Nachtzeit
+                .filter(schedule -> !isWithinNighttimeWindow(schedule.getStartTimestamp())) // Only daytime schedules
+                .filter(schedule -> schedule.getStartTimestamp() < twoHoursBeforeNight) // Starts before nighttime
                 .collect(Collectors.toList());
 
         daySchedulesToEvaluate.forEach(schedule -> {
@@ -832,6 +830,25 @@ public class ChargingManagementService {
                 chargingScheduleRepository.delete(schedule);
             }
         });
+
+        logger.info("Daytime schedule evaluation completed. Evaluated: {}", daySchedulesToEvaluate.size());
+
+        // Step 3: Keep only future schedules
+        List<ChargingSchedule> futureSchedules = chargingScheduleRepository.findAll().stream()
+                .filter(schedule -> schedule.getEndTimestamp() > currentTime) // Keep future schedules
+                .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice)) // Sort by price ascending
+                .collect(Collectors.toList());
+
+        // Log retained future schedules
+        logger.info("Remaining future schedules: {}",
+                futureSchedules.stream()
+                        .map(schedule -> String.format("%s - %s (%.2f cents/kWh)",
+                                dateFormat.format(new Date(schedule.getStartTimestamp())),
+                                dateFormat.format(new Date(schedule.getEndTimestamp())),
+                                schedule.getPrice()))
+                        .collect(Collectors.joining(", ")));
+
+        logger.info("Cleanup of charging schedules completed.");
     }
 
     private long calculateTwoHoursBeforeNight() {
