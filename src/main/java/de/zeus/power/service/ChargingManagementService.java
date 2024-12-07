@@ -482,111 +482,6 @@ public class ChargingManagementService {
         return timestamp >= nightStart.getTimeInMillis() && timestamp < nightEnd.getTimeInMillis();
     }
 
-    /**
-     * Schedules a task to reset to default charge point and enable automatic mode at the end of the night period.
-     */
-    private void scheduleAutomaticModeReset() {
-        Calendar calendar = Calendar.getInstance();
-        calendar.set(Calendar.HOUR_OF_DAY, nightEndHour);
-        calendar.set(Calendar.MINUTE, 0);
-        calendar.set(Calendar.SECOND, 0);
-        calendar.set(Calendar.MILLISECOND, 0);
-
-        Date resetTime = calendar.getTime();
-        if (resetTime.before(new Date())) {
-            resetTime = new Date(resetTime.getTime() + 24 * 60 * 60 * 1000); // Add one day if already past
-        }
-
-        // Declare resetTime as final for lambda expression
-        final Date finalResetTime = resetTime;
-
-        taskScheduler.schedule(() -> {
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    String.format(
-                            "Re-enabling automatic mode and resetting charging point at %s",
-                            dateFormat.format(finalResetTime)
-                    )
-            );
-            batteryManagementService.resetToAutomaticMode();
-        }, finalResetTime);
-
-        LogFilter.log(
-                LogFilter.LOG_LEVEL_INFO,
-                String.format(
-                        "Task to re-enable automatic mode and reset charge point scheduled for %s",
-                        dateFormat.format(finalResetTime)
-                )
-        );
-    }
-
-    private void schedulePostChargingReset() {
-        // Check whether a reset is already planned
-        if (resetScheduled.get()) {
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    "Reset task is already scheduled. Skipping duplicate scheduling."
-            );
-            return;
-        }
-
-        // Get all scheduled entries and sort them by end time
-        List<ChargingSchedule> schedules = chargingScheduleRepository.findAll().stream()
-                .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp))
-                .collect(Collectors.toList());
-
-        if (schedules.isEmpty()) {
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    "No scheduled charging tasks found. Resetting charging point immediately."
-            );
-            batteryManagementService.resetToAutomaticMode();
-            return;
-        }
-
-        // List for the end times that require a reset
-        List<Long> resetTimes = new ArrayList<>();
-
-        // Process the planned periods
-        long blockEndTime = schedules.get(0).getEndTimestamp(); // Initial end time of the first block
-
-        for (int i = 1; i < schedules.size(); i++) {
-            long gap = schedules.get(i).getStartTimestamp() - blockEndTime;
-
-            if (gap > 15 * 60 * 1000) { // Gap greater than 15 minutes detected
-                // Add the end time of the current block to the reset list
-                resetTimes.add(blockEndTime);
-                LogFilter.log(
-                        LogFilter.LOG_LEVEL_INFO,
-                        String.format(
-                                "Block end detected. Scheduling reset after last block ends at %s",
-                                dateFormat.format(new Date(blockEndTime + 1000))
-                        )
-                );
-
-                // Start a new block
-                blockEndTime = schedules.get(i).getEndTimestamp();
-            } else {
-                // Update the end time of the current block
-                blockEndTime = Math.max(blockEndTime, schedules.get(i).getEndTimestamp());
-            }
-        }
-
-        // Add the last block to the reset list
-        resetTimes.add(blockEndTime);
-        LogFilter.log(
-                LogFilter.LOG_LEVEL_INFO,
-                String.format(
-                        "Final block detected. Scheduling reset after last block ends at %s",
-                        dateFormat.format(new Date(blockEndTime + 1000))
-                )
-        );
-
-        // Schedule resets for all times contained in the list
-        for (Long resetTime : resetTimes) {
-            scheduleResetTask(new Date(resetTime + 1000)); // Schedule one second after the end time
-        }
-    }
 
     private void scheduleResetTask(Date resetTime) {
         if (resetScheduled.get()) {
@@ -699,46 +594,6 @@ public class ChargingManagementService {
     }
 
     /**
-     * Determines if charging should continue based on the current battery state and operating mode.
-     */
-    private boolean shouldContinueCharging() {
-        if (batteryManagementService.isBatteryCharging()) {
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    "Battery is already charging using solar energy. Preventing additional grid charging."
-            );
-            return false;
-        }
-
-        if (batteryManagementService.getRelativeStateOfCharge() >= targetStateOfCharge) {
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    "Battery has already reached target state of charge. No additional charging required."
-            );
-            return false;
-        }
-
-        if (batteryManagementService.isManualOperatingMode()) {
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    "Manual mode: Continuing charging for period."
-            );
-        } else if (batteryManagementService.isAutomaticOperatingMode()) {
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    "Automatic mode: Using free solar energy for period."
-            );
-        } else {
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_WARN,
-                    "Unknown operating mode. Skipping further charging logic."
-            );
-            return false;
-        }
-        return true;
-    }
-
-    /**
      * Executes a scheduled charging task.
      */
     private void executeChargingTask(Date startTime, Date endTime) {
@@ -840,10 +695,8 @@ public class ChargingManagementService {
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Saving optimized charging schedules...");
 
         for (ChargingSchedule schedule : schedules) {
-            boolean isDuplicate = chargingScheduleRepository.findAll().stream().anyMatch(existing ->
-                    existing.getStartTimestamp() == schedule.getStartTimestamp() &&
-                            existing.getEndTimestamp() == schedule.getEndTimestamp() &&
-                            Double.compare(existing.getPrice(), schedule.getPrice()) == 0
+            boolean isDuplicate = chargingScheduleRepository.existsByStartEndAndPrice(
+                    schedule.getStartTimestamp(), schedule.getEndTimestamp(), schedule.getPrice()
             );
 
             if (isDuplicate) {
@@ -859,16 +712,29 @@ public class ChargingManagementService {
                 continue;
             }
 
-            chargingScheduleRepository.save(schedule);
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    String.format(
-                            "Saved schedule: %s - %s at %.2f cents/kWh.",
-                            dateFormat.format(new Date(schedule.getStartTimestamp())),
-                            dateFormat.format(new Date(schedule.getEndTimestamp())),
-                            schedule.getPrice()
-                    )
-            );
+            try {
+                chargingScheduleRepository.save(schedule);
+                LogFilter.log(
+                        LogFilter.LOG_LEVEL_INFO,
+                        String.format(
+                                "Saved schedule: %s - %s at %.2f cents/kWh.",
+                                dateFormat.format(new Date(schedule.getStartTimestamp())),
+                                dateFormat.format(new Date(schedule.getEndTimestamp())),
+                                schedule.getPrice()
+                        )
+                );
+            } catch (Exception e) {
+                LogFilter.log(
+                        LogFilter.LOG_LEVEL_ERROR,
+                        String.format(
+                                "Failed to save schedule: %s - %s at %.2f cents/kWh. Error: %s",
+                                dateFormat.format(new Date(schedule.getStartTimestamp())),
+                                dateFormat.format(new Date(schedule.getEndTimestamp())),
+                                schedule.getPrice(),
+                                e.getMessage()
+                        )
+                );
+            }
         }
 
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "All schedules saved successfully.");
