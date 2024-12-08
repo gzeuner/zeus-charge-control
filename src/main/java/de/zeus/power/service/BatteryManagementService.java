@@ -66,6 +66,9 @@ public class BatteryManagementService {
     @Value("${night.end:6}")
     private int nightEndHour;
 
+    @Value("${battery.target.stateOfCharge:90}")
+    private int targetStateOfCharge;
+
     private BatteryStatusResponse cachedBatteryStatus;
     private Instant cacheTimestamp;
     private volatile boolean isReducedChargingActive = false;
@@ -168,6 +171,50 @@ public class BatteryManagementService {
                     String.format("Failed to set charging point to %d Watt. Response: %s", currentChargingPoint, response.message()));
             return false;
         }
+    }
+
+    /**
+     * Dynamically adjusts the charging point based on current RSOC, nighttime, and large consumer activity.
+     *
+     * @param currentRSOC        Current relative state of charge (RSOC) in percentage.
+     * @param isNightTime        Whether it is currently nighttime.
+     * @param largeConsumerActive Whether a large consumer is active.
+     * @return True if the charging point was successfully adjusted, false otherwise.
+     */
+    public boolean adjustChargingPointDynamically(int currentRSOC, boolean isNightTime, boolean largeConsumerActive) {
+        if (isBatteryNotConfigured()) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "Battery not configured. Cannot adjust charging point.");
+            return false;
+        }
+
+        if (isNightTime && largeConsumerActive) {
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                    "Nighttime and large consumer detected. Adjusting charging point dynamically.");
+
+            // Dynamically reduce charging point based on RSOC
+            int reducedChargingPoint = currentRSOC < 50
+                    ? (int) (chargingPointInWatt * 0.5) // Charge faster if RSOC < 50%
+                    : (int) (chargingPointInWatt * 0.3); // Otherwise, charge at 30%
+
+            boolean success = setDynamicChargingPoint(reducedChargingPoint);
+            if (success) {
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                        String.format("Charging point adjusted to %d Watt for nighttime with large consumer.", reducedChargingPoint));
+            }
+            return success;
+        }
+
+        if (currentRSOC >= targetStateOfCharge) {
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                    "RSOC at or above target. Setting charging point to 0 for idle mode.");
+
+            return setDynamicChargingPoint(0); // Set to idle mode if target state is reached
+        }
+
+        // Default behavior for other cases
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                "No special conditions met. Retaining current charging point.");
+        return true;
     }
 
 
@@ -357,14 +404,6 @@ public class BatteryManagementService {
         return commandService.setConfiguration(OPERATING_MODE, OP_MODE_AUTOMATIC);
     }
 
-    public int getChargingPointInWatt() {
-        return chargingPointInWatt;
-    }
-
-    public boolean isReducedChargingCurrentlyActive() {
-        return isReducedChargingActive;
-    }
-
     public BatteryStatusResponse getCurrentBatteryStatus() {
         if (isBatteryNotConfigured()) {
             return null;
@@ -399,12 +438,6 @@ public class BatteryManagementService {
         cacheTimestamp = null;
         LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "Battery status cache invalidated.");
     }
-
-    public void setCurrentChargingPoint(int chargingPoint) {
-        this.currentChargingPoint = chargingPoint;
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format("Dynamic charging point set to %d Watt.", chargingPoint));
-    }
-
 
     private void adjustChargingPointBasedOnWeather() {
         LocalTime now = LocalTime.now();

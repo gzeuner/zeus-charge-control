@@ -19,7 +19,6 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 /**
  * ChargingManagementService handles the scheduling and optimization of charging tasks
@@ -66,9 +65,6 @@ public class ChargingManagementService {
     @Value("${marketdata.acceptable.price.cents:15}")
     private int maxAcceptableMarketPriceInCent;
 
-    @Value("${battery.capacity:10000}")
-    private int totalBatteryCapacity;
-
     @Value("${night.start:22}")
     private int nightStartHour;
 
@@ -109,7 +105,7 @@ public class ChargingManagementService {
         cleanUpExpiredSchedules();
     }
 
-    @Scheduled(fixedRateString = "${battery.automatic.mode.check.interval:300000}") // // Every 5 minutes
+    @Scheduled(fixedRateString = "${battery.automatic.mode.check.interval:300000}") // Every 5 minutes
     public void checkAndResetToAutomaticMode() {
         if (batteryManagementService.isBatteryNotConfigured()) {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Battery not configured. Skipping automatic mode check.");
@@ -117,28 +113,25 @@ public class ChargingManagementService {
         }
 
         int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
+        boolean isNightTime = isWithinNighttimeWindow(System.currentTimeMillis());
+        boolean largeConsumerActive = batteryManagementService.isLargeConsumerActive();
 
-        // Check if RSOC has reached or exceeded the target
-        if (currentRSOC >= targetStateOfCharge) {
+        // Delegate dynamic adjustment to the BatteryManagementService
+        boolean success = batteryManagementService.adjustChargingPointDynamically(currentRSOC, isNightTime, largeConsumerActive);
+        if (!success) {
+            LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Failed to adjust charging point dynamically.");
+        }
 
-
-            //Handle NightTime with large consumer
-            if (isWithinNighttimeWindow(System.currentTimeMillis())) {
-                if (batteryManagementService.isLargeConsumerActive()) {
-                    LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Night period and large consumer detected. Setting charging point to 0.");
-                    batteryManagementService.setDynamicChargingPoint(0);
-                    scheduleEndOfNightReset();
-                    return;
-                }
-            }
-
-            // Return to Automatic Mode
-            if (!isWithinNighttimeWindow(System.currentTimeMillis())) {
-                LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Not nighttime and Large Consumer detected. Returning to Automatic Mode.");
-                batteryManagementService.resetToAutomaticMode();
-            }
+        // Reset to automatic mode at the end of nighttime
+        if (isNightTime && largeConsumerActive) {
+            scheduleEndOfNightReset();
+        } else if (!isNightTime) {
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                    "Outside nighttime. Returning to Automatic Mode.");
+            batteryManagementService.resetToAutomaticMode();
         }
     }
+
 
     private void scheduleEndOfNightReset() {
         if (nightResetScheduled.get()) {
@@ -278,8 +271,28 @@ public class ChargingManagementService {
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Starting optimization of charging schedule...");
 
         int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
+        long currentTime = System.currentTimeMillis();
 
-        // Skip optimization if the target state of charge has been reached
+        // Step 1: Remove schedules that are already in the past
+        List<ChargingSchedule> expiredSchedules = chargingScheduleRepository.findAll().stream()
+                .filter(schedule -> schedule.getEndTimestamp() < currentTime) // Check if the schedule is in the past
+                .collect(Collectors.toList());
+
+        expiredSchedules.forEach(schedule -> {
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                    String.format("Removing expired schedule: %s - %s (%.2f cents/kWh)",
+                            dateFormat.format(new Date(schedule.getStartTimestamp())),
+                            dateFormat.format(new Date(schedule.getEndTimestamp())),
+                            schedule.getPrice()));
+            chargingScheduleRepository.delete(schedule); // Remove from repository
+        });
+
+        if (!expiredSchedules.isEmpty()) {
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                    String.format("Expired schedules removed: %d", expiredSchedules.size()));
+        }
+
+        // Step 2: Skip optimization if RSOC already meets the target
         if (currentRSOC >= targetStateOfCharge) {
             LogFilter.log(
                     LogFilter.LOG_LEVEL_INFO,
@@ -291,13 +304,9 @@ public class ChargingManagementService {
             return;
         }
 
-        // Optimize nighttime charging
+        // Step 3: Proceed with the existing optimization logic
         optimizeNighttimeCharging();
-
-        // Optimize transition periods between night and daytime
         optimizeTransitionPeriods();
-
-        // Optimize daytime charging
         optimizeDaytimeCharging();
 
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Optimization of charging schedule completed.");
@@ -313,11 +322,11 @@ public class ChargingManagementService {
 
 
     private void optimizeDaytimeCharging() {
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Optimizing daytime charging with priority for solar-friendly periods.");
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Optimizing daytime charging dynamically based on price analysis.");
 
         long currentTime = System.currentTimeMillis();
 
-        // Set up the start and end time for the preferred daytime period
+        // Define daytime preferred window
         Calendar dayStart = Calendar.getInstance();
         dayStart.set(Calendar.HOUR_OF_DAY, preferredStartHour);
         dayStart.set(Calendar.MINUTE, 0);
@@ -336,28 +345,52 @@ public class ChargingManagementService {
                 )
         );
 
-        // Collect market prices for the daytime period
-        List<MarketPrice> daytimePeriods = selectTopPeriods(
-                marketPriceRepository.findAll().stream()
-                        .filter(price -> price.getStartTimestamp() >= dayStart.getTimeInMillis())
-                        .filter(price -> price.getStartTimestamp() < dayEnd.getTimeInMillis())
-                        .filter(price -> price.getStartTimestamp() > currentTime)
-                        .collect(Collectors.toList()),
-                maxChargingPeriods
-        );
+        // Fetch daytime prices
+        List<MarketPrice> daytimePeriods = marketPriceRepository.findAll().stream()
+                .filter(price -> price.getStartTimestamp() >= dayStart.getTimeInMillis())
+                .filter(price -> price.getStartTimestamp() < dayEnd.getTimeInMillis())
+                .filter(price -> price.getStartTimestamp() > currentTime)
+                .collect(Collectors.toList());
 
         if (daytimePeriods.isEmpty()) {
             LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No daytime periods available for optimization.");
             return;
         }
 
-        // Optimize the collected schedules using a Set
-        Set<ChargingSchedule> optimizedSchedules = collectAndOptimizeSchedules(daytimePeriods);
+        // Perform dynamic price analysis
+        double averagePrice = daytimePeriods.stream()
+                .mapToDouble(MarketPrice::getPriceInCentPerKWh)
+                .average()
+                .orElse(Double.MAX_VALUE);
 
-        // Save the optimized schedules
+        double medianPrice = calculateMedianPrice(daytimePeriods);
+        double adaptiveLowPriceThreshold = calculatePercentileThreshold(daytimePeriods, -1);
+
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                "Dynamic price analysis: Average=%.2f, Median=%.2f, 20th Percentile=%.2f",
+                averagePrice, medianPrice, adaptiveLowPriceThreshold
+        ));
+
+        // Select periods dynamically:
+        // - Include all prices below the 20th percentile.
+        // - Include prices below the average or median within `maxChargingPeriods`.
+        List<MarketPrice> selectedPeriods = daytimePeriods.stream()
+                .filter(price -> price.getPriceInCentPerKWh() <= adaptiveLowPriceThreshold
+                        || price.getPriceInCentPerKWh() <= averagePrice
+                        || price.getPriceInCentPerKWh() <= medianPrice)
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                .limit(maxChargingPeriods + 2) // Slightly exceed the max to allow flexibility
+                .collect(Collectors.toList());
+
+        if (selectedPeriods.isEmpty()) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No optimal daytime periods selected after analysis.");
+            return;
+        }
+
+        // Optimize and schedule charging tasks
+        Set<ChargingSchedule> optimizedSchedules = collectAndOptimizeSchedules(selectedPeriods);
         saveChargingSchedule(optimizedSchedules);
 
-        // Schedule the charging tasks
         for (ChargingSchedule schedule : optimizedSchedules) {
             Date startTime = new Date(schedule.getStartTimestamp());
             Date endTime = new Date(schedule.getEndTimestamp());
@@ -375,15 +408,15 @@ public class ChargingManagementService {
             taskScheduler.schedule(() -> executeChargingTask(startTime, endTime), startTime);
         }
 
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Daytime charging optimization completed.");
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Dynamic daytime charging optimization completed.");
     }
 
     private void optimizeNighttimeCharging() {
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Optimizing nighttime charging with priority for cheapest periods.");
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Optimizing nighttime charging dynamically based on price analysis.");
 
         long currentTime = System.currentTimeMillis();
 
-        // Set up the start and end time for the nighttime period
+        // Define the nighttime window
         Calendar nightStart = Calendar.getInstance();
         nightStart.set(Calendar.HOUR_OF_DAY, nightStartHour);
         nightStart.set(Calendar.MINUTE, 0);
@@ -391,40 +424,64 @@ public class ChargingManagementService {
         nightStart.set(Calendar.MILLISECOND, 0);
 
         Calendar nightEnd = (Calendar) nightStart.clone();
-        nightEnd.add(Calendar.DATE, 1);
+        nightEnd.add(Calendar.DATE, 1); // Night ends the next day
         nightEnd.set(Calendar.HOUR_OF_DAY, nightEndHour);
 
         LogFilter.log(
                 LogFilter.LOG_LEVEL_INFO,
                 String.format(
                         "Nighttime window: Start=%s, End=%s",
-                        dateFormat.format(new Date(nightStart.getTimeInMillis())),
-                        dateFormat.format(new Date(nightEnd.getTimeInMillis()))
+                        dateFormat.format(nightStart.getTime()),
+                        dateFormat.format(nightEnd.getTime())
                 )
         );
 
-        // Collect market prices for the nighttime period
-        List<MarketPrice> nighttimePeriods = selectTopPeriods(
-                marketPriceRepository.findAll().stream()
-                        .filter(price -> price.getStartTimestamp() >= nightStart.getTimeInMillis())
-                        .filter(price -> price.getStartTimestamp() < nightEnd.getTimeInMillis())
-                        .filter(price -> price.getStartTimestamp() > currentTime)
-                        .collect(Collectors.toList()),
-                maxChargingPeriods
-        );
+        // Fetch nighttime prices
+        List<MarketPrice> nighttimePeriods = marketPriceRepository.findAll().stream()
+                .filter(price -> price.getStartTimestamp() >= nightStart.getTimeInMillis())
+                .filter(price -> price.getStartTimestamp() < nightEnd.getTimeInMillis())
+                .filter(price -> price.getStartTimestamp() > currentTime)
+                .collect(Collectors.toList());
 
         if (nighttimePeriods.isEmpty()) {
             LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No nighttime periods available for optimization.");
             return;
         }
 
-        // Optimize the collected schedules using a Set
-        Set<ChargingSchedule> optimizedSchedules = collectAndOptimizeSchedules(nighttimePeriods);
+        // Perform dynamic price analysis
+        double averagePrice = nighttimePeriods.stream()
+                .mapToDouble(MarketPrice::getPriceInCentPerKWh)
+                .average()
+                .orElse(Double.MAX_VALUE);
 
-        // Save the optimized schedules
+        double medianPrice = calculateMedianPrice(nighttimePeriods);
+        double adaptiveLowPriceThreshold = calculatePercentileThreshold(nighttimePeriods, -1);
+
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                "Dynamic price analysis: Average=%.2f, Median=%.2f, 20th Percentile=%.2f",
+                averagePrice, medianPrice, adaptiveLowPriceThreshold
+        ));
+
+        // Select periods dynamically:
+        // - Include all prices below the 20th percentile.
+        // - Include prices below the average or median within `maxChargingPeriods`.
+        List<MarketPrice> selectedPeriods = nighttimePeriods.stream()
+                .filter(price -> price.getPriceInCentPerKWh() <= adaptiveLowPriceThreshold
+                        || price.getPriceInCentPerKWh() <= averagePrice
+                        || price.getPriceInCentPerKWh() <= medianPrice)
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                .limit(maxChargingPeriods + 2) // Slightly exceed the max to allow flexibility
+                .collect(Collectors.toList());
+
+        if (selectedPeriods.isEmpty()) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No optimal nighttime periods selected after analysis.");
+            return;
+        }
+
+        // Optimize and schedule charging tasks
+        Set<ChargingSchedule> optimizedSchedules = collectAndOptimizeSchedules(selectedPeriods);
         saveChargingSchedule(optimizedSchedules);
 
-        // Schedule the charging tasks
         for (ChargingSchedule schedule : optimizedSchedules) {
             Date startTime = new Date(schedule.getStartTimestamp());
             Date endTime = new Date(schedule.getEndTimestamp());
@@ -442,9 +499,82 @@ public class ChargingManagementService {
             taskScheduler.schedule(() -> executeChargingTask(startTime, endTime), startTime);
         }
 
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Nighttime charging optimization completed.");
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Dynamic nighttime charging optimization completed.");
     }
 
+    /**
+     * Calculates the median price from a list of MarketPrice objects.
+     */
+    private double calculateMedianPrice(List<MarketPrice> prices) {
+        List<Double> sortedPrices = prices.stream()
+                .map(MarketPrice::getPriceInCentPerKWh)
+                .sorted()
+                .collect(Collectors.toList());
+        int size = sortedPrices.size();
+        return size % 2 == 0
+                ? (sortedPrices.get(size / 2 - 1) + sortedPrices.get(size / 2)) / 2.0
+                : sortedPrices.get(size / 2);
+    }
+
+    /**
+     * Calculates the threshold for a given or dynamically calculated percentile.
+     *
+     * @param prices     List of MarketPrice objects
+     * @param percentile Desired percentile (e.g., 20 for the 20th percentile, -1 for dynamic calculation)
+     * @return Threshold value for the given or dynamically calculated percentile
+     */
+    private double calculatePercentileThreshold(List<MarketPrice> prices, int percentile) {
+        if (prices.isEmpty()) {
+            return Double.MAX_VALUE; // No data, return a very high threshold
+        }
+
+        // If percentile is -1, calculate it dynamically
+        if (percentile == -1) {
+            return calculateDynamicPercentile(prices);
+        }
+
+        // Static percentile calculation
+        List<Double> sortedPrices = prices.stream()
+                .map(MarketPrice::getPriceInCentPerKWh) // Extract the price values
+                .sorted() // Sort the prices in ascending order
+                .collect(Collectors.toList());
+        int index = (int) Math.ceil(percentile / 100.0 * sortedPrices.size()) - 1;
+        return sortedPrices.get(Math.max(0, index)); // Return the value at the percentile position
+    }
+
+    /**
+     * Dynamically calculates the percentile threshold based on price distribution.
+     *
+     * @param prices List of MarketPrice objects
+     * @return Threshold value for the dynamically calculated percentile
+     */
+    private double calculateDynamicPercentile(List<MarketPrice> prices) {
+        // Calculate the mean and standard deviation
+        double averagePrice = prices.stream().mapToDouble(MarketPrice::getPriceInCentPerKWh).average().orElse(Double.MAX_VALUE);
+        double standardDeviation = Math.sqrt(
+                prices.stream()
+                        .mapToDouble(price -> Math.pow(price.getPriceInCentPerKWh() - averagePrice, 2))
+                        .average()
+                        .orElse(0)
+        );
+
+        // Determine the dynamic percentile based on price distribution
+        // Example logic: Aggressive for very low average prices, conservative otherwise
+        double dynamicPercentile = averagePrice < 5 ? 10 : (averagePrice < 10 ? 20 : 30);
+
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                "Dynamic percentile calculated: %.2f%% (average=%.2f, stdDev=%.2f)",
+                dynamicPercentile, averagePrice, standardDeviation
+        ));
+
+        // Calculate threshold for the dynamic percentile
+        List<Double> sortedPrices = prices.stream()
+                .map(MarketPrice::getPriceInCentPerKWh)
+                .sorted()
+                .collect(Collectors.toList());
+        int index = (int) Math.ceil(dynamicPercentile / 100.0 * sortedPrices.size()) - 1;
+        return sortedPrices.get(Math.max(0, index));
+    }
 
 
     private boolean isWithinNighttimeWindow(long timestamp) {
@@ -687,14 +817,27 @@ public class ChargingManagementService {
     }
 
     /**
-     * Saves the selected charging periods to the database, avoiding duplicate entries.
+     * Saves the selected charging periods to the database, avoiding duplicate and expired entries.
      *
      * @param schedules Selected charging periods.
      */
     private void saveChargingSchedule(Set<ChargingSchedule> schedules) {
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Saving optimized charging schedules...");
 
+        long currentTime = System.currentTimeMillis();
+
         for (ChargingSchedule schedule : schedules) {
+            // Skip schedules that are already in the past
+            if (schedule.getEndTimestamp() < currentTime) {
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                        String.format("Skipping expired schedule: %s - %s (%.2f cents/kWh).",
+                                dateFormat.format(new Date(schedule.getStartTimestamp())),
+                                dateFormat.format(new Date(schedule.getEndTimestamp())),
+                                schedule.getPrice()));
+                continue;
+            }
+
+            // Check for duplicates
             boolean isDuplicate = chargingScheduleRepository.existsByStartEndAndPrice(
                     schedule.getStartTimestamp(), schedule.getEndTimestamp(), schedule.getPrice()
             );
@@ -712,6 +855,7 @@ public class ChargingManagementService {
                 continue;
             }
 
+            // Save valid schedule
             try {
                 chargingScheduleRepository.save(schedule);
                 LogFilter.log(
@@ -737,7 +881,7 @@ public class ChargingManagementService {
             }
         }
 
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "All schedules saved successfully.");
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "All valid schedules saved successfully.");
     }
 
     /**
