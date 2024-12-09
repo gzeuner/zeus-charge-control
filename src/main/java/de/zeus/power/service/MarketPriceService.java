@@ -1,5 +1,6 @@
 package de.zeus.power.service;
 
+import de.zeus.power.config.LogFilter;
 import de.zeus.power.entity.MarketPrice;
 import de.zeus.power.model.ApiResponse;
 import de.zeus.power.model.MarketPriceResponse;
@@ -317,18 +318,38 @@ public class MarketPriceService {
     /**
      * Saves the market prices to the repository.
      *
+     * This method processes the market price data, adjusts the end timestamps to prevent overlaps,
+     * and saves the resulting MarketPrice objects to the repository.
+     *
      * @param marketPriceResponse The MarketPriceResponse containing the market price data to save.
      */
     public void saveMarketPrices(MarketPriceResponse marketPriceResponse) {
         List<MarketPrice> marketPrices = marketPriceResponse.getData().stream().map(priceData -> {
             MarketPrice marketPrice = new MarketPrice();
             marketPrice.setStartTimestamp(priceData.getStartTimestamp());
-            marketPrice.setEndTimestamp(priceData.getEndTimestamp());
+
+            // Adjust the end timestamp to prevent overlaps by subtracting 1 second
+            long adjustedEndTimestamp = priceData.getEndTimestamp() - 1000; // 1000 ms = 1 second
+            if (adjustedEndTimestamp <= priceData.getStartTimestamp()) {
+                // Ensure the end timestamp is always after the start timestamp
+                adjustedEndTimestamp = priceData.getStartTimestamp() + 1000;
+            }
+            marketPrice.setEndTimestamp(adjustedEndTimestamp);
+
+            // Set the market price and unit
             marketPrice.setMarketPrice(priceData.getMarketprice());
             marketPrice.setUnit(CENT_KWH);
             return marketPrice;
         }).collect(Collectors.toList());
 
+        // Save all adjusted market prices to the repository
         marketPriceRepository.saveAll(marketPrices);
+
+        // Log the operation
+        LogFilter.log(
+                LogFilter.LOG_LEVEL_INFO,
+                String.format("Saved %d market prices with adjusted end timestamps.", marketPrices.size())
+        );
     }
+
 }
