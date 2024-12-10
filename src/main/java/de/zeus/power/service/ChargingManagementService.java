@@ -17,6 +17,8 @@ import org.springframework.stereotype.Service;
 
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
@@ -81,6 +83,8 @@ public class ChargingManagementService {
     private int maxChargingPeriods;
 
     private final AtomicBoolean nightResetScheduled = new AtomicBoolean(false);
+
+    private final Map<Long, ScheduledFuture<?>> scheduledTasks = new ConcurrentHashMap<>();
 
     /**
      * Handles the MarketPricesUpdatedEvent and triggers the charging optimization process.
@@ -294,11 +298,27 @@ public class ChargingManagementService {
             return;
         }
 
-        // Step 3: Optimize and save schedules
+        // Step 3: Cancel existing tasks for all future schedules
+        chargingScheduleRepository.findAll().forEach(schedule -> cancelTask(schedule.getId()));
+
+        // Step 4: Optimize and save schedules
         optimizeAndSaveSchedules();
+
+        // Step 5: Schedule the optimized tasks
+        schedulePlannedCharging();
 
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Optimization of charging schedule completed.");
     }
+
+
+    public void cancelTask(long scheduleId) {
+        ScheduledFuture<?> task = scheduledTasks.remove(scheduleId);
+        if (task != null) {
+            task.cancel(true);
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Cancelled scheduled task for schedule ID: " + scheduleId);
+        }
+    }
+
 
     private void removeExpiredSchedules() {
         long currentTime = System.currentTimeMillis();
@@ -307,17 +327,19 @@ public class ChargingManagementService {
                 .collect(Collectors.toList());
 
         expiredSchedules.forEach(schedule -> {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                    String.format("Removing expired schedule: %s - %s (%.2f cents/kWh).",
-                            dateFormat.format(new Date(schedule.getStartTimestamp())),
-                            dateFormat.format(new Date(schedule.getEndTimestamp())),
-                            schedule.getPrice()));
+            logger.info("Removing expired charging schedule: {} - {}.",
+                    dateFormat.format(new Date(schedule.getStartTimestamp())),
+                    dateFormat.format(new Date(schedule.getEndTimestamp())));
             chargingScheduleRepository.delete(schedule);
+
+            // Cancel the associated task
+            cancelTask(schedule.getId());
         });
 
         LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                String.format("Expired schedules removed: %d", expiredSchedules.size()));
+                String.format("Expired schedules cleanup completed. Removed: %d", expiredSchedules.size()));
     }
+
 
     private void optimizeAndSaveSchedules() {
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Collecting optimized schedules from all periods...");
@@ -342,11 +364,15 @@ public class ChargingManagementService {
                 .collect(Collectors.toList());
 
         for (ChargingSchedule schedule : futureSchedules) {
+            long scheduleId = schedule.getId();
             Date startTime = new Date(schedule.getStartTimestamp());
             Date endTime = new Date(schedule.getEndTimestamp());
 
-            // Plan the task to start charging
-            taskScheduler.schedule(() -> {
+            // Cancel any existing task for this schedule
+            cancelTask(scheduleId);
+
+            // Schedule a new task
+            ScheduledFuture<?> scheduledTask = taskScheduler.schedule(() -> {
                 LogFilter.log(
                         LogFilter.LOG_LEVEL_INFO,
                         String.format("Executing scheduled charging for period: %s - %s.",
@@ -356,6 +382,9 @@ public class ChargingManagementService {
                 executeChargingTask(startTime, endTime);
             }, startTime);
 
+            // Save the task in the map
+            scheduledTasks.put(scheduleId, scheduledTask);
+
             LogFilter.log(
                     LogFilter.LOG_LEVEL_INFO,
                     String.format("Scheduled charging task for: %s - %s.",
@@ -364,6 +393,7 @@ public class ChargingManagementService {
             );
         }
     }
+
 
 
 
