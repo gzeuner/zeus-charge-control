@@ -42,6 +42,7 @@ public class BatteryManagementService {
     private final BatteryCommandService commandService;
     private final OpenMeteoService weatherService;
     private final boolean batteryNotConfigured;
+    private boolean forcedChargingActive = false;
 
     @Value("${battery.target.stateOfCharge}")
     private int targetStateOfChargeInPercent;
@@ -219,11 +220,15 @@ public class BatteryManagementService {
 
 
     public boolean initCharging(boolean forceCharging) {
+        // Update the forced charging status
+        this.forcedChargingActive = forceCharging;
+
         // Invalidate cached battery status
         invalidateBatteryCache();
 
         // Check basic requirements
         if (!checkPreconditions()) {
+            this.forcedChargingActive = false; // Reset flag on failure
             return false;
         }
 
@@ -234,12 +239,9 @@ public class BatteryManagementService {
                 .filter(schedule -> currentTime >= schedule.getStartTimestamp() && currentTime < schedule.getEndTimestamp())
                 .findFirst();
 
-        if (activeSchedule.isEmpty()) {
-            if (forceCharging) {
-                LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "No active charging schedule for the current time. Forced charging cannot be initiated for future periods.");
-                return false;
-            }
+        if (activeSchedule.isEmpty() && !forceCharging) {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, "No active charging schedule for the current time. Skipping charging.");
+            this.forcedChargingActive = false; // Reset flag if no active schedule and not forced
             return false;
         }
 
@@ -249,11 +251,13 @@ public class BatteryManagementService {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO,
                     String.format("Charging skipped: Battery charge level (%d%%) is at or above the target (%d%%).",
                             relativeStateOfCharge, targetStateOfChargeInPercent));
+            this.forcedChargingActive = false; // Reset flag if target is reached
             return false;
         }
 
         // Check whether loading is already in progress and whether this is permitted
         if (!isBatteryChargingAllowed(forceCharging)) {
+            this.forcedChargingActive = false; // Reset flag if charging not allowed
             return false;
         }
 
@@ -270,6 +274,7 @@ public class BatteryManagementService {
         ApiResponse<?> manualModeResponse = activateManualOperatingMode();
         if (!manualModeResponse.success()) {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Failed to activate manual operating mode for charging.");
+            this.forcedChargingActive = false; // Reset flag on failure
             return false;
         }
 
@@ -278,6 +283,7 @@ public class BatteryManagementService {
         if (!success) {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO,
                     String.format("Failed to set charge point to %d Watt.", currentChargingPoint));
+            this.forcedChargingActive = false; // Reset flag on failure
             return false;
         }
 
@@ -326,11 +332,21 @@ public class BatteryManagementService {
             return false;
         }
 
+        // Reset the forced charging flag
+        setForcedChargingActive(false);
+
         LogFilter.log(LogFilter.LOG_LEVEL_INFO,
                 String.format("Successfully returned to automatic operating mode and reset ChargingPoint to %d Watt.", chargingPointInWatt));
         return true;
     }
 
+    public boolean isForcedChargingActive() {
+        return forcedChargingActive;
+    }
+
+    public void setForcedChargingActive(boolean forcedChargingActive) {
+        this.forcedChargingActive = forcedChargingActive;
+    }
 
     public boolean isBatteryCharging() {
         if (isBatteryNotConfigured()) {
@@ -438,6 +454,8 @@ public class BatteryManagementService {
         cacheTimestamp = null;
         LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "Battery status cache invalidated.");
     }
+
+
 
     private void adjustChargingPointBasedOnWeather() {
         LocalTime now = LocalTime.now();

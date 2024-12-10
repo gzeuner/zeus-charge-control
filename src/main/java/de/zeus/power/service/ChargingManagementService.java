@@ -80,7 +80,6 @@ public class ChargingManagementService {
     @Value("${charging.schedule.max.periods:2}")
     private int maxChargingPeriods;
 
-    private final AtomicBoolean resetScheduled = new AtomicBoolean(false);
     private final AtomicBoolean nightResetScheduled = new AtomicBoolean(false);
 
     /**
@@ -115,6 +114,19 @@ public class ChargingManagementService {
         int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
         boolean isNightTime = isWithinNighttimeWindow(System.currentTimeMillis());
         boolean largeConsumerActive = batteryManagementService.isLargeConsumerActive();
+
+        // Check if forced charging is active
+        if (batteryManagementService.isForcedChargingActive()) {
+            if (currentRSOC >= targetStateOfCharge) {
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                        String.format("Target RSOC (%d%%) reached during forced charging. Disabling forced charging mode.",
+                                targetStateOfCharge));
+                batteryManagementService.setForcedChargingActive(false);
+            } else {
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Forced charging is active. Skipping automatic mode reset.");
+                return;
+            }
+        }
 
         // Delegate dynamic adjustment to the BatteryManagementService
         boolean success = batteryManagementService.adjustChargingPointDynamically(currentRSOC, isNightTime, largeConsumerActive);
@@ -318,16 +330,39 @@ public class ChargingManagementService {
         LogFilter.log(LogFilter.LOG_LEVEL_INFO,
                 String.format("Collected %d schedules for saving.", optimizedSchedules.size()));
 
+        // Save and Schedule tasks for future charging periods
         saveChargingSchedule(optimizedSchedules);
+        schedulePlannedCharging();
     }
 
-
-    private List<MarketPrice> selectTopPeriods(List<MarketPrice> periods, int maxPeriods) {
-        return periods.stream()
-                .filter(price -> price.getPriceInCentPerKWh() <= maxAcceptableMarketPriceInCent)
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .limit(maxPeriods)
+    public void schedulePlannedCharging() {
+        List<ChargingSchedule> futureSchedules = chargingScheduleRepository.findAll().stream()
+                .filter(schedule -> schedule.getStartTimestamp() > System.currentTimeMillis())
+                .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp))
                 .collect(Collectors.toList());
+
+        for (ChargingSchedule schedule : futureSchedules) {
+            Date startTime = new Date(schedule.getStartTimestamp());
+            Date endTime = new Date(schedule.getEndTimestamp());
+
+            // Plan the task to start charging
+            taskScheduler.schedule(() -> {
+                LogFilter.log(
+                        LogFilter.LOG_LEVEL_INFO,
+                        String.format("Executing scheduled charging for period: %s - %s.",
+                                dateFormat.format(startTime),
+                                dateFormat.format(endTime))
+                );
+                executeChargingTask(startTime, endTime);
+            }, startTime);
+
+            LogFilter.log(
+                    LogFilter.LOG_LEVEL_INFO,
+                    String.format("Scheduled charging task for: %s - %s.",
+                            dateFormat.format(startTime),
+                            dateFormat.format(endTime))
+            );
+        }
     }
 
 
@@ -524,33 +559,6 @@ public class ChargingManagementService {
         return timestamp >= nightStart.getTimeInMillis() && timestamp < nightEnd.getTimeInMillis();
     }
 
-
-    private void scheduleResetTask(Date resetTime) {
-        if (resetScheduled.get()) {
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    "Reset task is already scheduled. Skipping duplicate scheduling."
-            );
-            return;
-        }
-
-        taskScheduler.schedule(() -> {
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    String.format("Re-enabling automatic mode and resetting charging point at %s", dateFormat.format(resetTime))
-            );
-            batteryManagementService.resetToAutomaticMode();
-            resetScheduled.set(false);
-        }, resetTime);
-
-        resetScheduled.set(true);
-        LogFilter.log(
-                LogFilter.LOG_LEVEL_INFO,
-                String.format("Task to reset charging point and re-enable automatic mode scheduled for %s", dateFormat.format(resetTime))
-        );
-    }
-
-
     /**
      * Cleans up expired charging schedules and optimizes remaining schedules.
      */
@@ -710,7 +718,7 @@ public class ChargingManagementService {
     }
 
     /**
-     * Saves the selected charging periods to the database, avoiding duplicate and expired entries.
+     * Saves the selected charging periods to the database, avoiding duplicate, expired, and overpriced entries.
      *
      * @param schedules Selected charging periods.
      */
@@ -718,12 +726,39 @@ public class ChargingManagementService {
         long currentTime = System.currentTimeMillis();
 
         for (ChargingSchedule schedule : schedules) {
-            // Skip schedules with an end time before the current time
-            if (schedule.getEndTimestamp() <= currentTime) {
+            // Skip schedules that are already in the past
+            if (schedule.getEndTimestamp() < currentTime) {
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                        String.format("Skipping expired schedule: %s - %s (%.2f cents/kWh).",
+                                dateFormat.format(new Date(schedule.getStartTimestamp())),
+                                dateFormat.format(new Date(schedule.getEndTimestamp())),
+                                schedule.getPrice()));
+                continue;
+            }
+
+            // Skip schedules that exceed the maximum acceptable market price
+            if (schedule.getPrice() > maxAcceptableMarketPriceInCent) {
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                        String.format("Skipping overpriced schedule: %s - %s at %.2f cents/kWh (max acceptable: %d cents/kWh).",
+                                dateFormat.format(new Date(schedule.getStartTimestamp())),
+                                dateFormat.format(new Date(schedule.getEndTimestamp())),
+                                schedule.getPrice(),
+                                maxAcceptableMarketPriceInCent));
+                continue;
+            }
+
+            // Check for duplicates using the repository method
+            boolean exists = chargingScheduleRepository.existsByStartEndAndPrice(
+                    schedule.getStartTimestamp(),
+                    schedule.getEndTimestamp(),
+                    schedule.getPrice()
+            );
+
+            if (exists) {
                 LogFilter.log(
-                        LogFilter.LOG_LEVEL_WARN,
+                        LogFilter.LOG_LEVEL_INFO,
                         String.format(
-                                "Skipping schedule from the past: %s - %s (%.2f cents/kWh).",
+                                "Skipping duplicate schedule: %s - %s at %.2f cents/kWh.",
                                 dateFormat.format(new Date(schedule.getStartTimestamp())),
                                 dateFormat.format(new Date(schedule.getEndTimestamp())),
                                 schedule.getPrice()
@@ -732,19 +767,34 @@ public class ChargingManagementService {
                 continue;
             }
 
-            chargingScheduleRepository.save(schedule);
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    String.format(
-                            "Saved schedule: %s - %s at %.2f cents/kWh.",
-                            dateFormat.format(new Date(schedule.getStartTimestamp())),
-                            dateFormat.format(new Date(schedule.getEndTimestamp())),
-                            schedule.getPrice()
-                    )
-            );
+            // Save valid schedule
+            try {
+                chargingScheduleRepository.save(schedule);
+                LogFilter.log(
+                        LogFilter.LOG_LEVEL_INFO,
+                        String.format(
+                                "Saved schedule: %s - %s at %.2f cents/kWh.",
+                                dateFormat.format(new Date(schedule.getStartTimestamp())),
+                                dateFormat.format(new Date(schedule.getEndTimestamp())),
+                                schedule.getPrice()
+                        )
+                );
+            } catch (Exception e) {
+                LogFilter.log(
+                        LogFilter.LOG_LEVEL_ERROR,
+                        String.format(
+                                "Failed to save schedule: %s - %s at %.2f cents/kWh. Error: %s",
+                                dateFormat.format(new Date(schedule.getStartTimestamp())),
+                                dateFormat.format(new Date(schedule.getEndTimestamp())),
+                                schedule.getPrice(),
+                                e.getMessage()
+                        )
+                );
+            }
         }
-    }
 
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "All valid schedules saved successfully.");
+    }
 
     /**
      * Retrieves and sorts all existing charging schedules.
