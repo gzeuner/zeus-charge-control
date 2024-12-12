@@ -380,21 +380,18 @@ public class ChargingManagementService {
     }
 
     /**
-     * Checks if the existing task matches the given schedule's timing.
+     * Checks if the existing task matches the given schedule's timing based on its end timestamp.
      *
      * @param task The existing task.
      * @param schedule The charging schedule to compare against.
      * @return True if the task is up-to-date, false otherwise.
      */
     private boolean isTaskUpToDate(ScheduledFuture<?> task, ChargingSchedule schedule) {
-        // Calculate the expected delay for the task based on the schedule's start timestamp
-        long expectedDelay = schedule.getStartTimestamp() - System.currentTimeMillis();
 
-        // Check if the task's delay matches the expected delay within a reasonable margin
-        long actualDelay = task.getDelay(TimeUnit.MILLISECONDS);
-        long margin = 1000; // 1 second margin for timing discrepancies
-
-        return Math.abs(expectedDelay - actualDelay) <= margin;
+        long actualEndTime = System.currentTimeMillis() + task.getDelay(TimeUnit.MILLISECONDS);
+        long expectedEndTime = schedule.getEndTimestamp();
+        long margin = 1000;
+        return Math.abs(expectedEndTime - actualEndTime) <= margin;
     }
 
 
