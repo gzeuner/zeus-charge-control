@@ -19,6 +19,7 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
@@ -94,19 +95,33 @@ public class ChargingManagementService {
     @EventListener
     public void onMarketPricesUpdated(MarketPricesUpdatedEvent event) {
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Market prices updated event received. Recalculating charging schedule...");
-        optimizeChargingSchedule();
+
+        Set<ChargingSchedule> optimizedSchedules = new HashSet<>();
+        optimizedSchedules.addAll(optimizeNighttimeCharging());
+        optimizedSchedules.addAll(optimizeTransitionPeriods());
+        optimizedSchedules.addAll(optimizeDaytimeCharging());
+
+        synchronizeSchedules(optimizedSchedules);
+
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Market price update handled and schedules synchronized.");
     }
 
     @Scheduled(cron = "0 0 * * * ?") // Every full hour
     public void scheduledOptimizeChargingSchedule() {
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Scheduled optimization of charging schedule triggered.");
         if (shouldOptimize()) {
-            optimizeChargingSchedule();
+            Set<ChargingSchedule> optimizedSchedules = new HashSet<>();
+            optimizedSchedules.addAll(optimizeNighttimeCharging());
+            optimizedSchedules.addAll(optimizeTransitionPeriods());
+            optimizedSchedules.addAll(optimizeDaytimeCharging());
+
+            synchronizeSchedules(optimizedSchedules);
         } else {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, "No significant changes detected. Skipping optimization.");
         }
         cleanUpExpiredSchedules();
     }
+
 
     @Scheduled(fixedRateString = "${battery.automatic.mode.check.interval:300000}") // Every 5 minutes
     public void checkAndResetToAutomaticMode() {
@@ -126,6 +141,7 @@ public class ChargingManagementService {
                         String.format("Target RSOC (%d%%) reached during forced charging. Disabling forced charging mode.",
                                 targetStateOfCharge));
                 batteryManagementService.setForcedChargingActive(false);
+                batteryManagementService.resetToAutomaticMode();
             } else {
                 LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Forced charging is active. Skipping automatic mode reset.");
                 return;
@@ -160,6 +176,9 @@ public class ChargingManagementService {
         calendar.set(Calendar.MINUTE, 0);
         calendar.set(Calendar.SECOND, 0);
         calendar.set(Calendar.MILLISECOND, 0);
+
+        // Subtract 5 minutes
+        calendar.add(Calendar.MINUTE, -5);
 
         Date resetTime = calendar.getTime();
         if (resetTime.before(new Date())) {
@@ -280,37 +299,6 @@ public class ChargingManagementService {
         return !hasFutureSchedules || hasLargeConsumer || currentRSOC < targetStateOfCharge;
     }
 
-    /**
-     * Main method to optimize the charging schedule based on battery state, market prices, and time periods.
-     */
-    public void optimizeChargingSchedule() {
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Starting optimization of charging schedule...");
-
-        // Step 1: Clean up expired schedules
-        removeExpiredSchedules();
-
-        // Step 2: Skip optimization if RSOC already meets the target
-        int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
-        if (currentRSOC >= targetStateOfCharge) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                    String.format("Skipping optimization: Current RSOC (%d) meets/exceeds target (%d).",
-                            currentRSOC, targetStateOfCharge));
-            return;
-        }
-
-        // Step 3: Cancel existing tasks for all future schedules
-        chargingScheduleRepository.findAll().forEach(schedule -> cancelTask(schedule.getId()));
-
-        // Step 4: Optimize and save schedules
-        optimizeAndSaveSchedules();
-
-        // Step 5: Schedule the optimized tasks
-        schedulePlannedCharging();
-
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Optimization of charging schedule completed.");
-    }
-
-
     public void cancelTask(long scheduleId) {
         ScheduledFuture<?> task = scheduledTasks.remove(scheduleId);
         if (task != null) {
@@ -320,41 +308,31 @@ public class ChargingManagementService {
     }
 
 
-    private void removeExpiredSchedules() {
-        long currentTime = System.currentTimeMillis();
-        List<ChargingSchedule> expiredSchedules = chargingScheduleRepository.findAll().stream()
-                .filter(schedule -> schedule.getEndTimestamp() < currentTime)
+    private Set<ChargingSchedule> validateSchedulesForCheaperOptions(Set<ChargingSchedule> schedules) {
+        List<ChargingSchedule> sortedSchedules = schedules.stream()
+                .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice))
                 .collect(Collectors.toList());
 
-        expiredSchedules.forEach(schedule -> {
-            logger.info("Removing expired charging schedule: {} - {}.",
-                    dateFormat.format(new Date(schedule.getStartTimestamp())),
-                    dateFormat.format(new Date(schedule.getEndTimestamp())));
-            chargingScheduleRepository.delete(schedule);
+        Set<ChargingSchedule> validatedSchedules = new HashSet<>();
 
-            // Cancel the associated task
-            cancelTask(schedule.getId());
-        });
+        for (ChargingSchedule schedule : sortedSchedules) {
+            boolean hasCheaperAlternative = schedules.stream()
+                    .anyMatch(s -> s.getStartTimestamp() >= schedule.getStartTimestamp()
+                            && s.getEndTimestamp() <= schedule.getEndTimestamp()
+                            && s.getPrice() < schedule.getPrice());
 
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                String.format("Expired schedules cleanup completed. Removed: %d", expiredSchedules.size()));
-    }
+            if (!hasCheaperAlternative) {
+                validatedSchedules.add(schedule);
+            } else {
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                        "Removed schedule %s - %s (%.2f cents/kWh) due to cheaper alternative.",
+                        dateFormat.format(new Date(schedule.getStartTimestamp())),
+                        dateFormat.format(new Date(schedule.getEndTimestamp())),
+                        schedule.getPrice()));
+            }
+        }
 
-
-    private void optimizeAndSaveSchedules() {
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Collecting optimized schedules from all periods...");
-
-        Set<ChargingSchedule> optimizedSchedules = new HashSet<>();
-        optimizedSchedules.addAll(optimizeNighttimeCharging());
-        optimizedSchedules.addAll(optimizeTransitionPeriods());
-        optimizedSchedules.addAll(optimizeDaytimeCharging());
-
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                String.format("Collected %d schedules for saving.", optimizedSchedules.size()));
-
-        // Save and Schedule tasks for future charging periods
-        saveChargingSchedule(optimizedSchedules);
-        schedulePlannedCharging();
+        return validatedSchedules;
     }
 
     public void schedulePlannedCharging() {
@@ -368,30 +346,88 @@ public class ChargingManagementService {
             Date startTime = new Date(schedule.getStartTimestamp());
             Date endTime = new Date(schedule.getEndTimestamp());
 
-            // Cancel any existing task for this schedule
-            cancelTask(scheduleId);
+            // Check if a task already exists for this schedule
+            ScheduledFuture<?> existingTask = scheduledTasks.get(scheduleId);
 
-            // Schedule a new task
-            ScheduledFuture<?> scheduledTask = taskScheduler.schedule(() -> {
+            // Cancel only if the existing task differs in timing
+            if (existingTask != null && !isTaskUpToDate(existingTask, schedule)) {
+                cancelTask(scheduleId);
+            }
+
+            // Schedule a new task only if no up-to-date task exists
+            if (existingTask == null || !isTaskUpToDate(existingTask, schedule)) {
+                ScheduledFuture<?> scheduledTask = taskScheduler.schedule(() -> {
+                    LogFilter.log(
+                            LogFilter.LOG_LEVEL_INFO,
+                            String.format("Executing scheduled charging for period: %s - %s.",
+                                    dateFormat.format(startTime),
+                                    dateFormat.format(endTime))
+                    );
+                    executeChargingTask(startTime, endTime);
+                }, startTime);
+
+                // Save the task in the map
+                scheduledTasks.put(scheduleId, scheduledTask);
+
                 LogFilter.log(
                         LogFilter.LOG_LEVEL_INFO,
-                        String.format("Executing scheduled charging for period: %s - %s.",
+                        String.format("Scheduled charging task for: %s - %s.",
                                 dateFormat.format(startTime),
                                 dateFormat.format(endTime))
                 );
-                executeChargingTask(startTime, endTime);
-            }, startTime);
-
-            // Save the task in the map
-            scheduledTasks.put(scheduleId, scheduledTask);
-
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    String.format("Scheduled charging task for: %s - %s.",
-                            dateFormat.format(startTime),
-                            dateFormat.format(endTime))
-            );
+            }
         }
+    }
+
+    /**
+     * Checks if the existing task matches the given schedule's timing.
+     *
+     * @param task The existing task.
+     * @param schedule The charging schedule to compare against.
+     * @return True if the task is up-to-date, false otherwise.
+     */
+    private boolean isTaskUpToDate(ScheduledFuture<?> task, ChargingSchedule schedule) {
+        // Calculate the expected delay for the task based on the schedule's start timestamp
+        long expectedDelay = schedule.getStartTimestamp() - System.currentTimeMillis();
+
+        // Check if the task's delay matches the expected delay within a reasonable margin
+        long actualDelay = task.getDelay(TimeUnit.MILLISECONDS);
+        long margin = 1000; // 1 second margin for timing discrepancies
+
+        return Math.abs(expectedDelay - actualDelay) <= margin;
+    }
+
+
+    /**
+     * Generates a unique signature for a schedule based on its start time, end time, and price.
+     * This ensures we can compare schedules based on their key attributes.
+     *
+     * @param schedule The ChargingSchedule to generate a signature for.
+     * @return A unique string signature in the format "start-end-price".
+     */
+    private String createScheduleSignature(ChargingSchedule schedule) {
+        return String.format("%d-%d-%.2f",
+                schedule.getStartTimestamp(),
+                schedule.getEndTimestamp(),
+                schedule.getPrice());
+    }
+
+    /**
+     * Checks if the existing task matches the given schedule's signature.
+     *
+     * @param taskId The ID of the existing task.
+     * @param schedule The charging schedule to compare against.
+     * @return True if the task matches the schedule signature, false otherwise.
+     */
+    private boolean isTaskUpToDate(long taskId, ChargingSchedule schedule) {
+        String existingSignature = scheduledTasks.containsKey(taskId)
+                ? createScheduleSignature(schedule)
+                : null;
+        String currentSignature = String.format("%d-%d-%.2f",
+                schedule.getStartTimestamp(),
+                schedule.getEndTimestamp(),
+                schedule.getPrice());
+        return existingSignature != null && existingSignature.equals(currentSignature);
     }
 
 
@@ -463,20 +499,36 @@ public class ChargingManagementService {
             return Collections.emptyList();
         }
 
-        // calculate Median & percentileThreshold
         double medianPrice = calculateMedianPrice(nighttimePeriods);
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format("Nighttime Periods median price: %.2f cents/kWh", medianPrice));
         double percentileThreshold = calculatePercentileThreshold(nighttimePeriods, -1);
 
-        // Select periods below the media
+        // Select periods below the median or percentile threshold
         List<MarketPrice> selectedPeriods = nighttimePeriods.stream()
                 .filter(price -> price.getPriceInCentPerKWh() <= percentileThreshold
                         || price.getPriceInCentPerKWh() <= medianPrice)
                 .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .limit(maxChargingPeriods)
                 .collect(Collectors.toList());
 
-        return new ArrayList<>(collectAndOptimizeSchedules(selectedPeriods));
+        // **Check for cheaper periods within the same time range**
+        List<MarketPrice> optimizedPeriods = new ArrayList<>();
+        for (MarketPrice period : selectedPeriods) {
+            boolean hasCheaperOption = nighttimePeriods.stream()
+                    .filter(p -> p.getStartTimestamp() >= period.getStartTimestamp()
+                            && p.getEndTimestamp() <= period.getEndTimestamp())
+                    .anyMatch(p -> p.getPriceInCentPerKWh() < period.getPriceInCentPerKWh());
+
+            if (!hasCheaperOption) {
+                optimizedPeriods.add(period);
+            } else {
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                        "Excluded period %s - %s (%.2f cents/kWh) due to cheaper alternative.",
+                        dateFormat.format(new Date(period.getStartTimestamp())),
+                        dateFormat.format(new Date(period.getEndTimestamp())),
+                        period.getPriceInCentPerKWh()));
+            }
+        }
+
+        return new ArrayList<>(collectAndOptimizeSchedules(optimizedPeriods));
     }
 
     /**
@@ -731,6 +783,49 @@ public class ChargingManagementService {
         return new ArrayList<>(collectAndOptimizeSchedules(selectedPeriods));
     }
 
+    /**
+     * Synchronizes the current charging schedules with the newly optimized schedules.
+     * Ensures outdated schedules are removed, unneeded tasks are canceled,
+     * and only new or updated schedules are added and scheduled.
+     *
+     * @param newSchedules The set of newly optimized charging schedules.
+     */
+    private void synchronizeSchedules(Set<ChargingSchedule> newSchedules) {
+        long currentTime = System.currentTimeMillis();
+
+        // Load existing future schedules and sort them by start time
+        List<ChargingSchedule> existingSchedules = chargingScheduleRepository.findAll().stream()
+                .filter(schedule -> schedule.getEndTimestamp() > currentTime) // Only future schedules
+                .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp)) // Sort by start time
+                .collect(Collectors.toList());
+
+        // Validate new schedules (retain only cheaper alternatives)
+        Set<ChargingSchedule> validatedNewSchedules = validateSchedulesForCheaperOptions(newSchedules);
+
+        // Remove outdated schedules if they are replaced by cheaper alternatives
+        for (ChargingSchedule existing : existingSchedules) {
+            boolean hasCheaperAlternative = validatedNewSchedules.stream()
+                    .anyMatch(newSchedule -> newSchedule.getStartTimestamp() == existing.getStartTimestamp()
+                            && newSchedule.getEndTimestamp() == existing.getEndTimestamp()
+                            && newSchedule.getPrice() < existing.getPrice());
+            if (hasCheaperAlternative) {
+                cancelTask(existing.getId());
+                chargingScheduleRepository.delete(existing);
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                        "Removed outdated schedule in favor of cheaper alternative: %s - %s (%.2f cents/kWh).",
+                        dateFormat.format(new Date(existing.getStartTimestamp())),
+                        dateFormat.format(new Date(existing.getEndTimestamp())),
+                        existing.getPrice()));
+            }
+        }
+
+        // Save new validated schedules using saveChargingSchedule
+        saveChargingSchedule(validatedNewSchedules);
+
+        // Re-schedule all validated future tasks
+        schedulePlannedCharging();
+    }
+
 
     private Set<ChargingSchedule> collectAndOptimizeSchedules(List<MarketPrice> periods) {
         Set<ChargingSchedule> optimizedSchedules = new HashSet<>();
@@ -756,24 +851,8 @@ public class ChargingManagementService {
         long currentTime = System.currentTimeMillis();
 
         for (ChargingSchedule schedule : schedules) {
-            // Skip schedules that are already in the past
-            if (schedule.getEndTimestamp() < currentTime) {
-                LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                        String.format("Skipping expired schedule: %s - %s (%.2f cents/kWh).",
-                                dateFormat.format(new Date(schedule.getStartTimestamp())),
-                                dateFormat.format(new Date(schedule.getEndTimestamp())),
-                                schedule.getPrice()));
-                continue;
-            }
-
-            // Skip schedules that exceed the maximum acceptable market price
-            if (schedule.getPrice() > maxAcceptableMarketPriceInCent) {
-                LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                        String.format("Skipping overpriced schedule: %s - %s at %.2f cents/kWh (max acceptable: %d cents/kWh).",
-                                dateFormat.format(new Date(schedule.getStartTimestamp())),
-                                dateFormat.format(new Date(schedule.getEndTimestamp())),
-                                schedule.getPrice(),
-                                maxAcceptableMarketPriceInCent));
+            // Skip invalid schedules directly
+            if (!isValidSchedule(schedule, currentTime)) {
                 continue;
             }
 
@@ -822,9 +901,41 @@ public class ChargingManagementService {
                 );
             }
         }
-
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "All valid schedules saved successfully.");
     }
+
+    /**
+     * Validates whether a schedule meets basic criteria (e.g., not expired, not overpriced).
+     *
+     * @param schedule The schedule to validate.
+     * @param currentTime The current system time.
+     * @return True if the schedule is valid, false otherwise.
+     */
+    private boolean isValidSchedule(ChargingSchedule schedule, long currentTime) {
+        // Check if the schedule is expired
+        if (schedule.getEndTimestamp() < currentTime) {
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                    String.format("Skipping expired schedule: %s - %s (%.2f cents/kWh).",
+                            dateFormat.format(new Date(schedule.getStartTimestamp())),
+                            dateFormat.format(new Date(schedule.getEndTimestamp())),
+                            schedule.getPrice()));
+            return false;
+        }
+
+        // Check if the schedule is overpriced
+        if (schedule.getPrice() > maxAcceptableMarketPriceInCent) {
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                    String.format("Skipping overpriced schedule: %s - %s at %.2f cents/kWh (max acceptable: %d cents/kWh).",
+                            dateFormat.format(new Date(schedule.getStartTimestamp())),
+                            dateFormat.format(new Date(schedule.getEndTimestamp())),
+                            schedule.getPrice(),
+                            maxAcceptableMarketPriceInCent));
+            return false;
+        }
+
+        return true;
+    }
+
 
     /**
      * Retrieves and sorts all existing charging schedules.
