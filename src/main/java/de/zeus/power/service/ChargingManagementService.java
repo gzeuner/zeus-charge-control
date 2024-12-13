@@ -83,6 +83,13 @@ public class ChargingManagementService {
     @Value("${charging.schedule.max.periods:2}")
     private int maxChargingPeriods;
 
+    @Value("${marketdata.price.flexibility.enabled:false}")
+    private boolean priceFlexibilityEnabled;
+
+    @Value("${marketdata.price.flexibility.threshold:10}")
+    private double priceFlexibilityThreshold;
+
+
     private final AtomicBoolean nightResetScheduled = new AtomicBoolean(false);
 
     private final Map<Long, ScheduledFuture<?>> scheduledTasks = new ConcurrentHashMap<>();
@@ -315,20 +322,35 @@ public class ChargingManagementService {
 
         Set<ChargingSchedule> validatedSchedules = new HashSet<>();
 
+        // Bestimme den günstigsten Preis
+        double minPrice = sortedSchedules.stream()
+                .mapToDouble(ChargingSchedule::getPrice)
+                .min()
+                .orElse(Double.MAX_VALUE);
+
+        // Berechne den Schwellenwert basierend auf der Flexibilität
+        double priceThreshold = minPrice;
+        if (priceFlexibilityEnabled) { // Konfiguration beachten
+            priceThreshold += priceFlexibilityThreshold;
+        }
+
         for (ChargingSchedule schedule : sortedSchedules) {
+            // Prüfen, ob ein günstigeres Alternativ-Schedule existiert
             boolean hasCheaperAlternative = schedules.stream()
                     .anyMatch(s -> s.getStartTimestamp() >= schedule.getStartTimestamp()
                             && s.getEndTimestamp() <= schedule.getEndTimestamp()
                             && s.getPrice() < schedule.getPrice());
 
-            if (!hasCheaperAlternative) {
+            // Prüfen, ob der Preis innerhalb der akzeptierten Schwelle liegt
+            if (!hasCheaperAlternative && schedule.getPrice() <= priceThreshold) {
                 validatedSchedules.add(schedule);
             } else {
                 LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                        "Removed schedule %s - %s (%.2f cents/kWh) due to cheaper alternative.",
+                        "Removed schedule %s - %s (%.2f cents/kWh) due to cheaper alternative or exceeding threshold (%.2f).",
                         dateFormat.format(new Date(schedule.getStartTimestamp())),
                         dateFormat.format(new Date(schedule.getEndTimestamp())),
-                        schedule.getPrice()));
+                        schedule.getPrice(),
+                        priceThreshold));
             }
         }
 
@@ -393,42 +415,6 @@ public class ChargingManagementService {
         long margin = 1000;
         return Math.abs(expectedEndTime - actualEndTime) <= margin;
     }
-
-
-    /**
-     * Generates a unique signature for a schedule based on its start time, end time, and price.
-     * This ensures we can compare schedules based on their key attributes.
-     *
-     * @param schedule The ChargingSchedule to generate a signature for.
-     * @return A unique string signature in the format "start-end-price".
-     */
-    private String createScheduleSignature(ChargingSchedule schedule) {
-        return String.format("%d-%d-%.2f",
-                schedule.getStartTimestamp(),
-                schedule.getEndTimestamp(),
-                schedule.getPrice());
-    }
-
-    /**
-     * Checks if the existing task matches the given schedule's signature.
-     *
-     * @param taskId The ID of the existing task.
-     * @param schedule The charging schedule to compare against.
-     * @return True if the task matches the schedule signature, false otherwise.
-     */
-    private boolean isTaskUpToDate(long taskId, ChargingSchedule schedule) {
-        String existingSignature = scheduledTasks.containsKey(taskId)
-                ? createScheduleSignature(schedule)
-                : null;
-        String currentSignature = String.format("%d-%d-%.2f",
-                schedule.getStartTimestamp(),
-                schedule.getEndTimestamp(),
-                schedule.getPrice());
-        return existingSignature != null && existingSignature.equals(currentSignature);
-    }
-
-
-
 
     private List<ChargingSchedule> optimizeDaytimeCharging() {
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Optimizing daytime charging dynamically based on price analysis.");
