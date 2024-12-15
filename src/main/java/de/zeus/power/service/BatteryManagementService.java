@@ -316,13 +316,13 @@ public class BatteryManagementService {
 
         invalidateBatteryCache();
 
-        if (isBatteryNotConfigured()) {
-            return false;
+        if(isAutomaticOperatingMode()) {
+            LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "Battery is not in manual mode, no need to switch to automatic mode.");
+            return true;
         }
 
-        if (!isManualOperatingMode()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Battery is not in manual mode, no need to switch to automatic mode.");
-            return true;
+        if (isBatteryNotConfigured()) {
+            return false;
         }
 
         // Activate automatic mode
@@ -499,6 +499,10 @@ public class BatteryManagementService {
         } else {
             return currentTime.isAfter(nightStart) && currentTime.isBefore(nightEnd);
         }
+    }
+
+    public List<Map.Entry<Long, Integer>> getRsocHistory() {
+        return new ArrayList<>(rsocHistory);
     }
 
 }

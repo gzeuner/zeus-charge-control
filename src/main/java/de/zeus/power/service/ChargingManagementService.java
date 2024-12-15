@@ -89,6 +89,7 @@ public class ChargingManagementService {
     @Value("${marketdata.price.flexibility.threshold:10}")
     private double priceFlexibilityThreshold;
 
+    private final List<ChargingSchedule> daytimeBuffer = new ArrayList<>();
 
     private final AtomicBoolean nightResetScheduled = new AtomicBoolean(false);
 
@@ -103,12 +104,10 @@ public class ChargingManagementService {
     public void onMarketPricesUpdated(MarketPricesUpdatedEvent event) {
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Market prices updated event received. Recalculating charging schedule...");
 
-        Set<ChargingSchedule> optimizedSchedules = new HashSet<>();
-        optimizedSchedules.addAll(optimizeNighttimeCharging());
-        optimizedSchedules.addAll(optimizeTransitionPeriods());
-        optimizedSchedules.addAll(optimizeDaytimeCharging());
-
-        synchronizeSchedules(optimizedSchedules);
+        //Planung vorberechnen
+        bufferDaytimeCharging();
+        // Optimierung ausführen
+        optimizeChargingSchedule();
 
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Market price update handled and schedules synchronized.");
     }
@@ -117,16 +116,79 @@ public class ChargingManagementService {
     public void scheduledOptimizeChargingSchedule() {
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Scheduled optimization of charging schedule triggered.");
         if (shouldOptimize()) {
-            Set<ChargingSchedule> optimizedSchedules = new HashSet<>();
-            optimizedSchedules.addAll(optimizeNighttimeCharging());
-            optimizedSchedules.addAll(optimizeTransitionPeriods());
-            optimizedSchedules.addAll(optimizeDaytimeCharging());
-
-            synchronizeSchedules(optimizedSchedules);
+            optimizeChargingSchedule();
         } else {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, "No significant changes detected. Skipping optimization.");
         }
         cleanUpExpiredSchedules();
+    }
+
+    private void optimizeChargingSchedule() {
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Optimizing charging schedule...");
+
+        Set<ChargingSchedule> optimizedSchedules = new HashSet<>();
+        optimizedSchedules.addAll(optimizeNighttimeCharging());
+
+        // Dynamischer Wert als Trigger
+        int dynamicThreshold = calculateDynamicDaytimeThreshold();
+        int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
+
+        if (currentRSOC <= dynamicThreshold) {
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                    "RSOC is below dynamic threshold (current: %d%%, threshold: %d%%). Initiating charging to reach target RSOC (%d%%).",
+                    currentRSOC, dynamicThreshold, targetStateOfCharge
+            ));
+
+            // Ziel ist der konfigurierte targetStateOfCharge
+            if (currentRSOC < targetStateOfCharge) {
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Scheduling charging to reach target RSOC.");
+                optimizedSchedules.addAll(daytimeBuffer); // Nutze die geplanten Ladungen aus dem Puffer
+            }
+        } else {
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                    "RSOC is above dynamic threshold (current: %d%%, threshold: %d%%). No additional charging required."
+            ));
+        }
+
+        synchronizeSchedules(optimizedSchedules);
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Charging schedule optimization completed.");
+    }
+
+    private void bufferDaytimeCharging() {
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Buffering daytime charging periods dynamically based on price analysis.");
+
+        long currentTime = System.currentTimeMillis();
+        Calendar dayStart = Calendar.getInstance();
+        dayStart.set(Calendar.HOUR_OF_DAY, preferredStartHour);
+        dayStart.set(Calendar.MINUTE, 0);
+        dayStart.set(Calendar.SECOND, 0);
+        dayStart.set(Calendar.MILLISECOND, 0);
+
+        Calendar dayEnd = (Calendar) dayStart.clone();
+        dayEnd.set(Calendar.HOUR_OF_DAY, preferredEndHour);
+
+        List<MarketPrice> daytimePeriods = marketPriceRepository.findAll().stream()
+                .filter(price -> price.getStartTimestamp() >= dayStart.getTimeInMillis())
+                .filter(price -> price.getStartTimestamp() < dayEnd.getTimeInMillis())
+                .filter(price -> price.getStartTimestamp() > currentTime)
+                .toList();
+
+        if (daytimePeriods.isEmpty()) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No daytime periods available for buffering.");
+            return;
+        }
+
+        double threshold = calculateDynamicThreshold(daytimePeriods, priceFlexibilityThreshold);
+        List<MarketPrice> selectedPeriods = daytimePeriods.stream()
+                .filter(price -> price.getPriceInCentPerKWh() <= threshold)
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                .limit(maxChargingPeriods)
+                .toList();
+
+        daytimeBuffer.clear();
+        daytimeBuffer.addAll(collectAndOptimizeSchedules(selectedPeriods));
+
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format("Buffered %d daytime schedules for potential use.", daytimeBuffer.size()));
     }
 
 
@@ -162,11 +224,19 @@ public class ChargingManagementService {
         }
 
         // Reset to automatic mode at the end of nighttime
-        if (isNightTime && largeConsumerActive) {
-            scheduleEndOfNightReset();
-        } else if (!isNightTime) {
+        if (isNightTime) {
+            if(largeConsumerActive) {
+                scheduleEndOfNightReset();
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                        "Scheduling Return to Automatic Mode.");
+            } else {
+                batteryManagementService.resetToAutomaticMode();
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                        "Returning to Automatic Mode.");
+            }
+        } else {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                    "Outside nighttime. Returning to Automatic Mode.");
+                    "Returning to Automatic Mode.");
             batteryManagementService.resetToAutomaticMode();
         }
     }
@@ -178,19 +248,7 @@ public class ChargingManagementService {
             return;
         }
 
-        Calendar calendar = Calendar.getInstance();
-        calendar.set(Calendar.HOUR_OF_DAY, nightEndHour);
-        calendar.set(Calendar.MINUTE, 0);
-        calendar.set(Calendar.SECOND, 0);
-        calendar.set(Calendar.MILLISECOND, 0);
-
-        // Subtract 5 minutes
-        calendar.add(Calendar.MINUTE, -5);
-
-        Date resetTime = calendar.getTime();
-        if (resetTime.before(new Date())) {
-            resetTime = new Date(resetTime.getTime() + 24 * 60 * 60 * 1000); // Add one day if already past
-        }
+        Date resetTime = getResetTime();
 
         taskScheduler.schedule(() -> {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Night period ended. Switching back to automatic mode.");
@@ -205,6 +263,23 @@ public class ChargingManagementService {
 
         nightResetScheduled.set(true); // Set the flag
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Scheduled automatic mode reset at " + dateFormat.format(resetTime));
+    }
+
+    private Date getResetTime() {
+        Calendar calendar = Calendar.getInstance();
+        calendar.set(Calendar.HOUR_OF_DAY, nightEndHour);
+        calendar.set(Calendar.MINUTE, 0);
+        calendar.set(Calendar.SECOND, 0);
+        calendar.set(Calendar.MILLISECOND, 0);
+
+        // Subtract 5 minutes
+        calendar.add(Calendar.MINUTE, -5);
+
+        Date resetTime = calendar.getTime();
+        if (resetTime.before(new Date())) {
+            resetTime = new Date(resetTime.getTime() + 24 * 60 * 60 * 1000); // Add one day if already past
+        }
+        return resetTime;
     }
 
     /**
@@ -290,7 +365,7 @@ public class ChargingManagementService {
         // Check whether planned tasks are obsolete
         List<ChargingSchedule> activeSchedules = chargingScheduleRepository.findAll().stream()
                 .filter(schedule -> schedule.getEndTimestamp() > currentTime)
-                .collect(Collectors.toList());
+                .toList();
 
         boolean hasFutureSchedules = !activeSchedules.isEmpty();
 
@@ -318,7 +393,7 @@ public class ChargingManagementService {
     private Set<ChargingSchedule> validateSchedulesForCheaperOptions(Set<ChargingSchedule> schedules) {
         List<ChargingSchedule> sortedSchedules = schedules.stream()
                 .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice))
-                .collect(Collectors.toList());
+                .toList();
 
         Set<ChargingSchedule> validatedSchedules = new HashSet<>();
 
@@ -361,7 +436,7 @@ public class ChargingManagementService {
         List<ChargingSchedule> futureSchedules = chargingScheduleRepository.findAll().stream()
                 .filter(schedule -> schedule.getStartTimestamp() > System.currentTimeMillis())
                 .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp))
-                .collect(Collectors.toList());
+                .toList();
 
         for (ChargingSchedule schedule : futureSchedules) {
             long scheduleId = schedule.getId();
@@ -429,31 +504,58 @@ public class ChargingManagementService {
         Calendar dayEnd = (Calendar) dayStart.clone();
         dayEnd.set(Calendar.HOUR_OF_DAY, preferredEndHour);
 
+        // Filter auf relevante Tageszeit-Perioden
         List<MarketPrice> daytimePeriods = marketPriceRepository.findAll().stream()
                 .filter(price -> price.getStartTimestamp() >= dayStart.getTimeInMillis())
                 .filter(price -> price.getStartTimestamp() < dayEnd.getTimeInMillis())
                 .filter(price -> price.getStartTimestamp() > currentTime)
-                .collect(Collectors.toList());
+                .toList();
 
         if (daytimePeriods.isEmpty()) {
             LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No daytime periods available for optimization.");
             return Collections.emptyList();
         }
 
-        // calculate Median & percentileThreshold
-        double medianPrice = calculateMedianPrice(daytimePeriods);
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format("Daytime Periods Periods median price: %.2f cents/kWh", medianPrice));
-        double percentileThreshold = calculatePercentileThreshold(daytimePeriods, -1);
+        // Dynamische Schwellenwerte berechnen
+        double threshold = calculateDynamicThreshold(daytimePeriods, priceFlexibilityThreshold);
+        double maxAcceptablePrice = calculateMaxAcceptablePrice(
+                batteryManagementService.getRelativeStateOfCharge(),
+                maxAcceptableMarketPriceInCent
+        );
 
-        // Select periods below the media
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                "Dynamic daytime threshold: %.2f cents/kWh, Max acceptable price: %.2f cents/kWh",
+                threshold, maxAcceptablePrice));
+
+        // Auswahl der Perioden basierend auf dynamischen Schwellenwerten
         List<MarketPrice> selectedPeriods = daytimePeriods.stream()
-                .filter(price -> price.getPriceInCentPerKWh() <= percentileThreshold
-                        || price.getPriceInCentPerKWh() <= medianPrice)
+                .filter(price -> price.getPriceInCentPerKWh() <= threshold)
+                .filter(price -> price.getPriceInCentPerKWh() <= maxAcceptablePrice)
                 .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .limit(maxChargingPeriods)
-                .collect(Collectors.toList());
+                .limit(maxChargingPeriods) // Begrenzung auf maximale Perioden
+                .toList();
 
-        return new ArrayList<>(collectAndOptimizeSchedules(selectedPeriods));
+        // Überprüfung auf günstigere Alternativen in den gleichen Zeitfenstern
+        List<MarketPrice> optimizedPeriods = new ArrayList<>();
+        for (MarketPrice period : selectedPeriods) {
+            boolean hasCheaperOption = daytimePeriods.stream()
+                    .filter(p -> p.getStartTimestamp() >= period.getStartTimestamp()
+                            && p.getEndTimestamp() <= period.getEndTimestamp())
+                    .anyMatch(p -> p.getPriceInCentPerKWh() < period.getPriceInCentPerKWh());
+
+            if (!hasCheaperOption) {
+                optimizedPeriods.add(period);
+            } else {
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                        "Excluded period %s - %s (%.2f cents/kWh) due to cheaper alternative.",
+                        dateFormat.format(new Date(period.getStartTimestamp())),
+                        dateFormat.format(new Date(period.getEndTimestamp())),
+                        period.getPriceInCentPerKWh()));
+            }
+        }
+
+        // Konvertieren in ChargingSchedules und zurückgeben
+        return new ArrayList<>(collectAndOptimizeSchedules(optimizedPeriods));
     }
 
 
@@ -467,32 +569,39 @@ public class ChargingManagementService {
         nightStart.set(Calendar.SECOND, 0);
         nightStart.set(Calendar.MILLISECOND, 0);
 
-        Calendar nightEnd = (Calendar) nightStart.clone();
-        nightEnd.add(Calendar.DATE, 1);
-        nightEnd.set(Calendar.HOUR_OF_DAY, nightEndHour);
+        Calendar nightEnd = getNightEnd(nightStart);
 
+        // Filter auf relevante Nachtzeit-Perioden
         List<MarketPrice> nighttimePeriods = marketPriceRepository.findAll().stream()
                 .filter(price -> price.getStartTimestamp() >= nightStart.getTimeInMillis())
                 .filter(price -> price.getStartTimestamp() < nightEnd.getTimeInMillis())
                 .filter(price -> price.getStartTimestamp() > currentTime)
-                .collect(Collectors.toList());
+                .toList();
 
         if (nighttimePeriods.isEmpty()) {
             LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No nighttime periods available for optimization.");
             return Collections.emptyList();
         }
 
-        double medianPrice = calculateMedianPrice(nighttimePeriods);
-        double percentileThreshold = calculatePercentileThreshold(nighttimePeriods, -1);
+        // Dynamische Schwellenwerte berechnen
+        double threshold = calculateDynamicThreshold(nighttimePeriods, priceFlexibilityThreshold);
+        double maxAcceptablePrice = calculateMaxAcceptablePrice(
+                batteryManagementService.getRelativeStateOfCharge(),
+                maxAcceptableMarketPriceInCent
+        );
 
-        // Select periods below the median or percentile threshold
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                "Dynamic nighttime threshold: %.2f cents/kWh, Max acceptable price: %.2f cents/kWh",
+                threshold, maxAcceptablePrice));
+
+        // Auswahl der Perioden basierend auf dynamischen Schwellenwerten
         List<MarketPrice> selectedPeriods = nighttimePeriods.stream()
-                .filter(price -> price.getPriceInCentPerKWh() <= percentileThreshold
-                        || price.getPriceInCentPerKWh() <= medianPrice)
+                .filter(price -> price.getPriceInCentPerKWh() <= threshold)
+                .filter(price -> price.getPriceInCentPerKWh() <= maxAcceptablePrice)
                 .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .collect(Collectors.toList());
+                .toList();
 
-        // **Check for cheaper periods within the same time range**
+        // Überprüfung auf günstigere Alternativen in den gleichen Zeitfenstern
         List<MarketPrice> optimizedPeriods = new ArrayList<>();
         for (MarketPrice period : selectedPeriods) {
             boolean hasCheaperOption = nighttimePeriods.stream()
@@ -511,8 +620,10 @@ public class ChargingManagementService {
             }
         }
 
+        // Konvertieren in ChargingSchedules und zurückgeben
         return new ArrayList<>(collectAndOptimizeSchedules(optimizedPeriods));
     }
+
 
     /**
      * Calculates the median price from a list of MarketPrice objects.
@@ -521,93 +632,61 @@ public class ChargingManagementService {
         List<Double> sortedPrices = prices.stream()
                 .map(MarketPrice::getPriceInCentPerKWh)
                 .sorted()
-                .collect(Collectors.toList());
+                .toList();
         int size = sortedPrices.size();
         return size % 2 == 0
                 ? (sortedPrices.get(size / 2 - 1) + sortedPrices.get(size / 2)) / 2.0
                 : sortedPrices.get(size / 2);
     }
 
-    /**
-     * Calculates the threshold for a given or dynamically calculated percentile.
-     *
-     * @param prices     List of MarketPrice objects
-     * @param percentile Desired percentile (e.g., 20 for the 20th percentile, -1 for dynamic calculation)
-     * @return Threshold value for the given or dynamically calculated percentile
-     */
-    private double calculatePercentileThreshold(List<MarketPrice> prices, int percentile) {
-        if (prices.isEmpty()) {
-            return Double.MAX_VALUE; // No data, return a very high threshold
-        }
-
-        // If percentile is -1, calculate it dynamically
-        if (percentile == -1) {
-            return calculateDynamicPercentile(prices);
-        }
-
-        // Static percentile calculation
-        List<Double> sortedPrices = prices.stream()
-                .map(MarketPrice::getPriceInCentPerKWh) // Extract the price values
-                .sorted() // Sort the prices in ascending order
-                .collect(Collectors.toList());
-        int index = (int) Math.ceil(percentile / 100.0 * sortedPrices.size()) - 1;
-        return sortedPrices.get(Math.max(0, index)); // Return the value at the percentile position
+    private double calculateDynamicThreshold(List<MarketPrice> prices, double defaultThreshold) {
+        double medianPrice = calculateMedianPrice(prices);
+        return medianPrice + defaultThreshold;
     }
 
-    /**
-     * Dynamically calculates the percentile threshold based on price distribution.
-     *
-     * @param prices List of MarketPrice objects
-     * @return Threshold value for the dynamically calculated percentile
-     */
-    private double calculateDynamicPercentile(List<MarketPrice> prices) {
-        // Calculate the mean and standard deviation
-        double averagePrice = prices.stream().mapToDouble(MarketPrice::getPriceInCentPerKWh).average().orElse(Double.MAX_VALUE);
-        double standardDeviation = Math.sqrt(
-                prices.stream()
-                        .mapToDouble(price -> Math.pow(price.getPriceInCentPerKWh() - averagePrice, 2))
-                        .average()
-                        .orElse(0)
-        );
+    private double calculateMaxAcceptablePrice(double currentRSOC, double basePrice) {
+        if (currentRSOC < targetStateOfCharge * 0.8) {
+            return basePrice * 1.2;
+        }
+        return basePrice;
+    }
 
-        // Determine the dynamic percentile based on price distribution
-        // Example logic: Aggressive for very low average prices, conservative otherwise
-        double dynamicPercentile = averagePrice < 5 ? 10 : (averagePrice < 10 ? 20 : 30);
+    private int calculateDynamicDaytimeThreshold() {
+        List<Map.Entry<Long, Integer>> history = batteryManagementService.getRsocHistory();
 
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                "Dynamic percentile calculated: %.2f%% (average=%.2f, stdDev=%.2f)",
-                dynamicPercentile, averagePrice, standardDeviation
-        ));
+        if (history.size() < 2) {
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Not enough RSOC history data to calculate dynamic daytime threshold.");
+            return targetStateOfCharge - 20; // Default threshold
+        }
 
-        // Calculate threshold for the dynamic percentile
-        List<Double> sortedPrices = prices.stream()
-                .map(MarketPrice::getPriceInCentPerKWh)
-                .sorted()
-                .collect(Collectors.toList());
-        int index = (int) Math.ceil(dynamicPercentile / 100.0 * sortedPrices.size()) - 1;
-        return sortedPrices.get(Math.max(0, index));
+        Map.Entry<Long, Integer> oldest = history.get(0);
+        Map.Entry<Long, Integer> latest = history.get(history.size() - 1);
+
+        long timeDifferenceInMinutes = (latest.getKey() - oldest.getKey()) / 60000;
+        if (timeDifferenceInMinutes <= 0) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "Invalid time difference in RSOC history. Using default threshold.");
+            return targetStateOfCharge - 20; // Fallback threshold
+        }
+
+        int rsocDifference = oldest.getValue() - latest.getValue();
+
+        double rsocDropPerHour = rsocDifference / (timeDifferenceInMinutes / 60.0);
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                String.format("RSOC drop rate: %.2f%%/hour based on history.", rsocDropPerHour));
+
+        // Adjust threshold dynamically based on RSOC drop rate
+        int dynamicThreshold = (int) Math.max(targetStateOfCharge - (rsocDropPerHour * 2), targetStateOfCharge - 30);
+
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                String.format("Dynamic daytime threshold calculated: %d%%", dynamicThreshold));
+        return dynamicThreshold;
     }
 
 
     private boolean isWithinNighttimeWindow(long timestamp) {
-        Calendar now = Calendar.getInstance();
 
-        // Start of the night (today or yesterday, depending on the time)
-        Calendar nightStart = (Calendar) now.clone();
-        nightStart.set(Calendar.HOUR_OF_DAY, nightStartHour);
-        nightStart.set(Calendar.MINUTE, 0);
-        nightStart.set(Calendar.SECOND, 0);
-        nightStart.set(Calendar.MILLISECOND, 0);
-
-        if (now.get(Calendar.HOUR_OF_DAY) < nightStartHour) {
-            // If the current time is before the night start, set to yesterday
-            nightStart.add(Calendar.DATE, -1);
-        }
-
-        // End of the night (always the next day after the night start)
-        Calendar nightEnd = (Calendar) nightStart.clone();
-        nightEnd.add(Calendar.DATE, 1); // Ende der Nacht ist immer am nächsten Tag
-        nightEnd.set(Calendar.HOUR_OF_DAY, nightEndHour);
+        Calendar nightStart = getNightStart();
+        Calendar nightEnd = getNightEnd(nightStart);
 
         LogFilter.log(
                 LogFilter.LOG_LEVEL_INFO,
@@ -624,6 +703,31 @@ public class ChargingManagementService {
         return timestamp >= nightStart.getTimeInMillis() && timestamp < nightEnd.getTimeInMillis();
     }
 
+    private Calendar getNightEnd(Calendar nightStart) {
+        // End of the night (always the next day after the night start)
+        Calendar nightEnd = (Calendar) nightStart.clone();
+        nightEnd.add(Calendar.DATE, 1);
+        nightEnd.set(Calendar.HOUR_OF_DAY, nightEndHour);
+        return nightEnd;
+    }
+
+    private Calendar getNightStart() {
+        Calendar now = Calendar.getInstance();
+
+        // Start of the night (today or yesterday, depending on the time)
+        Calendar nightStart = (Calendar) now.clone();
+        nightStart.set(Calendar.HOUR_OF_DAY, nightStartHour);
+        nightStart.set(Calendar.MINUTE, 0);
+        nightStart.set(Calendar.SECOND, 0);
+        nightStart.set(Calendar.MILLISECOND, 0);
+
+        if (now.get(Calendar.HOUR_OF_DAY) < nightStartHour) {
+            // If the current time is before the night start, set to yesterday
+            nightStart.add(Calendar.DATE, -1);
+        }
+        return nightStart;
+    }
+
     /**
      * Cleans up expired charging schedules and optimizes remaining schedules.
      */
@@ -635,7 +739,7 @@ public class ChargingManagementService {
         // Step 1: Remove expired schedules
         List<ChargingSchedule> expiredSchedules = chargingScheduleRepository.findAll().stream()
                 .filter(schedule -> schedule.getEndTimestamp() < currentTime) // Expired schedules
-                .collect(Collectors.toList());
+                .toList();
 
         expiredSchedules.forEach(schedule -> {
             logger.info("Removing expired charging schedule: {} - {}.",
@@ -651,7 +755,7 @@ public class ChargingManagementService {
         List<ChargingSchedule> daySchedulesToEvaluate = chargingScheduleRepository.findAll().stream()
                 .filter(schedule -> !isWithinNighttimeWindow(schedule.getStartTimestamp())) // Only daytime schedules
                 .filter(schedule -> schedule.getStartTimestamp() < twoHoursBeforeNight) // Starts before nighttime
-                .collect(Collectors.toList());
+                .toList();
 
         daySchedulesToEvaluate.forEach(schedule -> {
             if (hasCheaperNightSchedule(schedule)) {
@@ -671,7 +775,7 @@ public class ChargingManagementService {
         List<ChargingSchedule> futureSchedules = chargingScheduleRepository.findAll().stream()
                 .filter(schedule -> schedule.getEndTimestamp() > currentTime) // Keep future schedules
                 .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice)) // Sort by price ascending
-                .collect(Collectors.toList());
+                .toList();
 
 // Log retained future schedules
         LogFilter.log(
@@ -725,47 +829,6 @@ public class ChargingManagementService {
         scheduleRSOCMonitoring(endTime);
     }
 
-    private List<ChargingSchedule> optimizeTransitionPeriods() {
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Optimizing transition periods between night and day.");
-
-        Calendar nightEnd = Calendar.getInstance();
-        nightEnd.set(Calendar.HOUR_OF_DAY, nightEndHour);
-        nightEnd.set(Calendar.MINUTE, 0);
-        nightEnd.set(Calendar.SECOND, 0);
-        nightEnd.set(Calendar.MILLISECOND, 0);
-
-        Calendar dayStart = Calendar.getInstance();
-        dayStart.set(Calendar.HOUR_OF_DAY, preferredStartHour);
-        dayStart.set(Calendar.MINUTE, 0);
-        dayStart.set(Calendar.SECOND, 0);
-        dayStart.set(Calendar.MILLISECOND, 0);
-
-        List<MarketPrice> transitionPeriods = marketPriceRepository.findAll().stream()
-                .filter(price -> price.getStartTimestamp() >= nightEnd.getTimeInMillis())
-                .filter(price -> price.getEndTimestamp() <= dayStart.getTimeInMillis())
-                .collect(Collectors.toList());
-
-        if (transitionPeriods.isEmpty()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No transition periods available for optimization.");
-            return Collections.emptyList();
-        }
-
-        // calculate Median & percentileThreshold
-        double medianPrice = calculateMedianPrice(transitionPeriods);
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format("Daytime Periods Periods median price: %.2f cents/kWh", medianPrice));
-        double percentileThreshold = calculatePercentileThreshold(transitionPeriods, -1);
-
-        // Select periods below the media
-        List<MarketPrice> selectedPeriods = transitionPeriods.stream()
-                .filter(price -> price.getPriceInCentPerKWh() <= percentileThreshold
-                        || price.getPriceInCentPerKWh() <= medianPrice)
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .limit(maxChargingPeriods)
-                .collect(Collectors.toList());
-
-        return new ArrayList<>(collectAndOptimizeSchedules(selectedPeriods));
-    }
-
     /**
      * Synchronizes the current charging schedules with the newly optimized schedules.
      * Ensures outdated schedules are removed, unneeded tasks are canceled,
@@ -780,7 +843,7 @@ public class ChargingManagementService {
         List<ChargingSchedule> existingSchedules = chargingScheduleRepository.findAll().stream()
                 .filter(schedule -> schedule.getEndTimestamp() > currentTime) // Only future schedules
                 .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp)) // Sort by start time
-                .collect(Collectors.toList());
+                .toList();
 
         // Validate new schedules (retain only cheaper alternatives)
         Set<ChargingSchedule> validatedNewSchedules = validateSchedulesForCheaperOptions(newSchedules);
@@ -788,8 +851,8 @@ public class ChargingManagementService {
         // Remove outdated schedules if they are replaced by cheaper alternatives
         for (ChargingSchedule existing : existingSchedules) {
             boolean hasCheaperAlternative = validatedNewSchedules.stream()
-                    .anyMatch(newSchedule -> newSchedule.getStartTimestamp() == existing.getStartTimestamp()
-                            && newSchedule.getEndTimestamp() == existing.getEndTimestamp()
+                    .anyMatch(newSchedule -> newSchedule.getStartTimestamp().equals(existing.getStartTimestamp())
+                            && newSchedule.getEndTimestamp().equals(existing.getEndTimestamp())
                             && newSchedule.getPrice() < existing.getPrice());
             if (hasCheaperAlternative) {
                 cancelTask(existing.getId());
@@ -928,6 +991,6 @@ public class ChargingManagementService {
     public List<ChargingSchedule> getSortedChargingSchedules() {
         return chargingScheduleRepository.findAll().stream()
                 .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp))
-                .collect(Collectors.toList());
+                .toList();
     }
 }
