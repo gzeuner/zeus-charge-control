@@ -80,14 +80,13 @@ public class ChargingManagementService {
     @Value("${daytime.preferred.end:15}")
     private int preferredEndHour;
 
-    @Value("${charging.schedule.max.periods:2}")
-    private int maxChargingPeriods;
-
     @Value("${marketdata.price.flexibility.enabled:false}")
     private boolean priceFlexibilityEnabled;
 
     @Value("${marketdata.price.flexibility.threshold:10}")
     private double priceFlexibilityThreshold;
+
+    private int maxChargingPeriods = 4;
 
     private final List<ChargingSchedule> daytimeBuffer = new ArrayList<>();
 
@@ -146,7 +145,8 @@ public class ChargingManagementService {
             }
         } else {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                    "RSOC is above dynamic threshold (current: %d%%, threshold: %d%%). No additional charging required."
+                    "RSOC is below dynamic threshold (current: %d%%, threshold: %d%%). Initiating charging to reach target RSOC (%d%%).",
+                    currentRSOC, dynamicThreshold, targetStateOfCharge
             ));
         }
 
@@ -325,6 +325,36 @@ public class ChargingManagementService {
                     return;
                 }
 
+                // Check if the current charging period has ended and schedule the next step
+                if (new Date().after(endTime)) {
+                    LogFilter.log(
+                            LogFilter.LOG_LEVEL_INFO,
+                            "Charging period ended. Checking for the next scheduled period."
+                    );
+
+                    Optional<ChargingSchedule> nextSchedule = getNextChargingSchedule();
+                    if (nextSchedule.isPresent()) {
+                        Date nextStartTime = new Date(nextSchedule.get().getStartTimestamp());
+                        Date nextEndTime = new Date(nextSchedule.get().getEndTimestamp());
+
+                        LogFilter.log(
+                                LogFilter.LOG_LEVEL_INFO,
+                                String.format("Next charging period scheduled: %s - %s.",
+                                        dateFormat.format(nextStartTime),
+                                        dateFormat.format(nextEndTime))
+                        );
+
+                        // Schedule the next charging period
+                        taskScheduler.schedule(() -> executeChargingTask(nextStartTime, nextEndTime), nextStartTime);
+                    } else {
+                        LogFilter.log(
+                                LogFilter.LOG_LEVEL_INFO,
+                                "No further charging periods found. Stopping RSOC monitoring."
+                        );
+                    }
+                    return;
+                }
+
                 // Check if we are outside the night period and a large consumer is active
                 if (!isWithinNighttimeWindow(System.currentTimeMillis()) && largeConsumerActive) {
                     LogFilter.log(
@@ -350,6 +380,20 @@ public class ChargingManagementService {
         // Initial scheduling of the monitor task
         taskScheduler.schedule(monitorTask, new Date(System.currentTimeMillis() + 5 * 60 * 1000)); // Start monitoring after 5 minutes
     }
+
+    /**
+     * Retrieves the next scheduled charging period, if available.
+     *
+     * @return An Optional containing the next ChargingSchedule, or empty if no further schedules exist.
+     */
+    private Optional<ChargingSchedule> getNextChargingSchedule() {
+        long currentTime = System.currentTimeMillis();
+        return chargingScheduleRepository.findAll().stream()
+                .filter(schedule -> schedule.getStartTimestamp() > currentTime)
+                .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp))
+                .findFirst();
+    }
+
 
 
     /**
@@ -387,49 +431,6 @@ public class ChargingManagementService {
             task.cancel(true);
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Cancelled scheduled task for schedule ID: " + scheduleId);
         }
-    }
-
-
-    private Set<ChargingSchedule> validateSchedulesForCheaperOptions(Set<ChargingSchedule> schedules) {
-        List<ChargingSchedule> sortedSchedules = schedules.stream()
-                .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice))
-                .toList();
-
-        Set<ChargingSchedule> validatedSchedules = new HashSet<>();
-
-        // Bestimme den günstigsten Preis
-        double minPrice = sortedSchedules.stream()
-                .mapToDouble(ChargingSchedule::getPrice)
-                .min()
-                .orElse(Double.MAX_VALUE);
-
-        // Berechne den Schwellenwert basierend auf der Flexibilität
-        double priceThreshold = minPrice;
-        if (priceFlexibilityEnabled) { // Konfiguration beachten
-            priceThreshold += priceFlexibilityThreshold;
-        }
-
-        for (ChargingSchedule schedule : sortedSchedules) {
-            // Prüfen, ob ein günstigeres Alternativ-Schedule existiert
-            boolean hasCheaperAlternative = schedules.stream()
-                    .anyMatch(s -> s.getStartTimestamp() >= schedule.getStartTimestamp()
-                            && s.getEndTimestamp() <= schedule.getEndTimestamp()
-                            && s.getPrice() < schedule.getPrice());
-
-            // Prüfen, ob der Preis innerhalb der akzeptierten Schwelle liegt
-            if (!hasCheaperAlternative && schedule.getPrice() <= priceThreshold) {
-                validatedSchedules.add(schedule);
-            } else {
-                LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                        "Removed schedule %s - %s (%.2f cents/kWh) due to cheaper alternative or exceeding threshold (%.2f).",
-                        dateFormat.format(new Date(schedule.getStartTimestamp())),
-                        dateFormat.format(new Date(schedule.getEndTimestamp())),
-                        schedule.getPrice(),
-                        priceThreshold));
-            }
-        }
-
-        return validatedSchedules;
     }
 
     public void schedulePlannedCharging() {
@@ -475,6 +476,25 @@ public class ChargingManagementService {
             }
         }
     }
+
+    private int calculateDynamicMaxChargingPeriods(int totalPeriods, double priceRange) {
+        int baseMaxPeriods = 4; // Standard-Wert
+
+        if (priceRange < 0.5) {
+            baseMaxPeriods += 2; // Mehr Perioden bei geringer Preisspanne
+        } else if (priceRange > 1.0) {
+            baseMaxPeriods -= 1; // Weniger Perioden bei großer Preisspanne
+        }
+
+        if (totalPeriods <= 5) {
+            baseMaxPeriods = Math.min(baseMaxPeriods + 2, totalPeriods); // Flexibler bei wenigen Perioden
+        } else if (totalPeriods > 10) {
+            baseMaxPeriods = Math.max(baseMaxPeriods - 1, 2); // Begrenzung bei vielen Perioden
+        }
+
+        return Math.max(2, baseMaxPeriods); // Minimum von 2 Perioden
+    }
+
 
     /**
      * Checks if the existing task matches the given schedule's timing based on its end timestamp.
@@ -709,6 +729,150 @@ public class ChargingManagementService {
         nightEnd.add(Calendar.DATE, 1);
         nightEnd.set(Calendar.HOUR_OF_DAY, nightEndHour);
         return nightEnd;
+    }
+
+    /**
+     * Validates charging schedules by applying price tolerance thresholds and ensuring
+     * no gaps between charging periods.
+     *
+     * @param schedules The set of charging schedules to validate.
+     * @return A set of validated and optimized charging schedules.
+     */
+    private Set<ChargingSchedule> validateSchedulesForCheaperOptions(Set<ChargingSchedule> schedules) {
+        // Sort schedules by price (ascending order)
+        List<ChargingSchedule> sortedSchedules = schedules.stream()
+                .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice))
+                .toList();
+
+        Set<ChargingSchedule> validatedSchedules = new HashSet<>();
+
+        // Calculate minimum and maximum prices in the provided schedules
+        double minPrice = sortedSchedules.stream()
+                .mapToDouble(ChargingSchedule::getPrice)
+                .min()
+                .orElse(Double.MAX_VALUE);
+        double maxPrice = sortedSchedules.stream()
+                .mapToDouble(ChargingSchedule::getPrice)
+                .max()
+                .orElse(Double.MIN_VALUE);
+
+        // Dynamically calculate the price tolerance factor and threshold
+        double priceToleranceFactor = calculateDynamicPriceTolerance(minPrice, maxPrice, sortedSchedules.size());
+        double priceThreshold = Math.max(minPrice * priceToleranceFactor, minPrice + 0.05); // Ensure a minimum margin of 5 cents
+
+        // Dynamically determine the maximum number of charging periods
+        int maxChargingPeriods = calculateDynamicMaxChargingPeriods(sortedSchedules.size(), maxPrice - minPrice);
+
+        // Validate each schedule based on the calculated threshold
+        for (ChargingSchedule schedule : sortedSchedules) {
+            boolean isWithinTolerance = schedule.getPrice() <= priceThreshold;
+
+            if (isWithinTolerance) {
+                validatedSchedules.add(schedule);
+            } else {
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                        "Removed schedule %s - %s (%.2f cents/kWh) due to exceeding threshold %.2f.",
+                        dateFormat.format(new Date(schedule.getStartTimestamp())),
+                        dateFormat.format(new Date(schedule.getEndTimestamp())),
+                        schedule.getPrice(),
+                        priceThreshold
+                ));
+            }
+        }
+
+        // Ensure continuity by checking for gaps between periods
+        validatedSchedules = ensureContinuityBetweenSchedules(validatedSchedules);
+
+        // Fallback: If no periods are validated, select the two cheapest periods
+        if (validatedSchedules.isEmpty() && sortedSchedules.size() >= 2) {
+            validatedSchedules.add(sortedSchedules.get(0));
+            validatedSchedules.add(sortedSchedules.get(1));
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Fallback: Selected two cheapest periods due to empty validation result.");
+        }
+
+        return validatedSchedules;
+    }
+
+    /**
+     * Ensures continuity between validated schedules by filling gaps where necessary.
+     *
+     * @param validatedSchedules The set of validated schedules to check for gaps.
+     * @return A set of schedules with ensured continuity.
+     */
+    private Set<ChargingSchedule> ensureContinuityBetweenSchedules(Set<ChargingSchedule> validatedSchedules) {
+        List<ChargingSchedule> sortedValidatedSchedules = validatedSchedules.stream()
+                .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp))
+                .toList();
+
+        Set<ChargingSchedule> updatedSchedules = new HashSet<>(validatedSchedules);
+
+        for (int i = 0; i < sortedValidatedSchedules.size() - 1; i++) {
+            ChargingSchedule current = sortedValidatedSchedules.get(i);
+            ChargingSchedule next = sortedValidatedSchedules.get(i + 1);
+
+            // Check for gaps between the current and next schedule
+            if (current.getEndTimestamp() < next.getStartTimestamp()) {
+                long gapStart = current.getEndTimestamp();
+                long gapEnd = next.getStartTimestamp();
+
+                // Log the detected gap
+                LogFilter.log(LogFilter.LOG_LEVEL_WARN, String.format(
+                        "Detected gap between schedules: %s - %s and %s - %s. Attempting to fill the gap.",
+                        dateFormat.format(new Date(current.getStartTimestamp())),
+                        dateFormat.format(new Date(current.getEndTimestamp())),
+                        dateFormat.format(new Date(next.getStartTimestamp())),
+                        dateFormat.format(new Date(next.getEndTimestamp()))
+                ));
+
+                // Attempt to fill the gap using intermediate schedules
+                Optional<ChargingSchedule> gapFiller = findGapFillingSchedule(gapStart, gapEnd);
+                gapFiller.ifPresent(updatedSchedules::add);
+            }
+        }
+
+        return updatedSchedules;
+    }
+
+    /**
+     * Finds a schedule to fill a gap between two periods, if available.
+     *
+     * @param gapStart The start timestamp of the gap.
+     * @param gapEnd The end timestamp of the gap.
+     * @return An optional ChargingSchedule to fill the gap.
+     */
+    private Optional<ChargingSchedule> findGapFillingSchedule(long gapStart, long gapEnd) {
+        return chargingScheduleRepository.findAll().stream()
+                .filter(schedule -> schedule.getStartTimestamp() >= gapStart && schedule.getEndTimestamp() <= gapEnd)
+                .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice)) // Prefer cheaper schedules
+                .findFirst();
+    }
+
+
+
+    private double calculateDynamicPriceTolerance(double minPrice, double maxPrice, int periodCount) {
+        double priceRange = maxPrice - minPrice;
+        double baseTolerance = 1.5; // Standard-Toleranz
+
+        // Anpassung basierend auf Preisspanne
+        if (priceRange < 0.5) {
+            baseTolerance -= 0.2; // Engere Toleranz bei kleiner Preisspanne
+        } else if (priceRange > 1.0) {
+            baseTolerance += 0.3; // Höhere Toleranz bei großer Preisspanne
+        }
+
+        // Anpassung basierend auf Periodenanzahl
+        if (periodCount <= 5) {
+            baseTolerance += 0.3; // Wenige Perioden → großzügiger
+        } else if (periodCount > 10) {
+            baseTolerance -= 0.2; // Viele Perioden → restriktiver
+        }
+
+        // Zusätzlicher Puffer basierend auf günstigsten Preisen
+        if (minPrice < 0.1) {
+            baseTolerance += 0.1; // Etwas großzügiger bei sehr niedrigen Preisen
+        }
+
+        return baseTolerance;
     }
 
     private Calendar getNightStart() {
