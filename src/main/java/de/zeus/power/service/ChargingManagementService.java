@@ -229,15 +229,16 @@ public class ChargingManagementService {
                 scheduleEndOfNightReset();
                 LogFilter.log(LogFilter.LOG_LEVEL_INFO,
                         "Scheduling Return to Automatic Mode.");
-            } else {
-                batteryManagementService.resetToAutomaticMode();
+            }
+        // Reset to automatic mode if outside night mode and targetStateOfCharge is reached
+        } else {
+            if(currentRSOC >= targetStateOfCharge && batteryManagementService.isBatteryChargingAllowed(false)) {
                 LogFilter.log(LogFilter.LOG_LEVEL_INFO,
                         "Returning to Automatic Mode.");
+                batteryManagementService.resetToAutomaticMode();
+            } else {
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Charging is active. Automatic mode reset skipped.");
             }
-        } else {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                    "Returning to Automatic Mode.");
-            batteryManagementService.resetToAutomaticMode();
         }
     }
 
