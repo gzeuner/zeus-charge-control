@@ -294,7 +294,7 @@ public class BatteryManagementService {
     }
 
 
-    private boolean isBatteryChargingAllowed(boolean forceCharging) {
+    public boolean isBatteryChargingAllowed(boolean forceCharging) {
         if (!forceCharging && isBatteryCharging()) {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO,
                     String.format("Battery is already charging. Current RSOC: %d%%, Target RSOC: %d%%.",
