@@ -232,7 +232,7 @@ public class ChargingManagementService {
             }
         // Reset to automatic mode if outside night mode and targetStateOfCharge is reached
         } else {
-            if(currentRSOC >= targetStateOfCharge && batteryManagementService.isBatteryChargingAllowed(false)) {
+            if(currentRSOC >= targetStateOfCharge && batteryManagementService.isManualOperatingMode()) {
                 LogFilter.log(LogFilter.LOG_LEVEL_INFO,
                         "Returning to Automatic Mode.");
                 batteryManagementService.resetToAutomaticMode();
