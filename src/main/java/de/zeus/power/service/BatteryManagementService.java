@@ -205,7 +205,7 @@ public class BatteryManagementService {
             return success;
         }
 
-        if (currentRSOC >= targetStateOfCharge) {
+        if (currentRSOC >= targetStateOfCharge && isManualOperatingMode()) {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO,
                     "RSOC at or above target. Setting charging point to 0 for idle mode.");
 
