@@ -781,9 +781,6 @@ public class ChargingManagementService {
             }
         }
 
-        // Ensure continuity by checking for gaps between periods
-        validatedSchedules = ensureContinuityBetweenSchedules(validatedSchedules);
-
         // Fallback: If no periods are validated, select the two cheapest periods
         if (validatedSchedules.isEmpty() && sortedSchedules.size() >= 2) {
             validatedSchedules.add(sortedSchedules.get(0));
@@ -792,46 +789,6 @@ public class ChargingManagementService {
         }
 
         return validatedSchedules;
-    }
-
-    /**
-     * Ensures continuity between validated schedules by filling gaps where necessary.
-     *
-     * @param validatedSchedules The set of validated schedules to check for gaps.
-     * @return A set of schedules with ensured continuity.
-     */
-    private Set<ChargingSchedule> ensureContinuityBetweenSchedules(Set<ChargingSchedule> validatedSchedules) {
-        List<ChargingSchedule> sortedValidatedSchedules = validatedSchedules.stream()
-                .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp))
-                .toList();
-
-        Set<ChargingSchedule> updatedSchedules = new HashSet<>(validatedSchedules);
-
-        for (int i = 0; i < sortedValidatedSchedules.size() - 1; i++) {
-            ChargingSchedule current = sortedValidatedSchedules.get(i);
-            ChargingSchedule next = sortedValidatedSchedules.get(i + 1);
-
-            // Check for gaps between the current and next schedule
-            if (current.getEndTimestamp() < next.getStartTimestamp()) {
-                long gapStart = current.getEndTimestamp();
-                long gapEnd = next.getStartTimestamp();
-
-                // Log the detected gap
-                LogFilter.log(LogFilter.LOG_LEVEL_WARN, String.format(
-                        "Detected gap between schedules: %s - %s and %s - %s. Attempting to fill the gap.",
-                        dateFormat.format(new Date(current.getStartTimestamp())),
-                        dateFormat.format(new Date(current.getEndTimestamp())),
-                        dateFormat.format(new Date(next.getStartTimestamp())),
-                        dateFormat.format(new Date(next.getEndTimestamp()))
-                ));
-
-                // Attempt to fill the gap using intermediate schedules
-                Optional<ChargingSchedule> gapFiller = findGapFillingSchedule(gapStart, gapEnd);
-                gapFiller.ifPresent(updatedSchedules::add);
-            }
-        }
-
-        return updatedSchedules;
     }
 
     /**
