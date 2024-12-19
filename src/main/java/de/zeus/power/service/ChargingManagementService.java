@@ -237,7 +237,7 @@ public class ChargingManagementService {
                         "Returning to Automatic Mode.");
                 batteryManagementService.resetToAutomaticMode();
             } else {
-                LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Charging is active. Automatic mode reset skipped.");
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Battery is in automatic mode. ");
             }
         }
     }
@@ -592,7 +592,7 @@ public class ChargingManagementService {
 
         Calendar nightEnd = getNightEnd(nightStart);
 
-        // Filter auf relevante Nachtzeit-Perioden
+        // Fetch relevant nighttime periods
         List<MarketPrice> nighttimePeriods = marketPriceRepository.findAll().stream()
                 .filter(price -> price.getStartTimestamp() >= nightStart.getTimeInMillis())
                 .filter(price -> price.getStartTimestamp() < nightEnd.getTimeInMillis())
@@ -604,8 +604,44 @@ public class ChargingManagementService {
             return Collections.emptyList();
         }
 
-        // Dynamische Schwellenwerte berechnen
-        double threshold = calculateDynamicThreshold(nighttimePeriods, priceFlexibilityThreshold);
+        // Define the evening period: nightStartHour - 4 to nightStartHour
+        Calendar eveningStart = (Calendar) nightStart.clone();
+        eveningStart.add(Calendar.HOUR_OF_DAY, -4);
+
+        // Fetch relevant evening periods and make it mutable
+        List<MarketPrice> eveningPeriods = new ArrayList<>(marketPriceRepository.findAll().stream()
+                .filter(price -> price.getStartTimestamp() >= eveningStart.getTimeInMillis())
+                .filter(price -> price.getStartTimestamp() < nightStart.getTimeInMillis())
+                .filter(price -> price.getStartTimestamp() > currentTime)
+                .toList());
+
+        // Calculate the cheapest price in the nighttime periods
+        OptionalDouble cheapestNightPriceOpt = nighttimePeriods.stream()
+                .mapToDouble(MarketPrice::getPriceInCentPerKWh)
+                .min();
+
+        if (cheapestNightPriceOpt.isPresent()) {
+            double cheapestNightPrice = cheapestNightPriceOpt.getAsDouble();
+
+            // Remove evening periods that are more expensive than the cheapest nighttime price
+            eveningPeriods.removeIf(period -> period.getPriceInCentPerKWh() > cheapestNightPrice);
+
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                    "Filtered evening periods. Retained %d periods cheaper than the cheapest nighttime price (%.2f cents/kWh).",
+                    eveningPeriods.size(),
+                    cheapestNightPrice
+            ));
+        } else {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No nighttime periods available to compare prices. Retaining all evening periods.");
+        }
+
+        // Combine nighttime and filtered evening periods
+        List<MarketPrice> combinedPeriods = new ArrayList<>();
+        combinedPeriods.addAll(nighttimePeriods);
+        combinedPeriods.addAll(eveningPeriods);
+
+        // Dynamically calculate thresholds
+        double threshold = calculateDynamicThreshold(combinedPeriods, priceFlexibilityThreshold);
         double maxAcceptablePrice = calculateMaxAcceptablePrice(
                 batteryManagementService.getRelativeStateOfCharge(),
                 maxAcceptableMarketPriceInCent
@@ -615,17 +651,17 @@ public class ChargingManagementService {
                 "Dynamic nighttime threshold: %.2f cents/kWh, Max acceptable price: %.2f cents/kWh",
                 threshold, maxAcceptablePrice));
 
-        // Auswahl der Perioden basierend auf dynamischen Schwellenwerten
-        List<MarketPrice> selectedPeriods = nighttimePeriods.stream()
+        // Filter based on dynamic thresholds
+        List<MarketPrice> selectedPeriods = combinedPeriods.stream()
                 .filter(price -> price.getPriceInCentPerKWh() <= threshold)
                 .filter(price -> price.getPriceInCentPerKWh() <= maxAcceptablePrice)
                 .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
                 .toList();
 
-        // Überprüfung auf günstigere Alternativen in den gleichen Zeitfenstern
+        // Validate and optimize periods
         List<MarketPrice> optimizedPeriods = new ArrayList<>();
         for (MarketPrice period : selectedPeriods) {
-            boolean hasCheaperOption = nighttimePeriods.stream()
+            boolean hasCheaperOption = combinedPeriods.stream()
                     .filter(p -> p.getStartTimestamp() >= period.getStartTimestamp()
                             && p.getEndTimestamp() <= period.getEndTimestamp())
                     .anyMatch(p -> p.getPriceInCentPerKWh() < period.getPriceInCentPerKWh());
@@ -641,9 +677,10 @@ public class ChargingManagementService {
             }
         }
 
-        // Konvertieren in ChargingSchedules und zurückgeben
+        // Convert to ChargingSchedules and return
         return new ArrayList<>(collectAndOptimizeSchedules(optimizedPeriods));
     }
+
 
 
     /**
