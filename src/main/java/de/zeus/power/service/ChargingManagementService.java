@@ -18,6 +18,7 @@ import org.springframework.stereotype.Service;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -88,7 +89,7 @@ public class ChargingManagementService {
 
     private int maxChargingPeriods = 4;
 
-    private final List<ChargingSchedule> daytimeBuffer = new ArrayList<>();
+    private final List<ChargingSchedule> daytimeBuffer = new CopyOnWriteArrayList<>();
 
     private final AtomicBoolean nightResetScheduled = new AtomicBoolean(false);
 
@@ -357,7 +358,8 @@ public class ChargingManagementService {
                 }
 
                 // Check if we are outside the night period and a large consumer is active
-                if (!isWithinNighttimeWindow(System.currentTimeMillis()) && largeConsumerActive) {
+                if (!isWithinTimeWindow(System.currentTimeMillis(),
+                        getNightStart().getTimeInMillis(), getNightEnd(getNightStart()).getTimeInMillis()) && largeConsumerActive) {
                     LogFilter.log(
                             LogFilter.LOG_LEVEL_INFO,
                             "Large consumer detected outside nighttime. Stopping charging and returning to Automatic Mode."
@@ -594,9 +596,9 @@ public class ChargingManagementService {
 
         // Fetch relevant nighttime periods
         List<MarketPrice> nighttimePeriods = marketPriceRepository.findAll().stream()
-                .filter(price -> price.getStartTimestamp() >= nightStart.getTimeInMillis())
-                .filter(price -> price.getStartTimestamp() < nightEnd.getTimeInMillis())
+                .filter(price -> isWithinTimeWindow(price.getStartTimestamp(), nightStart.getTimeInMillis(), nightEnd.getTimeInMillis()))
                 .filter(price -> price.getStartTimestamp() > currentTime)
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
                 .toList();
 
         if (nighttimePeriods.isEmpty()) {
@@ -608,37 +610,30 @@ public class ChargingManagementService {
         Calendar eveningStart = (Calendar) nightStart.clone();
         eveningStart.add(Calendar.HOUR_OF_DAY, -4);
 
-        // Fetch relevant evening periods and make it mutable
-        List<MarketPrice> eveningPeriods = new ArrayList<>(marketPriceRepository.findAll().stream()
-                .filter(price -> price.getStartTimestamp() >= eveningStart.getTimeInMillis())
-                .filter(price -> price.getStartTimestamp() < nightStart.getTimeInMillis())
+        // Fetch relevant evening periods
+        List<MarketPrice> eveningPeriods = marketPriceRepository.findAll().stream()
+                .filter(price -> isWithinTimeWindow(price.getStartTimestamp(), eveningStart.getTimeInMillis(), nightStart.getTimeInMillis()))
                 .filter(price -> price.getStartTimestamp() > currentTime)
-                .toList());
+                .toList();
 
         // Calculate the cheapest price in the nighttime periods
-        OptionalDouble cheapestNightPriceOpt = nighttimePeriods.stream()
-                .mapToDouble(MarketPrice::getPriceInCentPerKWh)
-                .min();
+        double cheapestNightPrice = nighttimePeriods.get(0).getPriceInCentPerKWh();
 
-        if (cheapestNightPriceOpt.isPresent()) {
-            double cheapestNightPrice = cheapestNightPriceOpt.getAsDouble();
+        // Filter evening periods cheaper than the cheapest nighttime price
+        List<MarketPrice> filteredEveningPeriods = eveningPeriods.stream()
+                .filter(period -> period.getPriceInCentPerKWh() <= cheapestNightPrice)
+                .toList();
 
-            // Remove evening periods that are more expensive than the cheapest nighttime price
-            eveningPeriods.removeIf(period -> period.getPriceInCentPerKWh() > cheapestNightPrice);
-
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                    "Filtered evening periods. Retained %d periods cheaper than the cheapest nighttime price (%.2f cents/kWh).",
-                    eveningPeriods.size(),
-                    cheapestNightPrice
-            ));
-        } else {
-            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No nighttime periods available to compare prices. Retaining all evening periods.");
-        }
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                "Filtered evening periods. Retained %d periods cheaper than the cheapest nighttime price (%.2f cents/kWh).",
+                filteredEveningPeriods.size(),
+                cheapestNightPrice
+        ));
 
         // Combine nighttime and filtered evening periods
         List<MarketPrice> combinedPeriods = new ArrayList<>();
         combinedPeriods.addAll(nighttimePeriods);
-        combinedPeriods.addAll(eveningPeriods);
+        combinedPeriods.addAll(filteredEveningPeriods);
 
         // Dynamically calculate thresholds
         double threshold = calculateDynamicThreshold(combinedPeriods, priceFlexibilityThreshold);
@@ -659,27 +654,21 @@ public class ChargingManagementService {
                 .toList();
 
         // Validate and optimize periods
-        List<MarketPrice> optimizedPeriods = new ArrayList<>();
-        for (MarketPrice period : selectedPeriods) {
-            boolean hasCheaperOption = combinedPeriods.stream()
-                    .filter(p -> p.getStartTimestamp() >= period.getStartTimestamp()
-                            && p.getEndTimestamp() <= period.getEndTimestamp())
-                    .anyMatch(p -> p.getPriceInCentPerKWh() < period.getPriceInCentPerKWh());
-
-            if (!hasCheaperOption) {
-                optimizedPeriods.add(period);
-            } else {
-                LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                        "Excluded period %s - %s (%.2f cents/kWh) due to cheaper alternative.",
-                        dateFormat.format(new Date(period.getStartTimestamp())),
-                        dateFormat.format(new Date(period.getEndTimestamp())),
-                        period.getPriceInCentPerKWh()));
-            }
-        }
+        List<MarketPrice> optimizedPeriods = selectedPeriods.stream()
+                .filter(period -> !hasCheaperFuturePeriod(combinedPeriods, period))
+                .toList();
 
         // Convert to ChargingSchedules and return
         return new ArrayList<>(collectAndOptimizeSchedules(optimizedPeriods));
     }
+
+    // Helper method to check for cheaper future periods
+    private boolean hasCheaperFuturePeriod(List<MarketPrice> periods, MarketPrice currentPeriod) {
+        return periods.stream()
+                .filter(p -> p.getStartTimestamp() > currentPeriod.getStartTimestamp())
+                .anyMatch(p -> p.getPriceInCentPerKWh() < currentPeriod.getPriceInCentPerKWh());
+    }
+
 
 
 
@@ -758,7 +747,7 @@ public class ChargingManagementService {
         );
 
 
-        return timestamp >= nightStart.getTimeInMillis() && timestamp < nightEnd.getTimeInMillis();
+        return isWithinTimeWindow(timestamp, nightStart.getTimeInMillis(), nightEnd.getTimeInMillis());
     }
 
     private Calendar getNightEnd(Calendar nightStart) {
@@ -909,26 +898,22 @@ public class ChargingManagementService {
 
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format("Expired schedules cleanup completed. Removed: %d", expiredSchedules.size()));
 
-        // Step 2: Evaluate and clean up daytime schedules before nighttime starts
-        long twoHoursBeforeNight = calculateTwoHoursBeforeNight();
-        List<ChargingSchedule> daySchedulesToEvaluate = chargingScheduleRepository.findAll().stream()
-                .filter(schedule -> !isWithinNighttimeWindow(schedule.getStartTimestamp())) // Only daytime schedules
-                .filter(schedule -> schedule.getStartTimestamp() < twoHoursBeforeNight) // Starts before nighttime
+        // Step 2: Evaluate and clean up schedules with cheaper future options
+        List<ChargingSchedule> schedulesToEvaluate = chargingScheduleRepository.findAll().stream()
+                .filter(schedule -> schedule.getStartTimestamp() > currentTime)
                 .toList();
 
-        daySchedulesToEvaluate.forEach(schedule -> {
-            if (hasCheaperNightSchedule(schedule)) {
-                logger.info("Removing daytime schedule due to cheaper nighttime options: {} - {}.",
-                        dateFormat.format(new Date(schedule.getStartTimestamp())),
-                        dateFormat.format(new Date(schedule.getEndTimestamp())));
+        schedulesToEvaluate.forEach(schedule -> {
+            if (hasCheaperFutureSchedule(schedule, schedulesToEvaluate)) {
+                cancelTask(schedule.getId());
                 chargingScheduleRepository.delete(schedule);
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                        "Removed schedule due to cheaper future option: %s - %s (%.2f cents/kWh).",
+                        dateFormat.format(new Date(schedule.getStartTimestamp())),
+                        dateFormat.format(new Date(schedule.getEndTimestamp())),
+                        schedule.getPrice()));
             }
         });
-
-        LogFilter.log(
-                LogFilter.LOG_LEVEL_INFO,
-                String.format("Daytime schedule evaluation completed. Evaluated: %d", daySchedulesToEvaluate.size())
-        );
 
         // Step 3: Keep only future schedules
         List<ChargingSchedule> futureSchedules = chargingScheduleRepository.findAll().stream()
@@ -936,7 +921,7 @@ public class ChargingManagementService {
                 .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice)) // Sort by price ascending
                 .toList();
 
-// Log retained future schedules
+        // Log retained future schedules
         LogFilter.log(
                 LogFilter.LOG_LEVEL_INFO,
                 String.format("Remaining future schedules: %s",
@@ -955,6 +940,14 @@ public class ChargingManagementService {
         );
     }
 
+    // Helper method to check for cheaper future schedules
+    private boolean hasCheaperFutureSchedule(ChargingSchedule currentSchedule, List<ChargingSchedule> allSchedules) {
+        return allSchedules.stream()
+                .filter(schedule -> schedule.getStartTimestamp() > currentSchedule.getStartTimestamp())
+                .anyMatch(schedule -> schedule.getPrice() < currentSchedule.getPrice());
+    }
+
+
     private long calculateTwoHoursBeforeNight() {
         Calendar calendar = Calendar.getInstance();
         calendar.set(Calendar.HOUR_OF_DAY, nightStartHour);
@@ -965,11 +958,6 @@ public class ChargingManagementService {
         return calendar.getTimeInMillis() - (2 * 60 * 60 * 1000);
     }
 
-    private boolean hasCheaperNightSchedule(ChargingSchedule daySchedule) {
-        return chargingScheduleRepository.findAll().stream()
-                .filter(schedule -> isWithinNighttimeWindow(schedule.getStartTimestamp()))
-                .anyMatch(nightSchedule -> nightSchedule.getPrice() < daySchedule.getPrice());
-    }
 
     /**
      * Executes a scheduled charging task.
@@ -1152,4 +1140,9 @@ public class ChargingManagementService {
                 .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp))
                 .toList();
     }
+
+    private boolean isWithinTimeWindow(long timestamp, long start, long end) {
+        return timestamp >= start && timestamp < end;
+    }
+
 }
