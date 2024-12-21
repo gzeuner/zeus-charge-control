@@ -267,9 +267,6 @@ public class BatteryManagementService {
             return false;
         }
 
-        // Adjust the charging point based on weather data
-        adjustChargingPointBasedOnWeather();
-
         // Activate manual charging mode
         ApiResponse<?> manualModeResponse = activateManualOperatingMode();
         if (!manualModeResponse.success()) {
@@ -277,6 +274,9 @@ public class BatteryManagementService {
             this.forcedChargingActive = false; // Reset flag on failure
             return false;
         }
+
+        // Adjust the charging point dynamically based on weather data (only in manual mode)
+        adjustChargingPointBasedOnWeather();
 
         // Set charging point dynamically
         boolean success = setDynamicChargingPoint(currentChargingPoint);
