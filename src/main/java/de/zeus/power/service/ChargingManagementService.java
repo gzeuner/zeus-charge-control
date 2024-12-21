@@ -127,7 +127,12 @@ public class ChargingManagementService {
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Optimizing charging schedule...");
 
         Set<ChargingSchedule> optimizedSchedules = new HashSet<>();
+
+        // Nachtzeitoptimierung hinzufügen
         optimizedSchedules.addAll(optimizeNighttimeCharging());
+
+        // Tageszeitoptimierung hinzufügen
+        optimizedSchedules.addAll(optimizeDaytimeCharging());
 
         // Dynamischer Wert als Trigger
         int dynamicThreshold = calculateDynamicDaytimeThreshold();
@@ -146,11 +151,12 @@ public class ChargingManagementService {
             }
         } else {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                    "RSOC is below dynamic threshold (current: %d%%, threshold: %d%%). Initiating charging to reach target RSOC (%d%%).",
-                    currentRSOC, dynamicThreshold, targetStateOfCharge
+                    "RSOC is above dynamic threshold (current: %d%%, threshold: %d%%). Skipping additional daytime charging.",
+                    currentRSOC, dynamicThreshold
             ));
         }
 
+        // Synchronisierung der optimierten Pläne
         synchronizeSchedules(optimizedSchedules);
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Charging schedule optimization completed.");
     }
@@ -527,11 +533,11 @@ public class ChargingManagementService {
         Calendar dayEnd = (Calendar) dayStart.clone();
         dayEnd.set(Calendar.HOUR_OF_DAY, preferredEndHour);
 
-        // Filter auf relevante Tageszeit-Perioden
+        // Filter relevante Tageszeit-Perioden
         List<MarketPrice> daytimePeriods = marketPriceRepository.findAll().stream()
-                .filter(price -> price.getStartTimestamp() >= dayStart.getTimeInMillis())
-                .filter(price -> price.getStartTimestamp() < dayEnd.getTimeInMillis())
+                .filter(price -> isWithinTimeWindow(price.getStartTimestamp(), dayStart.getTimeInMillis(), dayEnd.getTimeInMillis()))
                 .filter(price -> price.getStartTimestamp() > currentTime)
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
                 .toList();
 
         if (daytimePeriods.isEmpty()) {
@@ -554,31 +560,19 @@ public class ChargingManagementService {
         List<MarketPrice> selectedPeriods = daytimePeriods.stream()
                 .filter(price -> price.getPriceInCentPerKWh() <= threshold)
                 .filter(price -> price.getPriceInCentPerKWh() <= maxAcceptablePrice)
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .limit(maxChargingPeriods) // Begrenzung auf maximale Perioden
+                .limit(maxChargingPeriods)
                 .toList();
 
-        // Überprüfung auf günstigere Alternativen in den gleichen Zeitfenstern
-        List<MarketPrice> optimizedPeriods = new ArrayList<>();
-        for (MarketPrice period : selectedPeriods) {
-            boolean hasCheaperOption = daytimePeriods.stream()
-                    .filter(p -> p.getStartTimestamp() >= period.getStartTimestamp()
-                            && p.getEndTimestamp() <= period.getEndTimestamp())
-                    .anyMatch(p -> p.getPriceInCentPerKWh() < period.getPriceInCentPerKWh());
+        // Validierung der Perioden
+        Set<ChargingSchedule> validatedSchedules = validateSchedulesForCheaperOptions(
+                collectAndOptimizeSchedules(selectedPeriods)
+        );
 
-            if (!hasCheaperOption) {
-                optimizedPeriods.add(period);
-            } else {
-                LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                        "Excluded period %s - %s (%.2f cents/kWh) due to cheaper alternative.",
-                        dateFormat.format(new Date(period.getStartTimestamp())),
-                        dateFormat.format(new Date(period.getEndTimestamp())),
-                        period.getPriceInCentPerKWh()));
-            }
-        }
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                "Validated %d daytime charging schedules.", validatedSchedules.size()));
 
-        // Konvertieren in ChargingSchedules und zurückgeben
-        return new ArrayList<>(collectAndOptimizeSchedules(optimizedPeriods));
+        // Konvertieren in Liste und zurückgeben
+        return new ArrayList<>(validatedSchedules);
     }
 
 
@@ -648,10 +642,8 @@ public class ChargingManagementService {
 
         // Ensure only the best periods for the current night are selected
         List<MarketPrice> selectedPeriods = nighttimePeriods.stream()
-                .filter(price -> price.getPriceInCentPerKWh() <= threshold)
-                .filter(price -> price.getPriceInCentPerKWh() <= maxAcceptablePrice)
+                .filter(price -> price.getPriceInCentPerKWh() <= calculateDynamicMaxPrice(nighttimePeriods))
                 .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .limit(maxChargingPeriods) // Use only up to the allowed number of periods
                 .toList();
 
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
@@ -663,13 +655,28 @@ public class ChargingManagementService {
         return new ArrayList<>(collectAndOptimizeSchedules(selectedPeriods));
     }
 
-    // Helper method to check for cheaper future periods
-    private boolean hasCheaperFuturePeriod(List<MarketPrice> periods, MarketPrice currentPeriod) {
-        return periods.stream()
-                .filter(p -> p.getStartTimestamp() > currentPeriod.getStartTimestamp())
-                .anyMatch(p -> p.getPriceInCentPerKWh() < currentPeriod.getPriceInCentPerKWh());
-    }
+    private double calculateDynamicMaxPrice(List<MarketPrice> nighttimePeriods) {
+        double minPrice = nighttimePeriods.stream()
+                .mapToDouble(MarketPrice::getPriceInCentPerKWh)
+                .min()
+                .orElse(maxAcceptableMarketPriceInCent);
 
+        double priceRange = nighttimePeriods.stream()
+                .mapToDouble(MarketPrice::getPriceInCentPerKWh)
+                .max()
+                .orElse(minPrice) - minPrice;
+
+        double tolerance = priceRange > 5 ? 0.30 : 0.20;
+
+        double dynamicMaxPrice = minPrice + (minPrice * tolerance);
+
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                "Calculated dynamic maximum price: %.2f cents/kWh (minPrice: %.2f, tolerance: %.2f)",
+                dynamicMaxPrice, minPrice, tolerance
+        ));
+
+        return dynamicMaxPrice;
+    }
 
 
 
