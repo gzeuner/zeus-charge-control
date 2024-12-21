@@ -596,21 +596,33 @@ public class ChargingManagementService {
     }
 
 
+    /**
+     * Optimizes nighttime charging by dynamically selecting the best periods for the current night.
+     * Allows prioritization of the cheapest three periods and optionally includes additional
+     * periods based on dynamic thresholds.
+     *
+     * @return A list of optimized charging schedules.
+     */
     private List<ChargingSchedule> optimizeNighttimeCharging() {
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Optimizing nighttime charging dynamically for the current night.");
 
         long currentTime = System.currentTimeMillis();
+
+        // Define night start and end times, including date transition
         Calendar nightStart = Calendar.getInstance();
         nightStart.set(Calendar.HOUR_OF_DAY, nightStartHour);
         nightStart.set(Calendar.MINUTE, 0);
         nightStart.set(Calendar.SECOND, 0);
         nightStart.set(Calendar.MILLISECOND, 0);
 
-        Calendar nightEnd = getNightEnd(nightStart);
+        Calendar nightEnd = (Calendar) nightStart.clone();
+        nightEnd.add(Calendar.DATE, 1); // Always set to the next day
+        nightEnd.set(Calendar.HOUR_OF_DAY, nightEndHour);
 
-        // Fetch only relevant periods for the current night
+        // Filter only relevant nighttime periods
         List<MarketPrice> nighttimePeriods = marketPriceRepository.findAll().stream()
-                .filter(price -> isWithinTimeWindow(price.getStartTimestamp(), nightStart.getTimeInMillis(), nightEnd.getTimeInMillis()))
+                .filter(price -> price.getStartTimestamp() >= nightStart.getTimeInMillis() &&
+                        price.getStartTimestamp() < nightEnd.getTimeInMillis())
                 .filter(price -> price.getStartTimestamp() > currentTime)
                 .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
                 .toList();
@@ -620,36 +632,7 @@ public class ChargingManagementService {
             return Collections.emptyList();
         }
 
-        // Define the evening period: nightStartHour - 4 to nightStartHour
-        Calendar eveningStart = (Calendar) nightStart.clone();
-        eveningStart.add(Calendar.HOUR_OF_DAY, -4);
-
-        // Fetch relevant evening periods
-        List<MarketPrice> eveningPeriods = marketPriceRepository.findAll().stream()
-                .filter(price -> isWithinTimeWindow(price.getStartTimestamp(), eveningStart.getTimeInMillis(), nightStart.getTimeInMillis()))
-                .filter(price -> price.getStartTimestamp() > currentTime)
-                .toList();
-
-        // Calculate the cheapest price in the nighttime periods
-        double cheapestNightPrice = nighttimePeriods.get(0).getPriceInCentPerKWh();
-
-        // Filter evening periods cheaper than the cheapest nighttime price
-        List<MarketPrice> filteredEveningPeriods = eveningPeriods.stream()
-                .filter(period -> period.getPriceInCentPerKWh() <= cheapestNightPrice)
-                .toList();
-
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                "Filtered evening periods. Retained %d periods cheaper than the cheapest nighttime price (%.2f cents/kWh).",
-                filteredEveningPeriods.size(),
-                cheapestNightPrice
-        ));
-
-        // Combine nighttime and filtered evening periods
-        List<MarketPrice> combinedPeriods = new ArrayList<>();
-        combinedPeriods.addAll(nighttimePeriods);
-        combinedPeriods.addAll(filteredEveningPeriods);
-
-        // Dynamically calculate thresholds
+        // Calculate dynamic thresholds and prioritize periods
         double threshold = calculateDynamicThreshold(nighttimePeriods, priceFlexibilityThreshold);
         double maxAcceptablePrice = calculateMaxAcceptablePrice(
                 batteryManagementService.getRelativeStateOfCharge(),
@@ -658,17 +641,24 @@ public class ChargingManagementService {
 
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
                 "Dynamic nighttime threshold: %.2f cents/kWh, Max acceptable price: %.2f cents/kWh",
-                threshold, maxAcceptablePrice));
+                threshold, maxAcceptablePrice
+        ));
 
-        // Ensure only the best periods for the current night are selected
+        // Select top three cheapest periods and additional ones within tolerance
+        int maxPeriods = 3; // Number of cheapest periods to prioritize
+        int additionalPeriods = 2; // Allow 2 additional periods near the threshold
+
         List<MarketPrice> selectedPeriods = nighttimePeriods.stream()
-                .filter(price -> price.getPriceInCentPerKWh() <= calculateDynamicMaxPrice(nighttimePeriods))
+                .filter(price -> price.getPriceInCentPerKWh() <= threshold ||
+                        price.getPriceInCentPerKWh() <= nighttimePeriods.get(0).getPriceInCentPerKWh() * (1 + 0.02 * additionalPeriods))
+                .filter(price -> price.getPriceInCentPerKWh() <= maxAcceptablePrice)
                 .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                .limit(maxPeriods + additionalPeriods)
                 .toList();
 
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                "Selected %d periods for the current night.",
-                selectedPeriods.size()
+                "Selected %d periods for the current night, including %d additional periods close to the cheapest.",
+                selectedPeriods.size(), additionalPeriods
         ));
 
         // Convert to ChargingSchedules and return
@@ -714,11 +704,19 @@ public class ChargingManagementService {
                 : sortedPrices.get(size / 2);
     }
 
+    /**
+     * Calculates a dynamic threshold for selecting charging periods based on market prices.
+     * Considers the range and distribution of prices to adjust the threshold dynamically.
+     *
+     * @param prices          The list of market prices.
+     * @param defaultThreshold The default flexibility threshold.
+     * @return The calculated dynamic threshold.
+     */
     private double calculateDynamicThreshold(List<MarketPrice> prices, double defaultThreshold) {
-        // Median berechnen
+        // Calculate median price
         double medianPrice = calculateMedianPrice(prices);
 
-        // Min- und Max-Preis ermitteln
+        // Determine min, max, and average prices
         double minPrice = prices.stream()
                 .mapToDouble(MarketPrice::getPriceInCentPerKWh)
                 .min()
@@ -727,27 +725,25 @@ public class ChargingManagementService {
                 .mapToDouble(MarketPrice::getPriceInCentPerKWh)
                 .max()
                 .orElse(medianPrice);
-
-        // Durchschnittspreis ermitteln
         double averagePrice = prices.stream()
                 .mapToDouble(MarketPrice::getPriceInCentPerKWh)
                 .average()
                 .orElse(medianPrice);
 
-        // Dynamische Anpassung des Schwellenwerts
+        // Adjust threshold dynamically based on price range
         double range = maxPrice - minPrice;
         double dynamicThreshold = medianPrice + defaultThreshold;
 
-        if (range < 0.5) { // Engere Preisspanne → großzügiger
+        if (range < 0.5) { // Narrow price range -> increase flexibility
             dynamicThreshold += averagePrice * 0.1;
-        } else if (range > 2.0) { // Große Preisspanne → restriktiver
+        } else if (range > 2.0) { // Wide price range -> reduce flexibility
             dynamicThreshold -= averagePrice * 0.1;
         }
 
-        // Sicherstellen, dass der Schwellenwert nicht zu restriktiv ist
+        // Ensure threshold is not too restrictive
         dynamicThreshold = Math.max(dynamicThreshold, minPrice + 0.05);
 
-        // Loggen für Nachvollziehbarkeit
+        // Log calculation details
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
                 "Calculated dynamic threshold: %.2f (median: %.2f, min: %.2f, max: %.2f, avg: %.2f, range: %.2f)",
                 dynamicThreshold, medianPrice, minPrice, maxPrice, averagePrice, range));
@@ -850,14 +846,30 @@ public class ChargingManagementService {
 
         // Dynamically calculate the price tolerance factor and threshold
         double priceToleranceFactor = calculateDynamicPriceTolerance(minPrice, maxPrice, sortedSchedules.size());
-        double priceThreshold = Math.max(minPrice * priceToleranceFactor, minPrice + 0.05); // Ensure a minimum margin of 5 cents
+
+        // Define fallback margin and dynamically adjust threshold
+        double fallbackMargin = 0.50; // Minimum margin of 0.50 cents/kWh
+        double priceRangeFactor = (maxPrice - minPrice) / maxPrice; // Normalize range
+        double dynamicTolerance = 0.05 + (sortedSchedules.size() * 0.01); // Increment by 1% per period
+        double adjustedToleranceFactor = priceToleranceFactor + (0.05 * priceRangeFactor) + dynamicTolerance;
+        double maxAcceptablePrice = this.maxAcceptableMarketPriceInCent; // Example: max 15 cents/kWh
+        double priceThreshold = Math.min(
+                Math.max(minPrice * adjustedToleranceFactor, minPrice + fallbackMargin),
+                maxAcceptablePrice
+        );
+
+        // Allow additional periods within a tolerance range
+        int additionalPeriods = 2; // Adjustable
+        double extendedThreshold = priceThreshold * (1 + 0.02 * additionalPeriods);
 
         // Dynamically determine the maximum number of charging periods
         int maxChargingPeriods = calculateDynamicMaxChargingPeriods(sortedSchedules.size(), maxPrice - minPrice);
 
         // Validate each schedule based on the calculated threshold
         for (ChargingSchedule schedule : sortedSchedules) {
-            boolean isWithinTolerance = schedule.getPrice() <= priceThreshold;
+            boolean isWithinTolerance = schedule.getPrice() <= priceThreshold ||
+                    (validatedSchedules.size() < additionalPeriods &&
+                            schedule.getPrice() <= extendedThreshold);
 
             if (isWithinTolerance) {
                 validatedSchedules.add(schedule);
@@ -867,7 +879,7 @@ public class ChargingManagementService {
                         dateFormat.format(new Date(schedule.getStartTimestamp())),
                         dateFormat.format(new Date(schedule.getEndTimestamp())),
                         schedule.getPrice(),
-                        priceThreshold
+                        extendedThreshold
                 ));
             }
         }
@@ -881,6 +893,7 @@ public class ChargingManagementService {
 
         return validatedSchedules;
     }
+
 
     /**
      * Finds a schedule to fill a gap between two periods, if available.
@@ -1007,9 +1020,10 @@ public class ChargingManagementService {
 
     // Helper method to check for cheaper future schedules
     private boolean hasCheaperFutureSchedule(ChargingSchedule currentSchedule, List<ChargingSchedule> allSchedules) {
+        double priceTolerance = currentSchedule.getPrice() * 0.05; // Allow a 5% tolerance
         return allSchedules.stream()
                 .filter(schedule -> schedule.getStartTimestamp() > currentSchedule.getStartTimestamp())
-                .anyMatch(schedule -> schedule.getPrice() < currentSchedule.getPrice());
+                .anyMatch(schedule -> schedule.getPrice() + priceTolerance < currentSchedule.getPrice());
     }
 
 
