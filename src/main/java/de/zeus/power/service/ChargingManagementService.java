@@ -174,24 +174,41 @@ public class ChargingManagementService {
         Calendar dayEnd = (Calendar) dayStart.clone();
         dayEnd.set(Calendar.HOUR_OF_DAY, preferredEndHour);
 
+        // Filter relevante Tageszeit-Perioden
         List<MarketPrice> daytimePeriods = marketPriceRepository.findAll().stream()
-                .filter(price -> price.getStartTimestamp() >= dayStart.getTimeInMillis())
-                .filter(price -> price.getStartTimestamp() < dayEnd.getTimeInMillis())
+                .filter(price -> isWithinTimeWindow(price.getStartTimestamp(), dayStart.getTimeInMillis(), dayEnd.getTimeInMillis()))
                 .filter(price -> price.getStartTimestamp() > currentTime)
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
                 .toList();
 
         if (daytimePeriods.isEmpty()) {
             LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No daytime periods available for buffering.");
+            daytimeBuffer.clear(); // Sicherstellen, dass der Puffer leer ist
             return;
         }
 
+        // Dynamische Schwellenwerte berechnen
         double threshold = calculateDynamicThreshold(daytimePeriods, priceFlexibilityThreshold);
+        double maxAcceptablePrice = calculateMaxAcceptablePrice(
+                batteryManagementService.getRelativeStateOfCharge(),
+                maxAcceptableMarketPriceInCent
+        );
+
+        // Dynamische maximale Ladeperioden berechnen
+        int dynamicMaxPeriods = calculateDynamicMaxChargingPeriods(daytimePeriods.size(), maxAcceptablePrice - threshold);
+
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                "Dynamic daytime threshold: %.2f cents/kWh, Max acceptable price: %.2f cents/kWh, Max periods: %d",
+                threshold, maxAcceptablePrice, dynamicMaxPeriods));
+
+        // Auswahl der Perioden basierend auf dynamischen Schwellenwerten
         List<MarketPrice> selectedPeriods = daytimePeriods.stream()
                 .filter(price -> price.getPriceInCentPerKWh() <= threshold)
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .limit(maxChargingPeriods)
+                .filter(price -> price.getPriceInCentPerKWh() <= maxAcceptablePrice)
+                .limit(dynamicMaxPeriods)
                 .toList();
 
+        // Ladepuffer aktualisieren
         daytimeBuffer.clear();
         daytimeBuffer.addAll(collectAndOptimizeSchedules(selectedPeriods));
 
@@ -552,15 +569,18 @@ public class ChargingManagementService {
                 maxAcceptableMarketPriceInCent
         );
 
+        // Dynamische maximale Ladeperioden berechnen
+        int dynamicMaxPeriods = calculateDynamicMaxChargingPeriods(daytimePeriods.size(), maxAcceptablePrice - threshold);
+
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                "Dynamic daytime threshold: %.2f cents/kWh, Max acceptable price: %.2f cents/kWh",
-                threshold, maxAcceptablePrice));
+                "Dynamic daytime threshold: %.2f cents/kWh, Max acceptable price: %.2f cents/kWh, Max periods: %d",
+                threshold, maxAcceptablePrice, dynamicMaxPeriods));
 
         // Auswahl der Perioden basierend auf dynamischen Schwellenwerten
         List<MarketPrice> selectedPeriods = daytimePeriods.stream()
                 .filter(price -> price.getPriceInCentPerKWh() <= threshold)
                 .filter(price -> price.getPriceInCentPerKWh() <= maxAcceptablePrice)
-                .limit(maxChargingPeriods)
+                .limit(dynamicMaxPeriods)
                 .toList();
 
         // Validierung der Perioden
@@ -695,9 +715,46 @@ public class ChargingManagementService {
     }
 
     private double calculateDynamicThreshold(List<MarketPrice> prices, double defaultThreshold) {
+        // Median berechnen
         double medianPrice = calculateMedianPrice(prices);
-        return medianPrice + defaultThreshold;
+
+        // Min- und Max-Preis ermitteln
+        double minPrice = prices.stream()
+                .mapToDouble(MarketPrice::getPriceInCentPerKWh)
+                .min()
+                .orElse(medianPrice);
+        double maxPrice = prices.stream()
+                .mapToDouble(MarketPrice::getPriceInCentPerKWh)
+                .max()
+                .orElse(medianPrice);
+
+        // Durchschnittspreis ermitteln
+        double averagePrice = prices.stream()
+                .mapToDouble(MarketPrice::getPriceInCentPerKWh)
+                .average()
+                .orElse(medianPrice);
+
+        // Dynamische Anpassung des Schwellenwerts
+        double range = maxPrice - minPrice;
+        double dynamicThreshold = medianPrice + defaultThreshold;
+
+        if (range < 0.5) { // Engere Preisspanne → großzügiger
+            dynamicThreshold += averagePrice * 0.1;
+        } else if (range > 2.0) { // Große Preisspanne → restriktiver
+            dynamicThreshold -= averagePrice * 0.1;
+        }
+
+        // Sicherstellen, dass der Schwellenwert nicht zu restriktiv ist
+        dynamicThreshold = Math.max(dynamicThreshold, minPrice + 0.05);
+
+        // Loggen für Nachvollziehbarkeit
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                "Calculated dynamic threshold: %.2f (median: %.2f, min: %.2f, max: %.2f, avg: %.2f, range: %.2f)",
+                dynamicThreshold, medianPrice, minPrice, maxPrice, averagePrice, range));
+
+        return dynamicThreshold;
     }
+
 
     private double calculateMaxAcceptablePrice(double currentRSOC, double basePrice) {
         if (currentRSOC < targetStateOfCharge * 0.8) {
