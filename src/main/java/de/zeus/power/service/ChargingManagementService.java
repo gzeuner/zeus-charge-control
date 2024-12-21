@@ -583,7 +583,7 @@ public class ChargingManagementService {
 
 
     private List<ChargingSchedule> optimizeNighttimeCharging() {
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Optimizing nighttime charging dynamically based on price analysis.");
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Optimizing nighttime charging dynamically for the current night.");
 
         long currentTime = System.currentTimeMillis();
         Calendar nightStart = Calendar.getInstance();
@@ -594,7 +594,7 @@ public class ChargingManagementService {
 
         Calendar nightEnd = getNightEnd(nightStart);
 
-        // Fetch relevant nighttime periods
+        // Fetch only relevant periods for the current night
         List<MarketPrice> nighttimePeriods = marketPriceRepository.findAll().stream()
                 .filter(price -> isWithinTimeWindow(price.getStartTimestamp(), nightStart.getTimeInMillis(), nightEnd.getTimeInMillis()))
                 .filter(price -> price.getStartTimestamp() > currentTime)
@@ -636,7 +636,7 @@ public class ChargingManagementService {
         combinedPeriods.addAll(filteredEveningPeriods);
 
         // Dynamically calculate thresholds
-        double threshold = calculateDynamicThreshold(combinedPeriods, priceFlexibilityThreshold);
+        double threshold = calculateDynamicThreshold(nighttimePeriods, priceFlexibilityThreshold);
         double maxAcceptablePrice = calculateMaxAcceptablePrice(
                 batteryManagementService.getRelativeStateOfCharge(),
                 maxAcceptableMarketPriceInCent
@@ -646,20 +646,21 @@ public class ChargingManagementService {
                 "Dynamic nighttime threshold: %.2f cents/kWh, Max acceptable price: %.2f cents/kWh",
                 threshold, maxAcceptablePrice));
 
-        // Filter based on dynamic thresholds
-        List<MarketPrice> selectedPeriods = combinedPeriods.stream()
+        // Ensure only the best periods for the current night are selected
+        List<MarketPrice> selectedPeriods = nighttimePeriods.stream()
                 .filter(price -> price.getPriceInCentPerKWh() <= threshold)
                 .filter(price -> price.getPriceInCentPerKWh() <= maxAcceptablePrice)
                 .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                .limit(maxChargingPeriods) // Use only up to the allowed number of periods
                 .toList();
 
-        // Validate and optimize periods
-        List<MarketPrice> optimizedPeriods = selectedPeriods.stream()
-                .filter(period -> !hasCheaperFuturePeriod(combinedPeriods, period))
-                .toList();
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                "Selected %d periods for the current night.",
+                selectedPeriods.size()
+        ));
 
         // Convert to ChargingSchedules and return
-        return new ArrayList<>(collectAndOptimizeSchedules(optimizedPeriods));
+        return new ArrayList<>(collectAndOptimizeSchedules(selectedPeriods));
     }
 
     // Helper method to check for cheaper future periods

@@ -371,16 +371,31 @@ public class BatteryManagementService {
             return 0;
         }
 
-        BatteryStatusResponse batteryStatusResponse = getCurrentBatteryStatus();
-        if (batteryStatusResponse != null) {
-            int rsoc = batteryStatusResponse.getRsoc();
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                    String.format("Current relative state of charge (RSOC) is: %d%%", rsoc));
-            return rsoc;
-        } else {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO,"Failed to obtain current battery status; assuming RSOC is 0%.");
-            return 0;
+        for (int attempt = 1; attempt <= 4; attempt++) {
+            try {
+                BatteryStatusResponse batteryStatusResponse = getCurrentBatteryStatus();
+                if (batteryStatusResponse != null) {
+                    int rsoc = batteryStatusResponse.getRsoc();
+                    LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                            String.format("Current relative state of charge (RSOC) is: %d%%", rsoc));
+                    return rsoc;
+                }
+            } catch (Exception e) {
+                LogFilter.log(LogFilter.LOG_LEVEL_WARN,
+                        String.format("Failed to retrieve battery status. Attempt %d of 4. Retrying in 15 seconds...", attempt));
+                try {
+                    Thread.sleep(15_000);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Thread was interrupted during sleep.");
+                    break;
+                }
+            }
         }
+
+        LogFilter.log(LogFilter.LOG_LEVEL_ERROR,
+                "Failed to retrieve battery status after 4 attempts. Assuming RSOC is 15%.");
+        return 15;
     }
 
     public int getRemainingCapacityWh() {
