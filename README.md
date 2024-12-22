@@ -1,240 +1,157 @@
-
 # Zeus Charge Control
 
-Zeus Charge Control - Eine Java-Anwendung zur Verwaltung von Ladeplänen für PV-Batteriespeicher basierend auf Marktpreisen. Diese Anwendung unterstützt die Sonnen API v2 für das Batteriemanagement.
+Zeus Charge Control - Eine Java-Anwendung zur Verwaltung von Ladeplänen für PV-Batteriespeicher basierend auf Marktpreisen. Die Anwendung nutzt dynamische Algorithmen zur Auswahl der optimalen Ladeperioden unter Berücksichtigung von Wetter- und Preisfaktoren. Sie unterstützt sowohl die Sonnen API v2 als auch Open-Meteo für Datenintegration.
+
+## Open-Meteo Integration
+
+Zeus Charge Control integriert verschiedene Marktpreis- und Wetterdaten-APIs. Die Wetter-API von [Open-Meteo](https://open-meteo.com/) ist für nicht-kommerzielle Zwecke kostenlos nutzbar. Für kommerzielle Anwendungen ist ein API-Schlüssel erforderlich. Weitere Informationen finden sich in den [Nutzungsbedingungen von Open-Meteo](https://open-meteo.com/en/terms).
 
 ## Funktionen
 
-- **Batteriestatus**: Überwache den aktuellen Status deiner Batterie.
-- **Bester Preis im Zeitrahmen**: Identifiziere die besten Marktpreise zum Laden innerhalb eines festgelegten Zeitraums.
-- **Preisdiagramm**: Visualisiere Marktpreise über die Zeit hinweg.
+- **Batteriestatus**: Überwachung des aktuellen Ladezustands der Batterie.
+- **Marktpreismanagement**: Dynamische Ladeplanung basierend auf Marktpreisen, inklusive flexibler Schwellenwerte.
+- **Dynamische Nachtplanung**: Priorisiert die drei günstigsten Ladeperioden mit zusätzlichen optionalen Perioden.
+- **Preisdiagramm**: Visualisierung von Marktpreisen.
+- **Wetterintegration**: Ladeentscheidungen basierend auf Wetterbedingungen wie Bewölkungsgrad.
 
-## Change-Log
+## Dynamische Ladeplanung
 
-- **Feature**: Akku sofort über das Netz aufladen (Start/Stop)
-- **Bugfix**: Batterie in Leerlauf von Betriebsmodus 'Manuell' in 'Automatisch' zurück versetzen.
-- **Bugfix**: Ein nicht konfiguriertes oder falsch konfiguriertes Ladesystem führte dazu, dass die Anwendung nicht gestartet werden konnte.
+Die dynamische Ladeplanung priorisiert die günstigsten Ladeperioden und integriert zusätzliche Toleranzmechanismen. Dies geschieht durch die Kombination folgender Faktoren:
 
-## Enthaltene Dateien
+1. **Dynamische Preisschwellen**: Basierend auf Minimum-, Maximum- und Median-Preisen wird ein Schwellenwert berechnet, der die günstigsten Perioden identifiziert.
+2. **Flexibilitätstoleranz**: Zusätzliche Perioden, die knapp über dem Schwellenwert liegen, können optional berücksichtigt werden.
+3. **Konfigurierbare Parameter**: Über die `application.properties` können folgende Einstellungen angepasst werden:
+    - **marketdata.max.acceptable.price.cents**: Maximale Preisgrenze in Cent pro kWh.
+    - **marketdata.price.flexibility.threshold**: Toleranzschwelle für zusätzliche Perioden.
+    - **night.start** und **night.end**: Definieren den Zeitraum der Nachtplanung.
+    - **battery.target.stateOfCharge**: Ziel-Ladezustand der Batterie.
 
-- `zeus-charge-control-1.4.jar`: Die ausführbare JAR-Datei.
-- `zeus-charge-control.bat`: Windows-Skript zum Setzen von Umgebungsvariablen und zum Starten der Anwendung.
-- `zeus-charge-control.sh`: Linux-Skript zum Setzen von Umgebungsvariablen und zum Starten der Anwendung.
-- `license_de.html`: Lizenzdatei auf Deutsch.
-- `license_en.html`: Lizenzdatei auf Englisch.
-- `LICENSE`: Lizenzdatei im Klartext.
+### Beispiel:
 
-## Nutzung
+Mit den Standardeinstellungen werden die drei günstigsten Perioden priorisiert. Falls keine ausreichenden günstigen Perioden verfügbar sind, wird die Flexibilitätstoleranz genutzt, um zusätzliche Perioden einzubeziehen.
 
-### Windows
-
-1. Bearbeite `zeus-charge-control.bat`, um die Umgebungsvariablen festzulegen.
-2. Doppelklicke auf `zeus-charge-control.bat`, um die Anwendung zu starten.
-
-### Linux
-
-1. Bearbeite `zeus-charge-control.sh`, um die Umgebungsvariablen festzulegen.
-2. Mache das Skript ausführbar:
-   ```sh
-   chmod +x zeus-charge-control.sh
-   ```
-3. Führe das Skript aus:
-   ```sh
-   ./zeus-charge-control.sh
-   ```
-
-### Service
-
-Der Service kann über http://localhost:8080/charging-status aufgerufen werden.
-
-### Binärdatei herunterladen
-
-Du kannst die neueste Version von Zeus Charge Control über den folgenden Link herunterladen:
-
-[Zeus Charge Control v1.4](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.4/zeus-charge-control.zip)
+Zeus Charge Control steht in keinerlei Verbindung zur Firma Sonnen, Tibber oder Awattar. Es gibt keinen Anspruch auf Fehlerfreiheit, Upgrades oder Support. Der Quellcode der Software ist kostenlos verfügbar.
 
 ## Screenshots
 
-Hier sind einige Screenshots der Anwendung in Aktion:
+Hier einige Beispiele:
 
 **Batteriestatus**
 
-<img src="images/battery_status.jpg" alt="images/battery_status.jpg" width="60%">
+<img src="images/battery_status.jpg" alt="Batteriestatus" width="60%">
 
 **Bester Preis im Zeitrahmen**
 
-<img src="images/best_price_in_scope.jpg" alt="best_price_in_scope.jpg" width="60%">
+<img src="images/best_price_in_scope.jpg" alt="Bester Preis" width="60%">
 
 **Preisdiagramm**
 
-<img src="images/price_chart.jpg" alt="price_chart.jpg" width="60%">
+<img src="images/price_chart.jpg" alt="Preisdiagramm" width="60%">
 
-## Anforderungen
+## Umgebungsvariablen
 
-Die Batterie muss die Sonnen API v2 unterstützen. Andere APIs werden derzeit nicht unterstützt.
+### Datenquelle
+- **spring.datasource.url**: URL der Datenbank (Standard: `jdbc:h2:mem:testdb`).
+- **spring.datasource.driverClassName**: Treiberklasse (Standard: `org.h2.Driver`).
+- **spring.datasource.username**: Benutzername (Standard: `sa`).
+- **spring.datasource.password**: Passwort (Standard: `password`).
+- **spring.jpa.database-platform**: Hibernate-Dialect (Standard: `org.hibernate.dialect.H2Dialect`).
+- **spring.h2.console.enabled**: Aktiviert H2-Konsole (Standard: `true`).
 
-Java 16 und höher.
+### Ladeeinstellungen
+- **battery.target.stateOfCharge**: Ziel-Ladezustand in Prozent (Standard: `90`).
+- **battery.chargingPoint**: Ladepunkt in Watt (Standard: `4500`).
+- **battery.large.consumer.threshold**: Schwellenwert für große Verbraucher (Standard: `0.5`).
 
-### Binärdatei herunterladen
+### Marktpreise
+- **marketdata.source**: Quelle für Marktpreise (`awattar` oder `tibber`).
+- **marketdata.max.acceptable.price.cents**: Maximal akzeptabler Marktpreis in Cent (Standard: `15`).
+- **marketdata.price.flexibility.threshold**: Dynamische Preistoleranz (Standard: `2`).
 
-Du kannst die neueste Version von Zeus Lade-Kontrolle über den folgenden Link herunterladen:
-
-[Zeus Charge Control v1.4](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.4/zeus-charge-control.zip)
-
-### Umgebungsvariablen und ihre Bedeutung
-
-Unsere Anwendung verwendet eine Vielzahl von Umgebungsvariablen, um sich flexibel an unterschiedliche Konfigurationen und Szenarien anzupassen. Hier sind einige der wichtigsten Variablen und ihre Bedeutungen:
-
-- **SERVER_ADDRESS**: Diese Variable gibt die IP-Adresse an, unter der der Server Anfragen entgegennimmt. Standardmäßig ist sie auf `0.0.0.0` gesetzt, was bedeutet, dass der Server auf allen verfügbaren Netzwerkadressen lauscht.
-
-- **SERVER_PORT**: Diese Variable legt den Port fest, auf dem der Server läuft. Der Standardwert ist `8080`.
-
-- **BATTERY_URL**: Die URL der Batterie-API. Diese API wird verwendet, um den aktuellen Status der Batterie abzufragen und Ladebefehle zu senden.
-
-- **BATTERY_AUTH_TOKEN**: Das Authentifizierungstoken für die Batterie-API. Dieses Token ist erforderlich, um autorisierte Anfragen an die API zu senden.
-
-- **BATTERY_TARGET_STATE_OF_CHARGE**: Diese Variable gibt den Ziel-Ladezustand der Batterie in Prozent an. Sie bestimmt, bis zu welchem Ladezustand die Batterie geladen werden soll. Sobald dieser Wert erreicht ist, stoppt der Ladevorgang. Wenn diese Variable nicht gesetzt ist, wird ein Standardwert von 80 % verwendet.
-
-- **BATTERY_CHARGING_POINT**: Diese Variable gibt den Ladepunkt der Batterie in Watt an. Sie bestimmt die Leistung, mit der die Batterie geladen werden soll, um ein optimales Gleichgewicht zwischen Ladezeit und Energieeffizienz zu erreichen. Wenn diese Variable nicht gesetzt ist, wird ein Standardwert von 4500 W verwendet.
-
-- **AWATTAR_MARKETDATA_URL**: Die URL des aWATTar-Marktpreis-Dienstes. Diese URL wird verwendet, um aktuelle und zukünftige Strompreise von aWATTar abzurufen.
-
-- **AWATTAR_AUTH_TOKEN**: Das Authentifizierungstoken für den aWATTar-Marktpreis-Dienst. Derzeit stellt aWATTar Preise öffentlich nach dem Prinzip der fairen Nutzung ohne Zugangsbeschränkungen zur Verfügung.
-
-- **TIBBER_MARKETDATA_URL**: Die URL des Tibber-Marktpreis-Dienstes. Diese URL wird verwendet, um aktuelle und zukünftige Strompreise von Tibber abzurufen.
-
-- **TIBBER_AUTH_TOKEN**: Das Authentifizierungstoken für den Tibber-Marktpreis-Dienst. Dieses Token ist erforderlich, um autorisierte Anfragen an die Tibber-API zu senden. Tibber-Kunden können Strompreise von der Tibber-API beziehen.
-
-- **MARKETDATA_SOURCE**: Diese Variable gibt an, welche Datenquelle für Marktpreise verwendet werden soll. Mögliche Werte sind `awattar` oder `tibber`. Je nach ausgewählter Quelle wird die Anwendung Marktpreise entweder von aWATTar oder Tibber abrufen.
+### Nachtplanung
+- **night.start**: Beginn der Nachtperiode (Standard: `21`).
+- **night.end**: Ende der Nachtperiode (Standard: `6`).
 
 ## Lizenz
 
-Diese Software wird unter der Apache License, Version 2.0 <a href="http://www.apache.org/licenses/LICENSE-2.0">(http://www.apache.org/licenses/LICENSE-2.0)</a>
-bereitgestellt.
+Diese Software wird unter der Apache License, Version 2.0 bereitgestellt. Details siehe `LICENSE.txt`.
 
-Sie enthält Software, die vom Spring Boot-Projekt entwickelt wurde <a href="http://spring.io/projects/spring-boot">(http://spring.io/projects/spring-boot)</a>.
-Spring Boot-Komponenten sind unter der Apache License, Version 2.0 lizenziert <a href="http://www.apache.org/licenses/LICENSE-2.0">(http://www.apache.org/licenses/LICENSE-2.0)</a>.
-
-Details zur Lizenz findest du in `LICENSE.txt`, `license_de.html` oder `license_en.html`.
-
-Für weitere Informationen, siehe bereitgestellte Lizenzdateien.
-
---
+---
 
 # Zeus Charge Control
 
-Zeus Charge Control - A Java application for managing battery charging schedules based on market prices. This application supports the Sonnen API v2 for battery management.
+Zeus Charge Control - A Java application for managing battery charging schedules based on market prices. It uses dynamic algorithms to optimize charging periods, considering weather and price factors. The application supports the Sonnen API v2 and Open-Meteo for data integration.
+
+## Open-Meteo Integration
+
+Zeus Charge Control integrates various market price and weather data APIs. The weather API from [Open-Meteo](https://open-meteo.com/) is free for non-commercial purposes. For commercial applications, an API key is required. More information is available in the [Open-Meteo terms of use](https://open-meteo.com/en/terms).
 
 ## Features
 
-- **Battery Status**: Monitor the current status of your battery.
-- **Best Price in Scope**: Identify the best market prices for charging within a specified timeframe.
-- **Price Chart**: Visualize market prices over time.
+- **Battery Status**: Monitor the current state of your battery.
+- **Market Price Management**: Dynamic charging schedules based on market prices, including flexible thresholds.
+- **Dynamic Nighttime Optimization**: Prioritizes the three cheapest periods with additional optional periods.
+- **Price Chart**: Visualize market prices.
+- **Weather Integration**: Charging decisions based on weather conditions, such as cloud cover.
 
-## Change-Log
-- **Feature**: Charge the battery immediately via the grid (start/stop)
-- **Bugfix**: Reset battery in idle mode from 'Manual' to 'Automatic' operating mode.
-- **Bugfix**: An unconfigured or incorrectly configured loading system caused the application not to start.
+## Dynamic Charging Optimization
 
-## Files Included
+Dynamic charging optimization prioritizes the cheapest charging periods while incorporating tolerance mechanisms. It combines the following factors:
 
-- `zeus-charge-control-1.4.jar`: The main executable JAR file.
-- `zeus-charge-control.bat`: Windows script to set environment variables and run the application.
-- `zeus-charge-control.sh`: Linux script to set environment variables and run the application.
-- `license_de.html`: License file in German.
-- `license_en.html`: License file in English.
-- `LICENSE`: License file in plain text.
+1. **Dynamic Price Thresholds**: Minimum, maximum, and median prices are used to calculate a threshold that identifies the cheapest periods.
+2. **Flexibility Tolerance**: Additional periods slightly above the threshold can optionally be included.
+3. **Configurable Parameters**: The following settings in `application.properties` can be adjusted:
+    - **marketdata.max.acceptable.price.cents**: Maximum price limit in cents per kWh.
+    - **marketdata.price.flexibility.threshold**: Tolerance threshold for additional periods.
+    - **night.start** and **night.end**: Define the nighttime planning window.
+    - **battery.target.stateOfCharge**: Target state of charge for the battery.
 
-## Usage
+### Example:
 
-### Windows
+With default settings, the three cheapest periods are prioritized. If insufficient cheap periods are available, the flexibility tolerance is applied to include additional periods.
 
-1. Edit `zeus-charge-control.bat` to set the environment variables.
-2. Double-click `zeus-charge-control.bat` to run the application.
-
-### Linux
-
-1. Edit `zeus-charge-control.sh` to set the environment variables.
-2. Make the script executable:
-   ```sh
-   chmod +x zeus-charge-control.sh
-   ```
-3. Run the script:
-   ```sh
-   ./zeus-charge-control.sh
-   ```
-### Service
-
-The Service can be accessed via http://localhost:8080/charging-status
-
-### Download Binary
-
-You can download the latest version of Zeus Charge Control from the following link:
-
-[Zeus Charge Control v1.4](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.4/zeus-charge-control.zip)
+Zeus Charge Control is not affiliated with Sonnen, Tibber, or Awattar. There is no claim for error-free functionality, upgrades, or support. The source code of the software is available free of charge.
 
 ## Screenshots
 
-Here are some screenshots of the application in action:
+Examples in action:
 
 **Battery Status**
 
-<img src="images/battery_status.jpg" alt="images/battery_status.jpg" width="60%">
+<img src="images/battery_status.jpg" alt="Battery Status" width="60%">
 
 **Best Price in Scope**
 
-<img src="images/best_price_in_scope.jpg" alt="best_price_in_scope.jpg" width="60%">
+<img src="images/best_price_in_scope.jpg" alt="Best Price" width="60%">
 
 **Price Chart**
 
-<img src="images/price_chart.jpg" alt="price_chart.jpg" width="60%">
+<img src="images/price_chart.jpg" alt="Price Chart" width="60%">
 
-## Requirements
+## Environment Variables
 
-The battery must support the Sonnen API v2. Other APIs are currently not supported.
+### Datasource
+- **spring.datasource.url**: URL of the database (Default: `jdbc:h2:mem:testdb`).
+- **spring.datasource.driverClassName**: Driver class (Default: `org.h2.Driver`).
+- **spring.datasource.username**: Username (Default: `sa`).
+- **spring.datasource.password**: Password (Default: `password`).
+- **spring.jpa.database-platform**: Hibernate dialect (Default: `org.hibernate.dialect.H2Dialect`).
+- **spring.h2.console.enabled**: Enables H2 console (Default: `true`).
 
-Java 16 and above.
+### Charging Settings
+- **battery.target.stateOfCharge**: Target state of charge in percent (Default: `90`).
+- **battery.chargingPoint**: Charging point in watts (Default: `4500`).
+- **battery.large.consumer.threshold**: Threshold for large consumer activity (Default: `0.5`).
 
-### Download Binary
+### Market Prices
+- **marketdata.source**: Data source for market prices (`awattar` or `tibber`).
+- **marketdata.max.acceptable.price.cents**: Maximum acceptable market price in cents (Default: `15`).
+- **marketdata.price.flexibility.threshold**: Dynamic price tolerance (Default: `2`).
 
-You can download the latest version of Zeus Charge Control from the following link:
-
-[Zeus Charge Control v1.4](https://github.com/gzeuner/zeus-charge-control/releases/download/v1.4/zeus-charge-control.zip)
-
-### Environment Variables and Their Significance
-
-Our application uses a variety of environment variables to adapt flexibly to different configurations and scenarios. Here are some of the most important variables and their meanings:
-
-- **SERVER_ADDRESS**: This variable specifies the IP address on which the server accepts requests. By default, it is set to `0.0.0.0`, which means the server listens on all available network addresses.
-
-- **SERVER_PORT**: This variable sets the port on which the server runs. The default value is `8080`.
-
-- **BATTERY_URL**: The URL of the battery API. This API is used to query the current status of the battery and send charging commands.
-
-- **BATTERY_AUTH_TOKEN**: The authentication token for the battery API. This token is required to send authorized requests to the API.
-
-- **BATTERY_TARGET_STATE_OF_CHARGE**: This variable specifies the target state of charge of the battery in percentage. It determines up to what state of charge the battery should be charged. Once this value is reached, the charging process stops. If this variable is not set, a default value of 80% is used.
-
-- **BATTERY_CHARGING_POINT**: This variable specifies the charging point of the battery in watts. It determines the power at which the battery should be charged to achieve an optimal balance between charging time and energy efficiency. If this variable is not set, a default value of 4500 W is used.
-
-- **AWATTAR_MARKETDATA_URL**: The URL of the aWATTar market price service. This URL is used to retrieve current and future electricity prices from aWATTar.
-
-- **AWATTAR_AUTH_TOKEN**: The authentication token for the aWATTar market price service. Currently, aWATTar provides prices publicly under the fair use principle without access restrictions.
-
-- **TIBBER_MARKETDATA_URL**: The URL of the Tibber market price service. This URL is used to retrieve current and future electricity prices from Tibber.
-
-- **TIBBER_AUTH_TOKEN**: The authentication token for the Tibber market price service. This token is required to send authorized requests to the Tibber API. Tibber customers can obtain electricity prices from the Tibber API.
-
-- **MARKETDATA_SOURCE**: This variable specifies which data source to use for market prices. Possible values are `awattar` or `tibber`. Depending on the selected source, the application will retrieve market prices either from aWATTar or Tibber.
-
+### Nighttime Planning
+- **night.start**: Start of the night period (Default: `21`).
+- **night.end**: End of the night period (Default: `6`).
 
 ## License
 
-This software is provided under the Apache License, Version 2.0 <a href="http://www.apache.org/licenses/LICENSE-2.0">(http://www.apache.org/licenses/LICENSE-2.0)</a>
-
-It includes software developed by the Spring Boot project <a href="http://spring.io/projects/spring-boot">(http://spring.io/projects/spring-boot)</a>.
-Spring Boot components are licensed under the Apache License, Version 2.0 <a href="http://www.apache.org/licenses/LICENSE-2.0">(http://www.apache.org/licenses/LICENSE-2.0)</a>
-
-For license details, see `LICENSE.txt`, `license_de.html`, or `license_en.html`.
-
-For more details, refer to the provided license files.
+This software is provided under the Apache License, Version 2.0. Details can be found in `LICENSE.txt`. 
