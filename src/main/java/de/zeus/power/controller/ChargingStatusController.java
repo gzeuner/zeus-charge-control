@@ -51,12 +51,13 @@ public class ChargingStatusController {
 
         BatteryStatusResponse batteryStatus = batteryManagementService.getCurrentBatteryStatus();
 
-        // Get the top 10 cheapest periods based on start time (future periods only)
+        // Get the top cheapest future periods based on price, sorted by price and start time
         List<MarketPrice> cheapestPeriods = marketPriceService.getAllMarketPrices()
                 .stream()
                 .filter(price -> price.getStartTimestamp() > System.currentTimeMillis()) // Only future periods
-                .sorted(Comparator.comparingLong(MarketPrice::getStartTimestamp)) // Sort by start time
-                .limit(10) // Take top 10 based on start time
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh)
+                        .thenComparingLong(MarketPrice::getStartTimestamp)) // Sort by price, then start time
+                .limit(5) // Take top 5
                 .toList();
 
         MarketPrice cheapestPrice = marketPriceService.getAllMarketPrices()
@@ -92,6 +93,13 @@ public class ChargingStatusController {
     @PostMapping("/reset-automatic")
     public String resetToAutomaticMode(Model model) {
         batteryManagementService.resetToAutomaticMode();
+        return "redirect:/charging-status";
+    }
+
+    @PostMapping("/reset-idle")
+    public String resetToIdleMode(Model model) {
+        batteryManagementService.activateManualOperatingMode();
+        batteryManagementService.setDynamicChargingPoint(0);
         return "redirect:/charging-status";
     }
 }

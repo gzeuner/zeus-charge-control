@@ -260,6 +260,17 @@
                 <!-- Buttons für Start und Stop -->
                 <!-- Container für den Titel und die Buttons -->
                 <div class="card mb-4">
+                    <div class="card-header text-center" th:text="#{toggleModeTitle}">Switch Operating Mode</div>
+                    <div class="card-body text-center">
+                        <form th:action="@{/reset-idle}" method="post" class="d-inline-block mx-2">
+                            <button type="submit" class="btn btn-primary px-4 py-2" th:text="#{switchToIdle}">Switch to Idle</button>
+                        </form>
+                        <form th:action="@{/reset-automatic}" method="post" class="d-inline-block mx-2">
+                            <button type="submit" class="btn btn-secondary px-4 py-2" th:text="#{switchToStandard}">Switch to Standard</button>
+                        </form>
+                    </div>
+                </div>
+                <div class="card mb-4">
                     <div class="card-header text-center" th:text="#{chargeFromGrid}">Charge from the grid</div>
                     <div class="card-body">
                         <div class="d-flex justify-content-center">
