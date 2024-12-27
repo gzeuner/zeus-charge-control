@@ -235,6 +235,7 @@ public class BatteryManagementService {
         long currentTime = System.currentTimeMillis();
 
         // Ensure that the current time is within a scheduled period
+        LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "Checking for active charging schedule at current time: " + currentTime);
         Optional<ChargingSchedule> activeSchedule = chargingScheduleRepository.findAll().stream()
                 .filter(schedule -> currentTime >= schedule.getStartTimestamp() && currentTime < schedule.getEndTimestamp())
                 .findFirst();
@@ -247,6 +248,9 @@ public class BatteryManagementService {
 
         // Check whether the charge level has reached the target
         int relativeStateOfCharge = getRelativeStateOfCharge();
+        LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, String.format(
+                "Relative state of charge (RSOC): %d%%, Target: %d%%",
+                relativeStateOfCharge, targetStateOfChargeInPercent));
         if (relativeStateOfCharge >= targetStateOfChargeInPercent) {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO,
                     String.format("Charging skipped: Battery charge level (%d%%) is at or above the target (%d%%).",
@@ -255,34 +259,25 @@ public class BatteryManagementService {
             return false;
         }
 
-        // Check whether loading is already in progress and whether this is permitted
-        if (!isBatteryChargingAllowed(forceCharging)) {
-            this.forcedChargingActive = false; // Reset flag if charging not allowed
-            return false;
-        }
-
-        // Check solar activity
-        if (isBatteryCharging() && !forceCharging) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Solar charging already active. Preventing additional grid charging.");
-            return false;
-        }
+        // Allow grid charging during solar activity, adjusting the charging point dynamically
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Checking solar activity and adjusting charging point dynamically.");
+        adjustChargingPointBasedOnWeather();
 
         // Activate manual charging mode
+        LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "Activating manual operating mode...");
         ApiResponse<?> manualModeResponse = activateManualOperatingMode();
         if (!manualModeResponse.success()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Failed to activate manual operating mode for charging.");
+            LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Manual mode activation failed with response: " + manualModeResponse.message());
             this.forcedChargingActive = false; // Reset flag on failure
             return false;
         }
 
-        // Adjust the charging point dynamically based on weather data (only in manual mode)
-        adjustChargingPointBasedOnWeather();
-
         // Set charging point dynamically
+        LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, String.format(
+                "Setting dynamic charging point to: %d Watt", currentChargingPoint));
         boolean success = setDynamicChargingPoint(currentChargingPoint);
         if (!success) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                    String.format("Failed to set charge point to %d Watt.", currentChargingPoint));
+            LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Failed to set dynamic charging point. API response unsuccessful.");
             this.forcedChargingActive = false; // Reset flag on failure
             return false;
         }
@@ -470,21 +465,23 @@ public class BatteryManagementService {
         LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "Battery status cache invalidated.");
     }
 
-
-
     private void adjustChargingPointBasedOnWeather() {
         LocalTime now = LocalTime.now();
 
+        // Skip adjustment if nighttime and no large consumer is active
         if (isNightTime(now) && !isLargeConsumerActive()) {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Nighttime detected. Skipping weather-based charging point adjustment.");
             currentChargingPoint = chargingPointInWatt;
+            return;
         }
 
+        // Fetch cloud cover from weather service
         Optional<Double> optionalCloudCover = weatherService.getCurrentCloudCover();
 
         if (optionalCloudCover.isEmpty()) {
+            // Default behavior if no weather data is available
             LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No cloud cover data available. Using default charging point.");
-            currentChargingPoint = chargingPointInWatt;
+            currentChargingPoint = (int) (chargingPointInWatt * 0.5); // Default to 50% of max charging point
             return;
         }
 
@@ -492,16 +489,16 @@ public class BatteryManagementService {
         LogFilter.log(LogFilter.LOG_LEVEL_INFO,
                 String.format("Current cloud cover: %.2f%%. Calculating charging point dynamically.", cloudCover));
 
+        // Adjust charging point dynamically based on cloud cover
         if (cloudCover < 30.0) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Cloud cover is below 30%. Skipping scheduled charging (solar power only).");
-            currentChargingPoint = 0;
-            return;
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Cloud cover is below 30%. Minimal grid usage (solar power only).");
+            currentChargingPoint = (int) (chargingPointInWatt * 0.3); // Reduce charging to 30% of max
+        } else {
+            currentChargingPoint = (int) Math.round((cloudCover / 100.0) * chargingPointInWatt);
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                    String.format("Dynamically adjusted charging point: %d Watt (based on %.2f%% cloud cover).",
+                            currentChargingPoint, cloudCover));
         }
-
-        currentChargingPoint = (int) Math.round((cloudCover / 100.0) * chargingPointInWatt);
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                String.format("Dynamically adjusted charging point: %d Watt (based on %.2f%% cloud cover).",
-                        currentChargingPoint, cloudCover));
     }
 
 
