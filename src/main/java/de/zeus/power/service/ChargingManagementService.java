@@ -128,13 +128,13 @@ public class ChargingManagementService {
 
         Set<ChargingSchedule> optimizedSchedules = new HashSet<>();
 
-        // Nachtzeitoptimierung hinzufügen
+        // Add nighttime charging optimization
         optimizedSchedules.addAll(optimizeNighttimeCharging());
 
-        // Tageszeitoptimierung hinzufügen
+        // Add daytime charging optimization
         optimizedSchedules.addAll(optimizeDaytimeCharging());
 
-        // Dynamischer Wert als Trigger
+        // Dynamic threshold as a trigger
         int dynamicThreshold = calculateDynamicDaytimeThreshold();
         int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
 
@@ -144,10 +144,10 @@ public class ChargingManagementService {
                     currentRSOC, dynamicThreshold, targetStateOfCharge
             ));
 
-            // Ziel ist der konfigurierte targetStateOfCharge
+            // The goal is the configured targetStateOfCharge
             if (currentRSOC < targetStateOfCharge) {
                 LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Scheduling charging to reach target RSOC.");
-                optimizedSchedules.addAll(daytimeBuffer); // Nutze die geplanten Ladungen aus dem Puffer
+                optimizedSchedules.addAll(daytimeBuffer); // Use the planned charges from the buffer
             }
         } else {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
@@ -156,7 +156,7 @@ public class ChargingManagementService {
             ));
         }
 
-        // Synchronisierung der optimierten Pläne
+        // Synchronize optimized schedules
         synchronizeSchedules(optimizedSchedules);
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Charging schedule optimization completed.");
     }
