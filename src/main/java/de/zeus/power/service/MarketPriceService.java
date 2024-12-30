@@ -198,9 +198,28 @@ public class MarketPriceService {
             ResponseEntity<TibberResponse> responseToday = fetchTibberPrices(tibberQueryToday);
             ResponseEntity<TibberResponse> responseTomorrow = fetchTibberPrices(tibberQueryTomorrow);
 
-            if (responseToday.getStatusCode().is2xxSuccessful() && responseTomorrow.getStatusCode().is2xxSuccessful() &&
-                    responseToday.getBody() != null && responseTomorrow.getBody() != null) {
-                MarketPriceResponse marketPriceResponse = mapTibberToMarketPriceResponse(responseToday.getBody(), responseTomorrow.getBody());
+            boolean hasTomorrowData = responseTomorrow.getBody() != null &&
+                    !responseTomorrow.getBody().getData().getViewer().getHomes().get(0).getCurrentSubscription().getPriceInfo().getTomorrow().isEmpty();
+
+            if (responseToday.getStatusCode().is2xxSuccessful() && responseToday.getBody() != null) {
+                MarketPriceResponse marketPriceResponse = mapTibberToMarketPriceResponse(responseToday.getBody(), hasTomorrowData ? responseTomorrow.getBody() : null);
+
+                if (!hasTomorrowData) {
+                    logger.warn("Tibber did not provide prices for tomorrow. Attempting to fetch prices from Awattar...");
+                    ApiResponse<MarketPriceResponse> awattarResponse = getAwattarPrices();
+                    if (awattarResponse.success() && awattarResponse.data() != null) {
+                        logger.info("Successfully fetched missing prices for tomorrow from Awattar.");
+                        marketPriceResponse.getData().addAll(awattarResponse.data().getData().stream()
+                                .filter(data -> Instant.ofEpochMilli(data.getStartTimestamp())
+                                        .atZone(ZoneId.systemDefault())
+                                        .toLocalDate()
+                                        .isEqual(LocalDate.now().plusDays(1)))
+                                .collect(Collectors.toList()));
+                    } else {
+                        logger.error("Failed to retrieve fallback prices from Awattar.");
+                    }
+                }
+
                 return new ApiResponse<>(true, HttpStatus.OK, "Market prices retrieved successfully", marketPriceResponse);
             } else {
                 return new ApiResponse<>(false, HttpStatus.INTERNAL_SERVER_ERROR, "Failed to retrieve market prices from Tibber", null);
@@ -277,7 +296,12 @@ public class MarketPriceService {
      */
     private MarketPriceResponse mapTibberToMarketPriceResponse(TibberResponse today, TibberResponse tomorrow) {
         List<MarketPriceResponse.MarketData> marketDataList = mapTibberPriceData(today.getData().getViewer().getHomes().get(0).getCurrentSubscription().getPriceInfo().getToday());
-        marketDataList.addAll(mapTibberPriceData(tomorrow.getData().getViewer().getHomes().get(0).getCurrentSubscription().getPriceInfo().getTomorrow()));
+
+        if (tomorrow != null && tomorrow.getData() != null) {
+            marketDataList.addAll(mapTibberPriceData(tomorrow.getData().getViewer().getHomes().get(0).getCurrentSubscription().getPriceInfo().getTomorrow()));
+        } else {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No data available for tomorrow in Tibber response.");
+        }
 
         MarketPriceResponse marketPriceResponse = new MarketPriceResponse();
         marketPriceResponse.setObject("list");

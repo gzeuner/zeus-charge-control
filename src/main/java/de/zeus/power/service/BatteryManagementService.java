@@ -514,6 +514,28 @@ public class BatteryManagementService {
     }
 
     public List<Map.Entry<Long, Integer>> getRsocHistory() {
+        if (rsocHistory.isEmpty()) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "RSOC history is empty. Unable to calculate time difference.");
+            return Collections.emptyList();
+        }
+
+        if (rsocHistory.size() < 2) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN,
+                    "RSOC history has insufficient data points (only " + rsocHistory.size() + " entries).");
+            return Collections.emptyList();
+        }
+
+        // Ensure timestamps are valid and in ascending order
+        long lastTimestamp = 0;
+        for (Map.Entry<Long, Integer> entry : rsocHistory) {
+            if (entry.getKey() < lastTimestamp) {
+                LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Invalid timestamp order in RSOC history. History will be reset.");
+                rsocHistory.clear();
+                return Collections.emptyList();
+            }
+            lastTimestamp = entry.getKey();
+        }
+
         return new ArrayList<>(rsocHistory);
     }
 
