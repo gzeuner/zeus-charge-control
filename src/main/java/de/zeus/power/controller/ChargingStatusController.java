@@ -87,12 +87,14 @@ public class ChargingStatusController {
     @PostMapping("/start-charging")
     public String startCharging(Model model) {
         batteryManagementService.initCharging(true);
+        delayRedirect();
         return "redirect:/charging-status";
     }
 
     @PostMapping("/reset-automatic")
     public String resetToAutomaticMode(Model model) {
         batteryManagementService.resetToAutomaticMode();
+        delayRedirect();
         return "redirect:/charging-status";
     }
 
@@ -100,7 +102,17 @@ public class ChargingStatusController {
     public String resetToIdleMode(Model model) {
         batteryManagementService.activateManualOperatingMode();
         batteryManagementService.setDynamicChargingPoint(0);
+        delayRedirect();
         return "redirect:/charging-status";
+    }
+
+    private void delayRedirect() {
+        try {
+            // Delay for 4 seconds
+            Thread.sleep(4000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 }
 
