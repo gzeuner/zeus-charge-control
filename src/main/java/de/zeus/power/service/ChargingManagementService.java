@@ -81,13 +81,8 @@ public class ChargingManagementService {
     @Value("${daytime.preferred.end:15}")
     private int preferredEndHour;
 
-    @Value("${marketdata.price.flexibility.enabled:false}")
-    private boolean priceFlexibilityEnabled;
-
     @Value("${marketdata.price.flexibility.threshold:10}")
     private double priceFlexibilityThreshold;
-
-    private int maxChargingPeriods = 4;
 
     private final List<ChargingSchedule> daytimeBuffer = new CopyOnWriteArrayList<>();
 
@@ -128,13 +123,13 @@ public class ChargingManagementService {
 
         Set<ChargingSchedule> optimizedSchedules = new HashSet<>();
 
-        // Nachtzeitoptimierung hinzufügen
+        // Add nighttime charging optimization
         optimizedSchedules.addAll(optimizeNighttimeCharging());
 
-        // Tageszeitoptimierung hinzufügen
+        // Add daytime charging optimization
         optimizedSchedules.addAll(optimizeDaytimeCharging());
 
-        // Dynamischer Wert als Trigger
+        // Dynamic threshold as a trigger
         int dynamicThreshold = calculateDynamicDaytimeThreshold();
         int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
 
@@ -144,10 +139,10 @@ public class ChargingManagementService {
                     currentRSOC, dynamicThreshold, targetStateOfCharge
             ));
 
-            // Ziel ist der konfigurierte targetStateOfCharge
+            // The goal is the configured targetStateOfCharge
             if (currentRSOC < targetStateOfCharge) {
                 LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Scheduling charging to reach target RSOC.");
-                optimizedSchedules.addAll(daytimeBuffer); // Nutze die geplanten Ladungen aus dem Puffer
+                optimizedSchedules.addAll(daytimeBuffer); // Use the planned charges from the buffer
             }
         } else {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
@@ -156,7 +151,7 @@ public class ChargingManagementService {
             ));
         }
 
-        // Synchronisierung der optimierten Pläne
+        // Synchronize optimized schedules
         synchronizeSchedules(optimizedSchedules);
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Charging schedule optimization completed.");
     }
@@ -968,9 +963,10 @@ public class ChargingManagementService {
                 .toList();
 
         expiredSchedules.forEach(schedule -> {
-            logger.info("Removing expired charging schedule: {} - {}.",
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                    "Removing expired charging schedule: %s - %s.",
                     dateFormat.format(new Date(schedule.getStartTimestamp())),
-                    dateFormat.format(new Date(schedule.getEndTimestamp())));
+                    dateFormat.format(new Date(schedule.getEndTimestamp()))));
             chargingScheduleRepository.delete(schedule);
         });
 
@@ -981,25 +977,42 @@ public class ChargingManagementService {
                 .filter(schedule -> schedule.getStartTimestamp() > currentTime)
                 .toList();
 
-        schedulesToEvaluate.forEach(schedule -> {
-            if (hasCheaperFutureSchedule(schedule, schedulesToEvaluate)) {
-                cancelTask(schedule.getId());
-                chargingScheduleRepository.delete(schedule);
+        // Calculate maximum idle hours dynamically
+        int maxIdleHours = calculateMaxIdleHours(batteryManagementService.getRelativeStateOfCharge(),
+                targetStateOfCharge, batteryManagementService.getRemainingCapacityWh());
+
+        // Temporarily store removed schedules for re-evaluation
+        List<ChargingSchedule> temporarilyRemovedSchedules = new ArrayList<>();
+
+        schedulesToEvaluate.forEach(currentSchedule -> {
+            if (hasCheaperFutureSchedule(currentSchedule, schedulesToEvaluate)) {
+                cancelTask(currentSchedule.getId());
+                temporarilyRemovedSchedules.add(currentSchedule); // Save for potential re-evaluation
                 LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                        "Removed schedule due to cheaper future option: %s - %s (%.2f cents/kWh).",
-                        dateFormat.format(new Date(schedule.getStartTimestamp())),
-                        dateFormat.format(new Date(schedule.getEndTimestamp())),
-                        schedule.getPrice()));
+                        "Temporarily removed schedule due to cheaper future option: %s - %s (%.2f cents/kWh).",
+                        dateFormat.format(new Date(currentSchedule.getStartTimestamp())),
+                        dateFormat.format(new Date(currentSchedule.getEndTimestamp())),
+                        currentSchedule.getPrice()));
             }
         });
 
-        // Step 3: Keep only future schedules
-        List<ChargingSchedule> futureSchedules = chargingScheduleRepository.findAll().stream()
+        // Step 3: Optimize and retain future schedules
+        List<ChargingSchedule> futureSchedules = schedulesToEvaluate.stream()
                 .filter(schedule -> schedule.getEndTimestamp() > currentTime) // Keep future schedules
                 .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice)) // Sort by price ascending
                 .toList();
 
-        // Log retained future schedules
+        futureSchedules = optimizeRemainingSchedules(futureSchedules); // Optimize the schedules
+
+        futureSchedules.forEach(schedule -> {
+            chargingScheduleRepository.save(schedule);
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                    "Saved schedule: %s - %s at %.2f cents/kWh.",
+                    dateFormat.format(new Date(schedule.getStartTimestamp())),
+                    dateFormat.format(new Date(schedule.getEndTimestamp())),
+                    schedule.getPrice()));
+        });
+
         LogFilter.log(
                 LogFilter.LOG_LEVEL_INFO,
                 String.format("Remaining future schedules: %s",
@@ -1012,31 +1025,189 @@ public class ChargingManagementService {
                 )
         );
 
-        LogFilter.log(
-                LogFilter.LOG_LEVEL_INFO,
-                "Cleanup of charging schedules completed."
-        );
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Cleanup of charging schedules completed.");
     }
 
-    // Helper method to check for cheaper future schedules
+
+    /**
+     * Calculates the maximum allowable idle hours before the next charging period
+     * based on RSOC history and the current battery state.
+     *
+     * @param currentRSOC         Current relative state of charge (RSOC) in percentage.
+     * @param targetRSOC          Target relative state of charge (RSOC) in percentage.
+     * @param remainingCapacityWh Remaining capacity in watt-hours (Wh).
+     * @return Maximum idle hours allowed.
+     */
+    private int calculateMaxIdleHours(int currentRSOC, int targetRSOC, int remainingCapacityWh) {
+        List<Map.Entry<Long, Integer>> rsocHistory = batteryManagementService.getRsocHistory();
+
+        if (rsocHistory.isEmpty() || rsocHistory.size() < 2) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "Insufficient RSOC history. Defaulting to a maximum idle time of 2 hours.");
+            return 2; // Default fallback
+        }
+
+        double totalDrop = 0;
+        double totalMinutes = 0;
+
+        // Calculate the average RSOC drop per minute
+        for (int i = 1; i < rsocHistory.size(); i++) {
+            Map.Entry<Long, Integer> earlier = rsocHistory.get(i - 1);
+            Map.Entry<Long, Integer> later = rsocHistory.get(i);
+
+            long timeDifferenceMillis = later.getKey() - earlier.getKey();
+            double timeDifferenceMinutes = timeDifferenceMillis / 60000.0;
+
+            int rsocDifference = earlier.getValue() - later.getValue();
+
+            if (timeDifferenceMinutes > 0) {
+                totalDrop += rsocDifference;
+                totalMinutes += timeDifferenceMinutes;
+            }
+        }
+
+        double averageDropPerMinute = totalMinutes > 0 ? totalDrop / totalMinutes : 0;
+
+        if (averageDropPerMinute <= 0) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No significant RSOC drop detected. Defaulting to a maximum idle time of 2 hours.");
+            return 2;
+        }
+
+        // Calculate estimated hours until target RSOC
+        double estimatedHoursUntilTarget = (targetRSOC - currentRSOC) / (averageDropPerMinute * 60);
+
+        // Limit idle hours based on estimated hours and remaining capacity
+        double estimatedHoursBasedOnCapacity = remainingCapacityWh / 1000.0; // Assume 1 kWh consumption per hour
+        int maxIdleHours = (int) Math.min(Math.ceil(estimatedHoursUntilTarget), estimatedHoursBasedOnCapacity);
+
+        LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, String.format(
+                "Average RSOC drop per minute: %.2f%%. Estimated hours until target RSOC: %.2f hours. " +
+                        "Estimated hours based on capacity: %.2f hours. Calculated max idle hours: %d.",
+                averageDropPerMinute, estimatedHoursUntilTarget, estimatedHoursBasedOnCapacity, maxIdleHours));
+
+        return Math.max(1, maxIdleHours); // Ensure at least 1 hour
+    }
+
+
+    /**
+     * Helper method to check if a cheaper future schedule exists, considering dynamic tolerance.
+     *
+     * @param currentSchedule The current charging schedule being evaluated.
+     * @param allSchedules    List of all available charging schedules.
+     * @return True if a cheaper future schedule exists, false otherwise.
+     */
     private boolean hasCheaperFutureSchedule(ChargingSchedule currentSchedule, List<ChargingSchedule> allSchedules) {
-        double priceTolerance = currentSchedule.getPrice() * 0.05; // Allow a 5% tolerance
-        return allSchedules.stream()
+        if (currentSchedule == null || allSchedules == null || allSchedules.isEmpty()) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "Invalid input: Current schedule or all schedules list is null/empty.");
+            return false;
+        }
+
+        // Calculate dynamic tolerance based on all schedules and current RSOC
+        double dynamicTolerance = calculateDynamicTolerance(allSchedules, batteryManagementService.getRelativeStateOfCharge());
+
+        if (dynamicTolerance < 0.0 || dynamicTolerance > 1.0) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN,
+                    String.format("Dynamic tolerance out of bounds: %.2f. Adjusting to default 5%%.", dynamicTolerance));
+            dynamicTolerance = 0.05; // Default to 5% if out of bounds
+        }
+
+        double priceTolerance = currentSchedule.getPrice() * dynamicTolerance;
+
+        LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, String.format(
+                "Evaluating cheaper future schedules. Current schedule price: %.2f, Dynamic tolerance: %.2f, Price tolerance: %.2f",
+                currentSchedule.getPrice(), dynamicTolerance, priceTolerance));
+
+        // Check for cheaper schedules
+        boolean cheaperFutureExists = allSchedules.stream()
                 .filter(schedule -> schedule.getStartTimestamp() > currentSchedule.getStartTimestamp())
                 .anyMatch(schedule -> schedule.getPrice() + priceTolerance < currentSchedule.getPrice());
+
+        if (cheaperFutureExists) {
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                    "Cheaper future schedule detected for current schedule: %.2f with tolerance: %.2f",
+                    currentSchedule.getPrice(), priceTolerance));
+        } else {
+            LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "No cheaper future schedules found.");
+        }
+
+        return cheaperFutureExists;
     }
 
 
-    private long calculateTwoHoursBeforeNight() {
-        Calendar calendar = Calendar.getInstance();
-        calendar.set(Calendar.HOUR_OF_DAY, nightStartHour);
-        calendar.set(Calendar.MINUTE, 0);
-        calendar.set(Calendar.SECOND, 0);
-        calendar.set(Calendar.MILLISECOND, 0);
 
-        return calendar.getTimeInMillis() - (2 * 60 * 60 * 1000);
+    private double calculateDynamicTolerance(List<ChargingSchedule> allSchedules, double rsoc) {
+        double averagePrice = allSchedules.stream()
+                .mapToDouble(ChargingSchedule::getPrice)
+                .average()
+                .orElse(0.0);
+
+        double standardDeviation = Math.sqrt(
+                allSchedules.stream()
+                        .mapToDouble(schedule -> Math.pow(schedule.getPrice() - averagePrice, 2))
+                        .average()
+                        .orElse(0.0)
+        );
+
+        int futureScheduleCount = (int) allSchedules.stream()
+                .filter(schedule -> schedule.getStartTimestamp() > System.currentTimeMillis())
+                .count();
+
+        double baseTolerance = calculateBaseTolerance(averagePrice, rsoc);
+        double volatilityFactor = calculateVolatilityFactor(standardDeviation, averagePrice, futureScheduleCount);
+
+        return baseTolerance + volatilityFactor; // Combine base and dynamic factors
     }
 
+
+    private double calculateBaseTolerance(double averagePrice, double rsoc) {
+        double lowPriceThreshold = 10.0; // Example: low price threshold (cents/kWh)
+        double highPriceThreshold = 30.0; // Example: high price threshold (cents/kWh)
+
+        // Adjust baseline based on price levels
+        if (averagePrice <= lowPriceThreshold) {
+            return 0.07; // Higher tolerance for low prices (7%)
+        } else if (averagePrice >= highPriceThreshold) {
+            return 0.03; // Lower tolerance for high prices (3%)
+        }
+
+        // Adjust dynamically based on RSOC
+        if (rsoc < 20.0) {
+            return 0.02; // Prioritize immediate charging for low RSOC
+        } else if (rsoc > 80.0) {
+            return 0.06; // Flexible when RSOC is high
+        }
+
+        return 0.05; // Default baseline tolerance (5%)
+    }
+
+    private double calculateVolatilityFactor(double standardDeviation, double averagePrice, int futureScheduleCount) {
+        double maxFactor = 0.03; // Maximum multiplier for high volatility
+        double minFactor = 0.01; // Minimum multiplier for low volatility
+
+        // Adjust based on price volatility
+        double volatilityAdjustment = standardDeviation / averagePrice;
+
+        // Adjust based on the number of future schedules
+        double scheduleAdjustment = futureScheduleCount > 10 ? 0.005 : 0.0; // Add 0.5% if many future schedules exist
+
+        double dynamicFactor = minFactor + (volatilityAdjustment * 0.02) + scheduleAdjustment;
+
+        // Clamp the result to ensure it stays within bounds
+        return Math.min(maxFactor, Math.max(minFactor, dynamicFactor));
+    }
+
+    private List<ChargingSchedule> optimizeRemainingSchedules(List<ChargingSchedule> schedules) {
+        double minPrice = schedules.stream().mapToDouble(ChargingSchedule::getPrice).min().orElse(Double.MAX_VALUE);
+        double rangePrice = schedules.stream().mapToDouble(ChargingSchedule::getPrice).max().orElse(Double.MIN_VALUE) - minPrice;
+
+        return schedules.stream()
+                .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice)) // Sort by price ascending
+                .filter(schedule -> {
+                    double priceDifference = schedule.getPrice() - minPrice;
+                    double priceWeight = priceDifference / rangePrice;
+                    return priceWeight < 0.3; // Only keep schedules within 30% of the cheapest
+                })
+                .collect(Collectors.toList());
+    }
 
     /**
      * Executes a scheduled charging task.
