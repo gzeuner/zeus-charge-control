@@ -81,13 +81,8 @@ public class ChargingManagementService {
     @Value("${daytime.preferred.end:15}")
     private int preferredEndHour;
 
-    @Value("${marketdata.price.flexibility.enabled:false}")
-    private boolean priceFlexibilityEnabled;
-
     @Value("${marketdata.price.flexibility.threshold:10}")
     private double priceFlexibilityThreshold;
-
-    private int maxChargingPeriods = 4;
 
     private final List<ChargingSchedule> daytimeBuffer = new CopyOnWriteArrayList<>();
 
