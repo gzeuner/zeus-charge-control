@@ -957,8 +957,11 @@ public class ChargingManagementService {
 
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Starting cleanup of expired charging schedules...");
 
+        // Load all schedules once
+        List<ChargingSchedule> allSchedules = chargingScheduleRepository.findAll();
+
         // Step 1: Remove expired schedules
-        List<ChargingSchedule> expiredSchedules = chargingScheduleRepository.findAll().stream()
+        List<ChargingSchedule> expiredSchedules = allSchedules.stream()
                 .filter(schedule -> schedule.getEndTimestamp() < currentTime) // Expired schedules
                 .toList();
 
@@ -973,26 +976,26 @@ public class ChargingManagementService {
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format("Expired schedules cleanup completed. Removed: %d", expiredSchedules.size()));
 
         // Step 2: Evaluate and clean up schedules with cheaper future options
-        List<ChargingSchedule> schedulesToEvaluate = chargingScheduleRepository.findAll().stream()
+        List<ChargingSchedule> schedulesToEvaluate = allSchedules.stream()
                 .filter(schedule -> schedule.getStartTimestamp() > currentTime)
                 .toList();
 
-        // Calculate maximum idle hours dynamically
-        int maxIdleHours = calculateMaxIdleHours(batteryManagementService.getRelativeStateOfCharge(),
-                targetStateOfCharge, batteryManagementService.getRemainingCapacityWh());
-
-        // Temporarily store removed schedules for re-evaluation
-        List<ChargingSchedule> temporarilyRemovedSchedules = new ArrayList<>();
-
-        schedulesToEvaluate.forEach(currentSchedule -> {
-            if (hasCheaperFutureSchedule(currentSchedule, schedulesToEvaluate)) {
-                cancelTask(currentSchedule.getId());
-                temporarilyRemovedSchedules.add(currentSchedule); // Save for potential re-evaluation
-                LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                        "Temporarily removed schedule due to cheaper future option: %s - %s (%.2f cents/kWh).",
+        schedulesToEvaluate.parallelStream().forEach(currentSchedule -> {
+            try {
+                if (adjustForCheaperFutureSchedule(currentSchedule, schedulesToEvaluate)) {
+                    cancelTask(currentSchedule.getId());
+                    LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                            "Adjusted schedule due to cheaper future option: %s - %s (%.2f cents/kWh).",
+                            dateFormat.format(new Date(currentSchedule.getStartTimestamp())),
+                            dateFormat.format(new Date(currentSchedule.getEndTimestamp())),
+                            currentSchedule.getPrice()));
+                }
+            } catch (Exception e) {
+                LogFilter.log(LogFilter.LOG_LEVEL_ERROR, String.format(
+                        "Failed to adjust schedule: %s - %s. Error: %s",
                         dateFormat.format(new Date(currentSchedule.getStartTimestamp())),
                         dateFormat.format(new Date(currentSchedule.getEndTimestamp())),
-                        currentSchedule.getPrice()));
+                        e.getMessage()));
             }
         });
 
@@ -1002,16 +1005,18 @@ public class ChargingManagementService {
                 .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice)) // Sort by price ascending
                 .toList();
 
-        futureSchedules = optimizeRemainingSchedules(futureSchedules); // Optimize the schedules
+        if (!futureSchedules.isEmpty()) {
+            futureSchedules = optimizeRemainingSchedules(futureSchedules); // Optimize the schedules
 
-        futureSchedules.forEach(schedule -> {
-            chargingScheduleRepository.save(schedule);
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                    "Saved schedule: %s - %s at %.2f cents/kWh.",
-                    dateFormat.format(new Date(schedule.getStartTimestamp())),
-                    dateFormat.format(new Date(schedule.getEndTimestamp())),
-                    schedule.getPrice()));
-        });
+            futureSchedules.parallelStream().forEach(schedule -> {
+                chargingScheduleRepository.save(schedule);
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                        "Saved schedule: %s - %s at %.2f cents/kWh.",
+                        dateFormat.format(new Date(schedule.getStartTimestamp())),
+                        dateFormat.format(new Date(schedule.getEndTimestamp())),
+                        schedule.getPrice()));
+            });
+        }
 
         LogFilter.log(
                 LogFilter.LOG_LEVEL_INFO,
@@ -1025,6 +1030,7 @@ public class ChargingManagementService {
                 )
         );
 
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format("Total schedules retained after cleanup: %d", futureSchedules.size()));
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Cleanup of charging schedules completed.");
     }
 
@@ -1089,13 +1095,14 @@ public class ChargingManagementService {
 
 
     /**
-     * Helper method to check if a cheaper future schedule exists, considering dynamic tolerance.
+     * Helper method to check if a cheaper future schedule exists and adjust the current schedule accordingly.
+     * Ensures critical RSOC (Relative State of Charge) levels and nighttime schedules are prioritized.
      *
      * @param currentSchedule The current charging schedule being evaluated.
      * @param allSchedules    List of all available charging schedules.
-     * @return True if a cheaper future schedule exists, false otherwise.
+     * @return True if the current schedule was adjusted for a cheaper future option, false otherwise.
      */
-    private boolean hasCheaperFutureSchedule(ChargingSchedule currentSchedule, List<ChargingSchedule> allSchedules) {
+    private boolean adjustForCheaperFutureSchedule(ChargingSchedule currentSchedule, List<ChargingSchedule> allSchedules) {
         if (currentSchedule == null || allSchedules == null || allSchedules.isEmpty()) {
             LogFilter.log(LogFilter.LOG_LEVEL_WARN, "Invalid input: Current schedule or all schedules list is null/empty.");
             return false;
@@ -1116,22 +1123,48 @@ public class ChargingManagementService {
                 "Evaluating cheaper future schedules. Current schedule price: %.2f, Dynamic tolerance: %.2f, Price tolerance: %.2f",
                 currentSchedule.getPrice(), dynamicTolerance, priceTolerance));
 
-        // Check for cheaper schedules
-        boolean cheaperFutureExists = allSchedules.stream()
+        // Find the cheapest schedule that starts after the current schedule
+        Optional<ChargingSchedule> cheaperFuture = allSchedules.stream()
                 .filter(schedule -> schedule.getStartTimestamp() > currentSchedule.getStartTimestamp())
-                .anyMatch(schedule -> schedule.getPrice() + priceTolerance < currentSchedule.getPrice());
+                .filter(schedule -> schedule.getPrice() + priceTolerance < currentSchedule.getPrice())
+                .min(Comparator.comparingDouble(ChargingSchedule::getPrice));
 
-        if (cheaperFutureExists) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                    "Cheaper future schedule detected for current schedule: %.2f with tolerance: %.2f",
-                    currentSchedule.getPrice(), priceTolerance));
+        if (cheaperFuture.isPresent()) {
+            ChargingSchedule cheaperSchedule = cheaperFuture.get();
+
+            int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
+            boolean isCriticalRSOC = currentRSOC < 20; // Example: Critical level below 20%
+
+            // Check if the current schedule is during nighttime
+            boolean isNightTime = isWithinNighttimeWindow(currentSchedule.getStartTimestamp());
+
+            if (isCriticalRSOC || isNightTime) {
+                // Partially retain the current schedule
+                long partialEndTime = Math.min(currentSchedule.getEndTimestamp(), cheaperSchedule.getStartTimestamp() - 1000);
+                currentSchedule.setEndTimestamp(partialEndTime);
+                chargingScheduleRepository.save(currentSchedule);
+
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                        "Partially retained current schedule due to critical RSOC or nighttime: New end time: %s.",
+                        dateFormat.format(new Date(currentSchedule.getEndTimestamp()))
+                ));
+            } else {
+                // Standard adjustment of the schedule
+                currentSchedule.setEndTimestamp(cheaperSchedule.getStartTimestamp() - 1000);
+                chargingScheduleRepository.save(currentSchedule);
+
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                        "Adjusted current schedule to accommodate cheaper future option: New end time: %s (cheaper schedule price: %.2f).",
+                        dateFormat.format(new Date(currentSchedule.getEndTimestamp())),
+                        cheaperSchedule.getPrice()
+                ));
+            }
+            return true;
         } else {
-            LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "No cheaper future schedules found.");
+            LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "No cheaper future schedules found to adjust the current schedule.");
+            return false;
         }
-
-        return cheaperFutureExists;
     }
-
 
 
     private double calculateDynamicTolerance(List<ChargingSchedule> allSchedules, double rsoc) {
