@@ -1099,17 +1099,17 @@ public class ChargingManagementService {
      * Ensures critical RSOC (Relative State of Charge) levels and nighttime schedules are prioritized.
      *
      * @param currentSchedule The current charging schedule being evaluated.
-     * @param allSchedules    List of all available charging schedules.
+     * @param schedulesToEvaluate The list of all available charging schedules to evaluate against.
      * @return True if a new schedule was created for a cheaper future option, false otherwise.
      */
-    private boolean adjustForCheaperFutureSchedule(ChargingSchedule currentSchedule, List<ChargingSchedule> allSchedules) {
-        if (currentSchedule == null || allSchedules == null || allSchedules.isEmpty()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "Invalid input: Current schedule or all schedules list is null/empty.");
+    private boolean adjustForCheaperFutureSchedule(ChargingSchedule currentSchedule, List<ChargingSchedule> schedulesToEvaluate) {
+        if (currentSchedule == null || schedulesToEvaluate == null || schedulesToEvaluate.isEmpty()) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "Invalid input: Current schedule or schedules to evaluate is null/empty.");
             return false;
         }
 
         // Calculate dynamic tolerance based on all schedules and current RSOC
-        double dynamicTolerance = calculateDynamicTolerance(allSchedules, batteryManagementService.getRelativeStateOfCharge());
+        double dynamicTolerance = calculateDynamicTolerance(schedulesToEvaluate, batteryManagementService.getRelativeStateOfCharge());
 
         if (dynamicTolerance < 0.0 || dynamicTolerance > 1.0) {
             LogFilter.log(LogFilter.LOG_LEVEL_WARN,
@@ -1124,13 +1124,28 @@ public class ChargingManagementService {
                 currentSchedule.getPrice(), dynamicTolerance, priceTolerance));
 
         // Find the cheapest schedule that starts after the current schedule
-        Optional<ChargingSchedule> cheaperFuture = allSchedules.stream()
+        Optional<ChargingSchedule> cheaperFuture = schedulesToEvaluate.stream()
                 .filter(schedule -> schedule.getStartTimestamp() > currentSchedule.getStartTimestamp())
                 .filter(schedule -> schedule.getPrice() + priceTolerance < currentSchedule.getPrice())
                 .min(Comparator.comparingDouble(ChargingSchedule::getPrice));
 
         if (cheaperFuture.isPresent()) {
             ChargingSchedule cheaperSchedule = cheaperFuture.get();
+
+            // Check if a schedule with the same start and end time already exists
+            boolean scheduleExists = chargingScheduleRepository.existsByStartEndAndPrice(
+                    cheaperSchedule.getStartTimestamp(),
+                    cheaperSchedule.getEndTimestamp(),
+                    cheaperSchedule.getPrice());
+
+            if (scheduleExists) {
+                LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                        "Skipping creation of duplicate schedule for time period: %s - %s.",
+                        dateFormat.format(new Date(cheaperSchedule.getStartTimestamp())),
+                        dateFormat.format(new Date(cheaperSchedule.getEndTimestamp()))
+                ));
+                return false;
+            }
 
             // Create a new schedule for the cheaper period
             ChargingSchedule newSchedule = new ChargingSchedule();
