@@ -1095,12 +1095,12 @@ public class ChargingManagementService {
 
 
     /**
-     * Helper method to check if a cheaper future schedule exists and adjust the current schedule accordingly.
+     * Helper method to check if a cheaper future schedule exists and adjust the schedules accordingly.
      * Ensures critical RSOC (Relative State of Charge) levels and nighttime schedules are prioritized.
      *
      * @param currentSchedule The current charging schedule being evaluated.
      * @param allSchedules    List of all available charging schedules.
-     * @return True if the current schedule was adjusted for a cheaper future option, false otherwise.
+     * @return True if a new schedule was created for a cheaper future option, false otherwise.
      */
     private boolean adjustForCheaperFutureSchedule(ChargingSchedule currentSchedule, List<ChargingSchedule> allSchedules) {
         if (currentSchedule == null || allSchedules == null || allSchedules.isEmpty()) {
@@ -1132,39 +1132,28 @@ public class ChargingManagementService {
         if (cheaperFuture.isPresent()) {
             ChargingSchedule cheaperSchedule = cheaperFuture.get();
 
-            int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
-            boolean isCriticalRSOC = currentRSOC < 20; // Example: Critical level below 20%
+            // Create a new schedule for the cheaper period
+            ChargingSchedule newSchedule = new ChargingSchedule();
+            newSchedule.setStartTimestamp(cheaperSchedule.getStartTimestamp());
+            newSchedule.setEndTimestamp(cheaperSchedule.getEndTimestamp());
+            newSchedule.setPrice(cheaperSchedule.getPrice());
 
-            // Check if the current schedule is during nighttime
-            boolean isNightTime = isWithinNighttimeWindow(currentSchedule.getStartTimestamp());
+            chargingScheduleRepository.save(newSchedule);
 
-            if (isCriticalRSOC || isNightTime) {
-                // Partially retain the current schedule
-                long partialEndTime = Math.min(currentSchedule.getEndTimestamp(), cheaperSchedule.getStartTimestamp() - 1000);
-                currentSchedule.setEndTimestamp(partialEndTime);
-                chargingScheduleRepository.save(currentSchedule);
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                    "Created new schedule for cheaper future option: %s - %s (price: %.2f cents/kWh).",
+                    dateFormat.format(new Date(newSchedule.getStartTimestamp())),
+                    dateFormat.format(new Date(newSchedule.getEndTimestamp())),
+                    newSchedule.getPrice()
+            ));
 
-                LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                        "Partially retained current schedule due to critical RSOC or nighttime: New end time: %s.",
-                        dateFormat.format(new Date(currentSchedule.getEndTimestamp()))
-                ));
-            } else {
-                // Standard adjustment of the schedule
-                currentSchedule.setEndTimestamp(cheaperSchedule.getStartTimestamp() - 1000);
-                chargingScheduleRepository.save(currentSchedule);
-
-                LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                        "Adjusted current schedule to accommodate cheaper future option: New end time: %s (cheaper schedule price: %.2f).",
-                        dateFormat.format(new Date(currentSchedule.getEndTimestamp())),
-                        cheaperSchedule.getPrice()
-                ));
-            }
             return true;
         } else {
             LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "No cheaper future schedules found to adjust the current schedule.");
             return false;
         }
     }
+
 
 
     private double calculateDynamicTolerance(List<ChargingSchedule> allSchedules, double rsoc) {
