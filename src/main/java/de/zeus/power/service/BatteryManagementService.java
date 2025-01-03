@@ -288,17 +288,6 @@ public class BatteryManagementService {
         return true;
     }
 
-
-    public boolean isBatteryChargingAllowed(boolean forceCharging) {
-        if (!forceCharging && isBatteryCharging()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                    String.format("Battery is already charging. Current RSOC: %d%%, Target RSOC: %d%%.",
-                            getRelativeStateOfCharge(), targetStateOfChargeInPercent));
-            return false;
-        }
-        return true;
-    }
-
     private boolean checkPreconditions() {
         if (isBatteryNotConfigured()) {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO , "Battery not configured. Skipping charging.");
@@ -352,15 +341,6 @@ public class BatteryManagementService {
         return batteryStatusResponse != null && batteryStatusResponse.isBatteryCharging();
     }
 
-    public boolean isBatteryDischarging() {
-        if (isBatteryNotConfigured()) {
-            return false;
-        }
-
-        BatteryStatusResponse batteryStatusResponse = getCurrentBatteryStatus();
-        return batteryStatusResponse != null && batteryStatusResponse.isBatteryDischarging();
-    }
-
     public int getRelativeStateOfCharge() {
         if (isBatteryNotConfigured()) {
             return 0;
@@ -391,15 +371,6 @@ public class BatteryManagementService {
         LogFilter.log(LogFilter.LOG_LEVEL_ERROR,
                 "Failed to retrieve battery status after 4 attempts. Assuming RSOC is 15%.");
         return 15;
-    }
-
-    public int getRemainingCapacityWh() {
-        if (isBatteryNotConfigured()) {
-            return 0;
-        }
-
-        BatteryStatusResponse batteryStatusResponse = getCurrentBatteryStatus();
-        return batteryStatusResponse != null ? batteryStatusResponse.getRemainingCapacityWh() : 0;
     }
 
     public boolean isManualOperatingMode() {
@@ -487,18 +458,21 @@ public class BatteryManagementService {
 
         double cloudCover = optionalCloudCover.get();
         LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                String.format("Current cloud cover: %.2f%%. Calculating charging point dynamically.", cloudCover));
+                String.format("Current cloud cover: %.2f%%. Evaluating charging strategy.", cloudCover));
 
-        // Adjust charging point dynamically based on cloud cover
-        if (cloudCover < 30.0) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Cloud cover is below 30%. Minimal grid usage (solar power only).");
-            currentChargingPoint = (int) (chargingPointInWatt * 0.3); // Reduce charging to 30% of max
-        } else {
-            currentChargingPoint = (int) Math.round((cloudCover / 100.0) * chargingPointInWatt);
+        // Optimize for solar energy usage if cloud cover is <= 60%
+        if (cloudCover <= 60.0) {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                    String.format("Dynamically adjusted charging point: %d Watt (based on %.2f%% cloud cover).",
-                            currentChargingPoint, cloudCover));
+                    String.format("Cloud cover is %.2f%%. Switching to Automatic Mode for solar optimization.", cloudCover));
+            resetToAutomaticMode();
+            return;
         }
+
+        // Dynamically adjust charging point based on cloud cover for cloudCover > 60%
+        currentChargingPoint = (int) Math.round((cloudCover / 100.0) * chargingPointInWatt);
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                String.format("Cloud cover is %.2f%%. Dynamically adjusted charging point to %d Watt.",
+                        cloudCover, currentChargingPoint));
     }
 
 

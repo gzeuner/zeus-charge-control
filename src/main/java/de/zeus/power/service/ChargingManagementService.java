@@ -912,31 +912,50 @@ public class ChargingManagementService {
                 .findFirst();
     }
 
-
-
+    /**
+     * Calculates a dynamic price tolerance based on the range of market prices,
+     * the number of periods, and specific price thresholds.
+     *
+     * The price tolerance is used to determine flexibility in adjusting charging schedules
+     * when evaluating cheaper future options.
+     *
+     * @param minPrice The minimum price among the evaluated periods.
+     * @param maxPrice The maximum price among the evaluated periods.
+     * @param periodCount The number of periods available for evaluation.
+     * @return The calculated dynamic price tolerance.
+     */
     private double calculateDynamicPriceTolerance(double minPrice, double maxPrice, int periodCount) {
+        // Calculate the range of prices between the minimum and maximum
         double priceRange = maxPrice - minPrice;
-        double baseTolerance = 1.5; // Standard-Toleranz
 
-        // Anpassung basierend auf Preisspanne
+        // Base tolerance factor to start with
+        double baseTolerance = 1.5; // Standard tolerance value
+
+        // Adjust tolerance based on the price range
         if (priceRange < 0.5) {
-            baseTolerance -= 0.2; // Engere Toleranz bei kleiner Preisspanne
+            // Narrower tolerance for small price ranges, indicating less variability
+            baseTolerance -= 0.2;
         } else if (priceRange > 1.0) {
-            baseTolerance += 0.3; // Höhere Toleranz bei großer Preisspanne
+            // Higher tolerance for large price ranges, allowing for more flexibility
+            baseTolerance += 0.3;
         }
 
-        // Anpassung basierend auf Periodenanzahl
+        // Adjust tolerance based on the number of periods being evaluated
         if (periodCount <= 5) {
-            baseTolerance += 0.3; // Wenige Perioden → großzügiger
+            // Fewer periods → Increase tolerance to allow more flexibility
+            baseTolerance += 0.3;
         } else if (periodCount > 10) {
-            baseTolerance -= 0.2; // Viele Perioden → restriktiver
+            // Larger number of periods → Reduce tolerance for stricter evaluations
+            baseTolerance -= 0.2;
         }
 
-        // Zusätzlicher Puffer basierend auf günstigsten Preisen
+        // Add additional buffer if the minimum price is exceptionally low
         if (minPrice < 0.1) {
-            baseTolerance += 0.1; // Etwas großzügiger bei sehr niedrigen Preisen
+            // Slightly increase tolerance for very low prices to encourage selection
+            baseTolerance += 0.1;
         }
 
+        // Return the final calculated tolerance
         return baseTolerance;
     }
 
