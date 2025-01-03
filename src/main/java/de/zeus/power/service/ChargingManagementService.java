@@ -321,6 +321,14 @@ public class ChargingManagementService {
                         )
                 );
 
+                // Calculate the remaining time to the end of the night period
+                long currentTimeMillis = System.currentTimeMillis();
+                long nightEndMillis = getNightEnd(getNightStart()).getTimeInMillis();
+                long timeUntilNightEnd = nightEndMillis - currentTimeMillis;
+
+                // 15 minutes before the end of the night period
+                boolean isNearNightEnd = timeUntilNightEnd <= 15 * 60 * 1000 && timeUntilNightEnd > 0;
+
                 // Check if RSOC has reached or exceeded the target
                 if (currentRSOC >= targetStateOfCharge) {
                     LogFilter.log(
@@ -336,8 +344,11 @@ public class ChargingManagementService {
                     }
 
                     // Return to Automatic Mode
-                    if (!isWithinNighttimeWindow(System.currentTimeMillis())) {
-                        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Not nighttime and Large Consumer detected. Returning to Automatic Mode.");
+                    if (isWithinNighttimeWindow(currentTimeMillis) && isNearNightEnd) {
+                        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Near the end of nighttime. Returning to Automatic Mode.");
+                        batteryManagementService.resetToAutomaticMode();
+                    } else if (!isWithinNighttimeWindow(currentTimeMillis)) {
+                        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Daytime detected. Returning to Automatic Mode.");
                         batteryManagementService.resetToAutomaticMode();
                     }
 
@@ -375,15 +386,12 @@ public class ChargingManagementService {
                     return;
                 }
 
-                // Check if we are outside the night period and a large consumer is active
-                if (!isWithinTimeWindow(System.currentTimeMillis(),
-                        getNightStart().getTimeInMillis(), getNightEnd(getNightStart()).getTimeInMillis()) && largeConsumerActive) {
+                // Check if we are near the end of nighttime and the target RSOC is not reached
+                if (isWithinNighttimeWindow(currentTimeMillis) && isNearNightEnd) {
                     LogFilter.log(
                             LogFilter.LOG_LEVEL_INFO,
-                            "Large consumer detected outside nighttime. Stopping charging and returning to Automatic Mode."
+                            "Near the end of nighttime but RSOC target not reached. Continuing to charge."
                     );
-                    batteryManagementService.resetToAutomaticMode();
-                    return;
                 }
 
                 // Reschedule the monitor task until the end of the charging period
