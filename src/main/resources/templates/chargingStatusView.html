@@ -326,7 +326,7 @@
         <!-- Tabbed Interface for Cheapest Periods, Market Prices, and Scheduled Charging Periods -->
         <ul class="nav nav-tabs mb-4" id="priceTabs" role="tablist">
             <li class="nav-item" role="presentation">
-                <button class="nav-link active" id="cheapest-periods-tab" data-bs-toggle="tab"
+                <button class="nav-link" id="cheapest-periods-tab" data-bs-toggle="tab"
                         data-bs-target="#cheapest-periods" type="button" role="tab" aria-controls="cheapest-periods"
                         aria-selected="true" th:text="#{cheapestPeriods}">Cheapest Periods
                 </button>
@@ -337,7 +337,7 @@
                 </button>
             </li>
             <li class="nav-item" role="presentation">
-                <button class="nav-link" id="scheduled-charging-periods-tab" data-bs-toggle="tab"
+                <button class="nav-link active" id="scheduled-charging-periods-tab" data-bs-toggle="tab"
                         data-bs-target="#scheduled-charging-periods" type="button" role="tab"
                         aria-controls="scheduled-charging-periods" aria-selected="false" th:text="#{scheduledChargingPeriods}">Scheduled Charging Periods
                 </button>
@@ -345,7 +345,7 @@
         </ul>
         <div class="tab-content" id="priceTabsContent">
             <!-- Cheapest Periods Tab -->
-            <div class="tab-pane fade show active" id="cheapest-periods" role="tabpanel"
+            <div class="tab-pane fade" id="cheapest-periods" role="tabpanel"
                  aria-labelledby="cheapest-periods-tab">
                 <div class="card mb-4">
                     <div class="card-body">
@@ -409,7 +409,7 @@
             </div>
 
             <!-- Scheduled Charging Periods Tab -->
-            <div class="tab-pane fade" id="scheduled-charging-periods" role="tabpanel"
+            <div class="tab-pane fade show active" id="scheduled-charging-periods" role="tabpanel"
                  aria-labelledby="scheduled-charging-periods-tab">
                 <div class="card mb-4">
                     <div class="card-body">

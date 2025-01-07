@@ -13,6 +13,7 @@ import java.time.Instant;
 import java.time.LocalTime;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
  * Service for managing battery operations, such as charging and mode switching.
@@ -55,7 +56,7 @@ public class BatteryManagementService {
     @Value("${battery.status.cache.duration.seconds:60}")
     private int cacheDurationInSeconds;
 
-    @Value("${battery.history.max.entries:10}")
+    @Value("${battery.history.max.entries:20}")
     private int maxHistorySize;
 
     @Value("${battery.large.consumer.threshold:0.5}")
@@ -76,7 +77,8 @@ public class BatteryManagementService {
     private ChargingScheduleRepository chargingScheduleRepository;
 
 
-    private final Queue<Map.Entry<Long, Integer>> rsocHistory = new LinkedList<>();
+    private final Queue<Map.Entry<Long, Integer>> rsocHistory = new ConcurrentLinkedQueue<>();
+
 
     /**
      * Constructor for BatteryManagementService.
@@ -99,21 +101,9 @@ public class BatteryManagementService {
         int currentRSOC = getRelativeStateOfCharge();
         long currentTime = System.currentTimeMillis();
 
-        // Add the current RSOC value with a timestamp to the history
-        rsocHistory.add(new AbstractMap.SimpleEntry<>(currentTime, currentRSOC));
+        // Update RSOC history
+        updateRsocHistory(currentTime, currentRSOC);
 
-        // Limit the size of the history to `maxHistorySize`
-        while (rsocHistory.size() > maxHistorySize) {
-            rsocHistory.poll();
-        }
-
-        // Check if the history has at least one entry
-        if (rsocHistory.isEmpty()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "RSOC history is empty. Cannot determine large consumer activity.");
-            return false;
-        }
-
-        // If not enough data points exist, a large consumer cannot be determined
         if (rsocHistory.size() < 2) {
             LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "Not enough RSOC data points to determine large consumer activity.");
             return false;
@@ -138,7 +128,8 @@ public class BatteryManagementService {
         boolean largeConsumerDetected = rsocDropPerMinute >= largeConsumerThreshold;
         if (largeConsumerDetected) {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                    String.format("Large consumer detected. RSOC drop rate: %.2f%%/min exceeds threshold: %.2f%%.", rsocDropPerMinute, largeConsumerThreshold));
+                    String.format("Large consumer detected. RSOC drop rate: %.2f%%/min exceeds threshold: %.2f%%.",
+                            rsocDropPerMinute, largeConsumerThreshold));
         }
         return largeConsumerDetected;
     }
@@ -172,6 +163,30 @@ public class BatteryManagementService {
                     String.format("Failed to set charging point to %d Watt. Response: %s", currentChargingPoint, response.message()));
             return false;
         }
+    }
+
+    /**
+     * Adds the current RSOC value with a timestamp to the history and ensures the history size
+     * does not exceed the maximum allowed entries.
+     *
+     * @param currentTime The current timestamp in milliseconds.
+     * @param currentRSOC The current relative state of charge (RSOC) in percentage.
+     */
+    private void updateRsocHistory(long currentTime, int currentRSOC) {
+        // Add the current RSOC value with a timestamp to the history
+        rsocHistory.add(new AbstractMap.SimpleEntry<>(currentTime, currentRSOC));
+
+        // Limit the size of the history to `maxHistorySize`
+        while (rsocHistory.size() > maxHistorySize) {
+            rsocHistory.poll();
+        }
+
+        LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, String.format(
+                "RSOC history updated: %d entries. Current RSOC: %d%% at %s",
+                rsocHistory.size(),
+                currentRSOC,
+                new Date(currentTime)
+        ));
     }
 
     /**
@@ -487,7 +502,7 @@ public class BatteryManagementService {
         }
     }
 
-    public List<Map.Entry<Long, Integer>> getRsocHistory() {
+    public synchronized List<Map.Entry<Long, Integer>> getRsocHistory() {
         if (rsocHistory.isEmpty()) {
             LogFilter.log(LogFilter.LOG_LEVEL_WARN, "RSOC history is empty. Unable to calculate time difference.");
             return Collections.emptyList();
@@ -502,6 +517,11 @@ public class BatteryManagementService {
         // Ensure timestamps are valid and in ascending order
         long lastTimestamp = 0;
         for (Map.Entry<Long, Integer> entry : rsocHistory) {
+            if (entry == null || entry.getKey() == null || entry.getValue() == null) {
+                LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Invalid entry in RSOC history. Skipping corrupted entry.");
+                continue;
+            }
+
             if (entry.getKey() < lastTimestamp) {
                 LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Invalid timestamp order in RSOC history. History will be reset.");
                 rsocHistory.clear();
@@ -512,5 +532,4 @@ public class BatteryManagementService {
 
         return new ArrayList<>(rsocHistory);
     }
-
 }
