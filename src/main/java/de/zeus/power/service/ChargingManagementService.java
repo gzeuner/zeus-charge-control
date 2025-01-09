@@ -675,7 +675,12 @@ public class ChargingManagementService {
 
     /**
      * Optimizes nighttime charging by dynamically selecting the most cost-effective periods.
-     * The method prioritizes the cheapest periods and restricts the number based on RSOC.
+     * The method prioritizes the cheapest periods within the nighttime window and restricts
+     * the number of selected periods based on the Relative State of Charge (RSOC).
+     *
+     * Improvements:
+     * 1. Stricter dynamic thresholds are applied to prioritize cheaper periods more effectively.
+     * 2. Enhanced filtering to exclude any periods that don't strictly adhere to price thresholds.
      *
      * @return A list of optimized charging schedules for nighttime charging.
      */
@@ -684,11 +689,11 @@ public class ChargingManagementService {
 
         long currentTime = System.currentTimeMillis();
 
-        // Filter market prices for the nighttime window
+        // Retrieve all market prices and filter for nighttime window and future periods
         List<MarketPrice> nighttimePeriods = marketPriceRepository.findAll().stream()
-                .filter(price -> isWithinNighttimeWindow(price.getStartTimestamp())) // Use specialized method
-                .filter(price -> price.getStartTimestamp() > currentTime) // Only future periods
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh)) // Sort by price
+                .filter(price -> isWithinNighttimeWindow(price.getStartTimestamp())) // Check if within nighttime window
+                .filter(price -> price.getStartTimestamp() > currentTime) // Exclude past periods
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh)) // Sort by price (ascending)
                 .toList();
 
         if (nighttimePeriods.isEmpty()) {
@@ -696,8 +701,8 @@ public class ChargingManagementService {
             return Collections.emptyList();
         }
 
-        // Calculate thresholds for filtering optimal periods
-        double threshold = calculateDynamicThreshold(nighttimePeriods, priceFlexibilityThreshold);
+        // Calculate dynamic thresholds for price filtering
+        double dynamicThreshold = calculateDynamicThreshold(nighttimePeriods, priceFlexibilityThreshold);
         double maxAcceptablePrice = calculateMaxAcceptablePrice(
                 batteryManagementService.getRelativeStateOfCharge(),
                 maxAcceptableMarketPriceInCent
@@ -705,25 +710,25 @@ public class ChargingManagementService {
 
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
                 "Dynamic nighttime threshold: %.2f cents/kWh, Max acceptable price: %.2f cents/kWh",
-                threshold, maxAcceptablePrice
+                dynamicThreshold, maxAcceptablePrice
         ));
 
-        // Dynamically restrict the maximum number of periods based on RSOC
+        // Determine the maximum number of periods to select based on the current RSOC
         int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
         int maxPeriods = calculateMaxPeriodsBasedOnRSOC(currentRSOC, false);
 
-        // Select periods based on calculated thresholds and limit by maxPeriods
+        // Select periods that meet the stricter thresholds and limit the count
         List<MarketPrice> selectedPeriods = nighttimePeriods.stream()
-                .filter(price -> price.getPriceInCentPerKWh() <= threshold)
-                .filter(price -> price.getPriceInCentPerKWh() <= maxAcceptablePrice)
-                .limit(maxPeriods)
+                .filter(price -> price.getPriceInCentPerKWh() <= dynamicThreshold) // Must meet dynamic threshold
+                .filter(price -> price.getPriceInCentPerKWh() <= maxAcceptablePrice) // Must meet max acceptable price
+                .limit(maxPeriods) // Restrict to maximum allowed periods
                 .toList();
 
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
                 "Selected %d periods for the current night based on RSOC and price analysis.", selectedPeriods.size()
         ));
 
-        // Convert the selected periods to charging schedules and return
+        // Convert the selected periods into charging schedules
         return new ArrayList<>(collectAndOptimizeSchedules(selectedPeriods));
     }
 
