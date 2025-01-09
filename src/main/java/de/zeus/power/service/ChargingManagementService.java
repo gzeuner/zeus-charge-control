@@ -48,6 +48,9 @@ import java.util.stream.Collectors;
 @Service
 public class ChargingManagementService {
 
+    private Boolean cachedNighttimeWindow; // Cached result for the last nighttime check
+    private long cacheTimestamp;          // Timestamp of the last cache update
+    private static final long CACHE_DURATION_MS = 60000; // Cache validity duration (1 minute)
     private static final Logger logger = LoggerFactory.getLogger(ChargingManagementService.class);
     private static final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 
@@ -219,6 +222,10 @@ public class ChargingManagementService {
     }
 
 
+    /**
+     * Periodically checks the system state and ensures proper transitions between modes.
+     * Adjusts nighttime schedules and ensures reset to automatic mode at night end.
+     */
     @Scheduled(fixedRateString = "${battery.automatic.mode.check.interval:300000}") // Every 5 minutes
     public void checkAndResetToAutomaticMode() {
         if (batteryManagementService.isBatteryNotConfigured()) {
@@ -226,60 +233,71 @@ public class ChargingManagementService {
             return;
         }
 
-        int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
         boolean isNightTime = isWithinNighttimeWindow(System.currentTimeMillis());
-        boolean largeConsumerActive = batteryManagementService.isLargeConsumerActive();
 
-        // Check if forced charging is active
-        if (batteryManagementService.isForcedChargingActive()) {
-            if (currentRSOC >= targetStateOfCharge) {
-                LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                        String.format("Target RSOC (%d%%) reached during forced charging. Disabling forced charging mode.",
-                                targetStateOfCharge));
-                batteryManagementService.setForcedChargingActive(false);
-                batteryManagementService.resetToAutomaticMode();
-            } else {
-                LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Forced charging is active. Skipping automatic mode reset.");
-                return;
-            }
-        }
-
-        // Delegate dynamic adjustment to the BatteryManagementService
-        boolean success = batteryManagementService.adjustChargingPointDynamically(currentRSOC, isNightTime, largeConsumerActive);
-        if (!success) {
-            LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Failed to adjust charging point dynamically.");
-        }
-
-        // Reset to automatic mode at the end of nighttime
+        // Adjust nighttime charging schedules to end before the reset
         if (isNightTime) {
-            if(largeConsumerActive) {
-                scheduleEndOfNightReset();
-                LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                        "Scheduling Return to Automatic Mode.");
-            }
-        // Reset to automatic mode if outside night mode and targetStateOfCharge is reached
-        } else {
-            if(currentRSOC >= targetStateOfCharge && batteryManagementService.isManualOperatingMode()) {
-                LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                        "Returning to Automatic Mode.");
-                batteryManagementService.resetToAutomaticMode();
-            } else {
-                LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Battery is in automatic mode. ");
-            }
+            adjustPlannedChargingForNightReset();
+        }
+
+        // Reset to automatic mode if nighttime has ended
+        if (!isNightTime && batteryManagementService.isManualOperatingMode()) {
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Night period ended. Returning to automatic mode.");
+            batteryManagementService.resetToAutomaticMode();
         }
     }
 
+    /**
+     * Adjusts nighttime charging schedules in the repository to ensure they do not extend
+     * beyond the reset time (15 minutes before the end of nighttime).
+     */
+    private void adjustPlannedChargingForNightReset() {
+        Calendar nightStart = getNightStart();
+        Calendar nightEnd = getNightEnd(nightStart);
+        nightEnd.add(Calendar.MINUTE, -15); // Set reset time to 15 minutes before the end of nighttime
 
+        long nightStartTimestamp = nightStart.getTimeInMillis();
+        long resetTimestamp = nightEnd.getTimeInMillis();
+        long nightEndTimestamp = getNightEnd(getNightStart()).getTimeInMillis();
+
+        // Fetch and log affected schedules
+        List<ChargingSchedule> nighttimeSchedules = chargingScheduleRepository.findNighttimeSchedules(nightStartTimestamp, nightEndTimestamp);
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                "Found %d nighttime schedules to adjust for reset. Reset time: %s",
+                nighttimeSchedules.size(), dateFormat.format(new Date(resetTimestamp))
+        ));
+
+        // Delete schedules extending beyond the reset time
+        chargingScheduleRepository.deleteSchedulesBeyondReset(nightStartTimestamp, resetTimestamp, nightEndTimestamp);
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Nighttime schedules adjusted to end before the reset.");
+    }
+
+    /**
+     * Schedules a reset to automatic mode 15 minutes before the end of the nighttime period.
+     * Ensures the reset is only scheduled once per nighttime period.
+     */
     private void scheduleEndOfNightReset() {
         if (nightResetScheduled.get()) {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Night reset already scheduled. Skipping duplicate scheduling.");
             return;
         }
 
-        Date resetTime = getResetTime();
+        // Calculate the reset time: 15 minutes before the end of nighttime
+        Calendar nightStart = getNightStart();
+        Calendar nightEnd = getNightEnd(nightStart);
+        nightEnd.add(Calendar.MINUTE, -15);
 
+        long resetTimestamp = nightEnd.getTimeInMillis();
+        long currentTime = System.currentTimeMillis();
+        if (resetTimestamp <= currentTime) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "Invalid or past reset time. Skipping night reset scheduling.");
+            return;
+        }
+
+        // Schedule the reset to automatic mode
+        Date resetTime = new Date(resetTimestamp);
         taskScheduler.schedule(() -> {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Night period ended. Switching back to automatic mode.");
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Night period ending. Switching to automatic mode.");
             boolean resetSuccessful = batteryManagementService.resetToAutomaticMode();
             if (resetSuccessful) {
                 LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Successfully returned to automatic mode after night period.");
@@ -289,9 +307,10 @@ public class ChargingManagementService {
             nightResetScheduled.set(false); // Reset the flag after execution
         }, resetTime);
 
-        nightResetScheduled.set(true); // Set the flag
+        nightResetScheduled.set(true);
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Scheduled automatic mode reset at " + dateFormat.format(resetTime));
     }
+
 
     private Date getResetTime() {
         Calendar calendar = Calendar.getInstance();
@@ -854,15 +873,32 @@ public class ChargingManagementService {
         return dynamicThreshold;
     }
 
-    private boolean isWithinNighttimeWindow(long timestamp) {
 
+    /**
+     * Checks whether the given timestamp is within the nighttime window.
+     * Uses caching to reduce redundant calculations within the cache duration.
+     *
+     * @param timestamp The timestamp to check (in milliseconds).
+     * @return true if the timestamp is within the nighttime window, false otherwise.
+     */
+    private boolean isWithinNighttimeWindow(long timestamp) {
+        // Use cached result if still valid
+        if (cachedNighttimeWindow != null && System.currentTimeMillis() - cacheTimestamp < CACHE_DURATION_MS) {
+            LogFilter.log(
+                    LogFilter.LOG_LEVEL_DEBUG,
+                    String.format("Using cached result for nighttime window check: %b", cachedNighttimeWindow)
+            );
+            return cachedNighttimeWindow;
+        }
+
+        // Calculate nighttime window dynamically
         Calendar nightStart = getNightStart();
         Calendar nightEnd = getNightEnd(nightStart);
 
         LogFilter.log(
                 LogFilter.LOG_LEVEL_INFO,
                 String.format(
-                        "Checking if timestamp %d (%s) is within nighttime window: Start=%s End=%s",
+                        "Calculating nighttime window for timestamp %d (%s): Start=%s End=%s",
                         timestamp,
                         dateFormat.format(new Date(timestamp)),
                         dateFormat.format(nightStart.getTime()),
@@ -870,13 +906,28 @@ public class ChargingManagementService {
                 )
         );
 
+        // Determine if the timestamp is within the window
+        boolean isWithinWindow = isWithinTimeWindow(timestamp, nightStart.getTimeInMillis(), nightEnd.getTimeInMillis());
 
-        return isWithinTimeWindow(timestamp, nightStart.getTimeInMillis(), nightEnd.getTimeInMillis());
+        // Update cache
+        cachedNighttimeWindow = isWithinWindow;
+        cacheTimestamp = System.currentTimeMillis();
+
+        return isWithinWindow;
     }
 
+    /**
+     * Checks whether a timestamp is within a specified time window.
+     *
+     * @param timestamp The timestamp to check (in milliseconds).
+     * @param start The start of the window (in milliseconds).
+     * @param end The end of the window (in milliseconds).
+     * @return true if the timestamp is within the window, false otherwise.
+     */
     private boolean isWithinTimeWindow(long timestamp, long start, long end) {
         return timestamp >= start && timestamp < end;
     }
+
 
     private Calendar getNightEnd(Calendar nightStart) {
         // End of the night (always the next day after the night start)
