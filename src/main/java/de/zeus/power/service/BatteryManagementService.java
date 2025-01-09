@@ -56,7 +56,7 @@ public class BatteryManagementService {
     @Value("${battery.status.cache.duration.seconds:60}")
     private int cacheDurationInSeconds;
 
-    @Value("${battery.history.max.entries:20}")
+    @Value("${battery.history.max.entries:24}")
     private int maxHistorySize;
 
     @Value("${battery.large.consumer.threshold:0.5}")
@@ -166,21 +166,39 @@ public class BatteryManagementService {
     }
 
     /**
-     * Adds the current RSOC value with a timestamp to the history and ensures the history size
-     * does not exceed the maximum allowed entries.
+     * Updates the RSOC history with the current RSOC value and its timestamp.
+     * Ensures that the history size does not exceed the maximum allowed entries.
      *
      * @param currentTime The current timestamp in milliseconds.
      * @param currentRSOC The current relative state of charge (RSOC) in percentage.
      */
     private void updateRsocHistory(long currentTime, int currentRSOC) {
+        // Validate input values
+        if (currentRSOC < 0 || currentRSOC > 100) {
+            LogFilter.log(
+                    LogFilter.LOG_LEVEL_WARN,
+                    String.format("Invalid RSOC value: %d%%. Skipping update.", currentRSOC)
+            );
+            return;
+        }
+
         // Add the current RSOC value with a timestamp to the history
         rsocHistory.add(new AbstractMap.SimpleEntry<>(currentTime, currentRSOC));
 
-        // Limit the size of the history to `maxHistorySize`
+        // Ensure the history does not exceed the maximum allowed size
         while (rsocHistory.size() > maxHistorySize) {
-            rsocHistory.poll();
+            AbstractMap.SimpleEntry<Long, Integer> removedEntry = (AbstractMap.SimpleEntry<Long, Integer>) rsocHistory.poll();
+            if (removedEntry != null) {
+                LogFilter.log(
+                        LogFilter.LOG_LEVEL_DEBUG,
+                        String.format("Removed oldest RSOC entry: %d%% at %s",
+                                removedEntry.getValue(),
+                                new Date(removedEntry.getKey()))
+                );
+            }
         }
 
+        // Log the updated history size and the latest RSOC entry
         LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, String.format(
                 "RSOC history updated: %d entries. Current RSOC: %d%% at %s",
                 rsocHistory.size(),
@@ -188,6 +206,7 @@ public class BatteryManagementService {
                 new Date(currentTime)
         ));
     }
+
 
     /**
      * Dynamically adjusts the charging point based on current RSOC, nighttime, and large consumer activity.
