@@ -235,41 +235,11 @@ public class ChargingManagementService {
 
         boolean isNightTime = isWithinNighttimeWindow(System.currentTimeMillis());
 
-        // Adjust nighttime charging schedules to end before the reset
-        if (isNightTime) {
-            adjustPlannedChargingForNightReset();
-        }
-
         // Reset to automatic mode if nighttime has ended
         if (!isNightTime && batteryManagementService.isManualOperatingMode()) {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Night period ended. Returning to automatic mode.");
             batteryManagementService.resetToAutomaticMode();
         }
-    }
-
-    /**
-     * Adjusts nighttime charging schedules in the repository to ensure they do not extend
-     * beyond the reset time (15 minutes before the end of nighttime).
-     */
-    private void adjustPlannedChargingForNightReset() {
-        Calendar nightStart = getNightStart();
-        Calendar nightEnd = getNightEnd(nightStart);
-        nightEnd.add(Calendar.MINUTE, -15); // Set reset time to 15 minutes before the end of nighttime
-
-        long nightStartTimestamp = nightStart.getTimeInMillis();
-        long resetTimestamp = nightEnd.getTimeInMillis();
-        long nightEndTimestamp = getNightEnd(getNightStart()).getTimeInMillis();
-
-        // Fetch and log affected schedules
-        List<ChargingSchedule> nighttimeSchedules = chargingScheduleRepository.findNighttimeSchedules(nightStartTimestamp, nightEndTimestamp);
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                "Found %d nighttime schedules to adjust for reset. Reset time: %s",
-                nighttimeSchedules.size(), dateFormat.format(new Date(resetTimestamp))
-        ));
-
-        // Delete schedules extending beyond the reset time
-        chargingScheduleRepository.deleteSchedulesBeyondReset(nightStartTimestamp, resetTimestamp, nightEndTimestamp);
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Nighttime schedules adjusted to end before the reset.");
     }
 
     /**
