@@ -96,10 +96,12 @@ public class ChargingManagementService {
     public void onMarketPricesUpdated(MarketPricesUpdatedEvent event) {
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Market prices updated event received. Recalculating charging schedule...");
 
-        //Planung vorberechnen
+        //Precalculate planning
         bufferDaytimeCharging();
-        // Optimierung ausführen
+        // Perform optimization
         optimizeChargingSchedule();
+        // Ensure return to automatic mode
+        scheduleEndOfNightReset();
 
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Market price update handled and schedules synchronized.");
     }
