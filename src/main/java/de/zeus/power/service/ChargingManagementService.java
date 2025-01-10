@@ -14,7 +14,6 @@ import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.TaskScheduler;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -131,6 +130,9 @@ public class ChargingManagementService {
     private void optimizeChargingSchedule() {
         logger.info("Starting optimization of charging schedule...");
 
+        // Schedule EndOfNightReset
+        scheduleEndOfNightReset();
+
         // Initialize a set to hold optimized schedules
         Set<ChargingSchedule> optimizedSchedules = new HashSet<>();
 
@@ -246,9 +248,9 @@ public class ChargingManagementService {
 
     /**
      * Schedules a reset to automatic mode 15 minutes before the end of the nighttime period.
-     * Ensures the reset is only scheduled once per nighttime period.
+     * Ensures that no duplicate resets are scheduled for the same night's end.
      */
-    private void scheduleEndOfNightReset() {
+    private synchronized void scheduleEndOfNightReset() {
         if (nightResetScheduled.get()) {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Night reset already scheduled. Skipping duplicate scheduling.");
             return;
@@ -262,7 +264,7 @@ public class ChargingManagementService {
         long resetTimestamp = nightEnd.getTimeInMillis();
         long currentTime = System.currentTimeMillis();
         if (resetTimestamp <= currentTime) {
-            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "Invalid or past reset time. Skipping night reset scheduling.");
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "End of night is in the past. No reset scheduled.");
             return;
         }
 
@@ -276,12 +278,13 @@ public class ChargingManagementService {
             } else {
                 LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Failed to switch to automatic mode after night period.");
             }
-            nightResetScheduled.set(false); // Reset the flag after execution
+            nightResetScheduled.set(false); // Allow new resets to be scheduled
         }, resetTime);
 
-        nightResetScheduled.set(true);
+        nightResetScheduled.set(true); // Mark reset as scheduled
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Scheduled automatic mode reset at " + dateFormat.format(resetTime));
     }
+
 
 
     private Date getResetTime() {
@@ -685,15 +688,11 @@ public class ChargingManagementService {
                 dynamicThreshold, maxAcceptablePrice
         ));
 
-        // Determine the maximum number of periods to select based on the current RSOC
-        int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
-        int maxPeriods = calculateMaxPeriodsBasedOnRSOC(currentRSOC, false);
-
         // Select periods that meet the stricter thresholds and limit the count
         List<MarketPrice> selectedPeriods = nighttimePeriods.stream()
                 .filter(price -> price.getPriceInCentPerKWh() <= dynamicThreshold) // Must meet dynamic threshold
                 .filter(price -> price.getPriceInCentPerKWh() <= maxAcceptablePrice) // Must meet max acceptable price
-                .limit(maxPeriods) // Restrict to maximum allowed periods
+                .limit(2)
                 .toList();
 
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
