@@ -453,7 +453,7 @@ public class BatteryManagementService {
         if (response != null && response.data() != null) {
             cachedBatteryStatus = response.data();
             cacheTimestamp = Instant.now();
-            LogFilter.log("INFO", "Fetched new battery status");
+            LogFilter.log("DEBUG", "Fetched new battery status");
             return cachedBatteryStatus;
         } else {
             return null;

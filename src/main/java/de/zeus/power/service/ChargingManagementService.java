@@ -228,7 +228,6 @@ public class ChargingManagementService {
 
     /**
      * Periodically checks the system state and ensures proper transitions between modes.
-     * Adjusts nighttime schedules and ensures reset to automatic mode at night end.
      */
     @Scheduled(fixedRateString = "${battery.automatic.mode.check.interval:300000}") // Every 5 minutes
     public void checkAndResetToAutomaticMode() {
@@ -237,11 +236,11 @@ public class ChargingManagementService {
             return;
         }
 
-        boolean isNightTime = isWithinNighttimeWindow(System.currentTimeMillis());
-
-        // Reset to automatic mode if nighttime has ended
-        if (!isNightTime && batteryManagementService.isManualOperatingMode()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Night period ended. Returning to automatic mode.");
+        // Reset to automatic mode outside nighttime when in manuel mode and targetStateOfCharge is reached
+        if (!isWithinNighttimeWindow(System.currentTimeMillis())
+                && batteryManagementService.isManualOperatingMode()
+                && batteryManagementService.getRelativeStateOfCharge() >= targetStateOfCharge) {
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Target State of Charge reached. Returning to automatic mode.");
             batteryManagementService.resetToAutomaticMode();
         }
     }
@@ -1555,7 +1554,7 @@ public class ChargingManagementService {
 
             if (exists) {
                 LogFilter.log(
-                        LogFilter.LOG_LEVEL_INFO,
+                        LogFilter.LOG_LEVEL_DEBUG,
                         String.format(
                                 "Skipping duplicate schedule: %s - %s at %.2f cents/kWh.",
                                 dateFormat.format(new Date(schedule.getStartTimestamp())),
