@@ -348,6 +348,8 @@ public class ChargingManagementService {
                     if (isWithinNighttimeWindow(currentTimeMillis) && isNearNightEnd) {
                         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Near the end of nighttime. Returning to Automatic Mode.");
                         batteryManagementService.resetToAutomaticMode();
+                    } else if (isWithinNighttimeWindow(currentTimeMillis) && !isNearNightEnd) {
+                        batteryManagementService.setDynamicChargingPoint(0);
                     } else if (!isWithinNighttimeWindow(currentTimeMillis)) {
                         LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Daytime detected. Returning to Automatic Mode.");
                         batteryManagementService.resetToAutomaticMode();
