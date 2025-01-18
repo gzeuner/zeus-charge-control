@@ -486,16 +486,16 @@
             automatic: /*[[${automaticText}]]*/ 'Automatic'
         };
 
-        // Cheapest Periods Chart
+       // Cheapest Periods Chart
         var ctxCheapest = document.getElementById('cheapestPeriodsChart').getContext('2d');
         var cheapestPeriodsChart = new Chart(ctxCheapest, {
-            type: 'line',
+            type: 'bar',
             data: {
                 labels: cheapestPeriodsData.map(period => new Date(period.startTimestamp)),
                 datasets: [{
                     label: 'cent/kWh',
                     data: cheapestPeriodsData.map(period => period.marketPrice),
-                    backgroundColor: 'rgba(0, 123, 255, 0.2)',
+                    backgroundColor: 'rgba(0, 123, 255, 0.6)',
                     borderColor: 'rgba(0, 123, 255, 1)',
                     borderWidth: 1
                 }]
@@ -506,9 +506,9 @@
                         type: 'time',
                         time: {
                             unit: 'hour',
-                            tooltipFormat: 'dd LLLL HH:mm',  // Tooltip-Format
+                            tooltipFormat: 'dd LLLL HH:mm', // Tooltip-Format
                             displayFormats: {
-                                hour: 'dd LLLL HH:mm'  // Achsen-Format
+                                hour: 'dd LLLL HH:mm' // Achsen-Format
                             }
                         },
                         adapters: {
@@ -533,6 +533,7 @@
                 maintainAspectRatio: false
             }
         });
+
 
         // Market Prices Chart
         var ctxMarket = document.getElementById('marketPricesChart').getContext('2d');
