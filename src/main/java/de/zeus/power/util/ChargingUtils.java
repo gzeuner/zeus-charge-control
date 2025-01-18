@@ -198,12 +198,37 @@ public class ChargingUtils {
                 period.getPriceInCentPerKWh()));
     }
 
+    /**
+     * Calculates the price range for a list of market price periods.
+     * The price range is the difference between the maximum and minimum prices.
+     * If the list is empty, the range is 0.
+     *
+     * @param periods The list of market price periods.
+     * @return The price range (max - min) in cents/kWh.
+     */
     public double calculatePriceRange(List<MarketPrice> periods) {
-        // Calculate the price range between the minimum and maximum prices
-        double minPrice = periods.stream().mapToDouble(MarketPrice::getPriceInCentPerKWh).min().orElse(0.0);
-        double maxPrice = periods.stream().mapToDouble(MarketPrice::getPriceInCentPerKWh).max().orElse(0.0);
-        return maxPrice - minPrice;
+        if (periods == null || periods.isEmpty()) {
+            LogFilter.logWarn("Market price periods list is empty or null. Returning price range: 0.0.");
+            return 0.0;
+        }
+
+        double minPrice = periods.stream()
+                .mapToDouble(MarketPrice::getPriceInCentPerKWh)
+                .min()
+                .orElse(0.0);
+
+        double maxPrice = periods.stream()
+                .mapToDouble(MarketPrice::getPriceInCentPerKWh)
+                .max()
+                .orElse(0.0);
+
+        double priceRange = maxPrice - minPrice;
+
+        LogFilter.logInfo("Calculated price range: %.2f (min: %.2f, max: %.2f).", priceRange, minPrice, maxPrice);
+
+        return priceRange;
     }
+
 
     /**
      * Checks whether the given timestamp is within the nighttime window.
@@ -384,18 +409,35 @@ public class ChargingUtils {
         return dynamicThreshold;
     }
 
+    /**
+     * Calculates the maximum acceptable price for charging based on the current RSOC (Relative State of Charge).
+     * If the RSOC is below 80% of the target state of charge, the base price is increased by 20%.
+     *
+     * @param currentRSOC The current relative state of charge (in percentage).
+     * @param basePrice   The base acceptable price (in cents/kWh).
+     * @return The maximum acceptable price for charging.
+     */
     public double calculateMaxAcceptablePrice(double currentRSOC, double basePrice) {
-        if (currentRSOC < targetStateOfCharge * 0.8) {
-            return basePrice * 1.2;
+        final double rsocThreshold = targetStateOfCharge * 0.8;
+        final double priceMultiplier = 1.2;
+
+        if (currentRSOC < rsocThreshold) {
+            LogFilter.logInfo("RSOC (%.2f%%) is below threshold (%.2f%%). Applying price multiplier: %.2f.",
+                    currentRSOC, rsocThreshold, priceMultiplier);
+            return basePrice * priceMultiplier;
         }
+
+        LogFilter.logInfo("RSOC (%.2f%%) is above or equal to threshold (%.2f%%). Using base price: %.2f.",
+                currentRSOC, rsocThreshold, basePrice);
         return basePrice;
     }
 
+
     /**
      * Calculates a dynamic daytime threshold for charging based on the RSOC (Relative State of Charge) drop rate.
-     * The threshold is adjusted dynamically to prioritize charging when the RSOC is depleting faster than expected.
+     * The threshold adjusts dynamically to prioritize charging when the RSOC is depleting faster than expected.
      *
-     * If there is insufficient historical data or invalid time differences, the method falls back to a default threshold.
+     * Falls back to a default threshold if there is insufficient historical data or invalid time differences.
      *
      * @return The calculated dynamic daytime threshold as a percentage of the target state of charge.
      */
@@ -403,37 +445,41 @@ public class ChargingUtils {
         // Retrieve the RSOC history from the battery management service
         List<Map.Entry<Long, Integer>> history = batteryManagementService.getRsocHistory();
 
-        // Ensure there is enough historical data to calculate a meaningful threshold
+        // Fallback threshold in case of insufficient or invalid data
+        final int fallbackThreshold = targetStateOfCharge - 20;
+
+        // Ensure there is enough historical data
         if (history.size() < 2) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Not enough RSOC history data to calculate dynamic daytime threshold.");
-            return targetStateOfCharge - 20; // Default fallback threshold
+            LogFilter.logInfo("Insufficient RSOC history data. Using fallback threshold: %d%%", fallbackThreshold);
+            return fallbackThreshold;
         }
 
-        // Get the oldest and latest RSOC history entries
+        // Extract the oldest and latest RSOC history entries
         Map.Entry<Long, Integer> oldest = history.get(0);
         Map.Entry<Long, Integer> latest = history.get(history.size() - 1);
 
-        // Calculate the time difference between the oldest and latest entries in minutes
+        // Calculate time difference in minutes
         long timeDifferenceInMinutes = (latest.getKey() - oldest.getKey()) / 60000;
         if (timeDifferenceInMinutes <= 0) {
-            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "Invalid time difference in RSOC history. Using default threshold.");
-            return targetStateOfCharge - 20; // Fallback threshold for invalid data
+            LogFilter.logWarn("Invalid time difference in RSOC history. Using fallback threshold: %d%%", fallbackThreshold);
+            return fallbackThreshold;
         }
 
-        // Calculate the difference in RSOC values over the recorded time period
+        // Calculate the RSOC drop rate (percentage per hour)
         int rsocDifference = oldest.getValue() - latest.getValue();
-
-        // Compute the RSOC drop rate in percentage per hour
         double rsocDropPerHour = rsocDifference / (timeDifferenceInMinutes / 60.0);
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                String.format("RSOC drop rate: %.2f%%/hour based on history.", rsocDropPerHour));
 
-        // Dynamically adjust the threshold based on the drop rate
+        // Log the calculated drop rate
+        LogFilter.logInfo("RSOC drop rate: %.2f%%/hour based on history.", rsocDropPerHour);
+
+        // Calculate the dynamic threshold based on the drop rate
         int dynamicThreshold = (int) Math.max(targetStateOfCharge - (rsocDropPerHour * 2), targetStateOfCharge - 30);
 
-        // Log the final calculated threshold
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                String.format("Dynamic daytime threshold calculated: %d%%", dynamicThreshold));
+        // Ensure the threshold doesn't exceed logical limits
+        dynamicThreshold = Math.min(dynamicThreshold, targetStateOfCharge);
+
+        // Log the calculated threshold
+        LogFilter.logInfo("Dynamic daytime threshold calculated: %d%%", dynamicThreshold);
 
         return dynamicThreshold;
     }
@@ -835,6 +881,11 @@ public class ChargingUtils {
     }
 
     public Set<ChargingSchedule> validateSchedulesForCheaperOptions(Set<ChargingSchedule> schedules) {
+        if (schedules == null || schedules.isEmpty()) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No schedules provided for validation. Returning an empty set.");
+            return Collections.emptySet();
+        }
+
         // Step 1: Sort schedules by price in ascending order
         List<ChargingSchedule> sortedSchedules = schedules.stream()
                 .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice))
@@ -846,11 +897,16 @@ public class ChargingUtils {
         double minPrice = sortedSchedules.stream()
                 .mapToDouble(ChargingSchedule::getPrice)
                 .min()
-                .orElse(Double.MAX_VALUE);
+                .orElse(Double.POSITIVE_INFINITY); // Use a high default to flag potential issues
         double maxPrice = sortedSchedules.stream()
                 .mapToDouble(ChargingSchedule::getPrice)
                 .max()
-                .orElse(Double.MIN_VALUE);
+                .orElse(Double.NEGATIVE_INFINITY); // Use a low default to flag potential issues
+
+        if (Double.isInfinite(minPrice) || Double.isInfinite(maxPrice)) {
+            LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Invalid price range detected. Returning an empty set.");
+            return Collections.emptySet();
+        }
 
         // Step 3: Calculate dynamic thresholds for price validation
         double priceToleranceFactor = calculateDynamicPriceTolerance(minPrice, maxPrice, sortedSchedules.size());
@@ -865,36 +921,25 @@ public class ChargingUtils {
                 minPrice, maxPrice, priceThreshold
         ));
 
-        // Step 4: Define extended threshold and calculate maximum allowable charging periods
+        // Step 4: Define extended threshold
         double extendedThreshold = priceThreshold * 1.1; // 10% above the calculated threshold
-        int maxChargingPeriods = calculateDynamicMaxChargingPeriods(
-                sortedSchedules.size(),
-                maxPrice - minPrice,
-                batteryManagementService.getRelativeStateOfCharge()
-        );
 
-        // Step 5: Validate each schedule based on the calculated thresholds
+        // Step 5: Validate each schedule based on thresholds
         for (ChargingSchedule schedule : sortedSchedules) {
             boolean isWithinTolerance = schedule.getPrice() <= priceThreshold ||
-                    (validatedSchedules.size() < maxChargingPeriods &&
-                            schedule.getPrice() <= extendedThreshold);
+                    (validatedSchedules.size() < 2 && schedule.getPrice() <= extendedThreshold);
 
-            // Include top 2 best periods regardless of threshold if needed
-            if (!isWithinTolerance && isOneOfBestPeriods(schedule, sortedSchedules)) {
-                isWithinTolerance = true;
+            if (isWithinTolerance) {
+                validatedSchedules.add(schedule);
                 LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                        "Including schedule %s - %s (%.2f cents/kWh) as one of the best periods.",
+                        "Accepted schedule %s - %s (%.2f cents/kWh).",
                         dateFormat.format(new Date(schedule.getStartTimestamp())),
                         dateFormat.format(new Date(schedule.getEndTimestamp())),
                         schedule.getPrice()
                 ));
-            }
-
-            if (isWithinTolerance) {
-                validatedSchedules.add(schedule);
             } else {
                 LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                        "Removed schedule %s - %s (%.2f cents/kWh) due to exceeding threshold %.2f.",
+                        "Rejected schedule %s - %s (%.2f cents/kWh) exceeding threshold %.2f.",
                         dateFormat.format(new Date(schedule.getStartTimestamp())),
                         dateFormat.format(new Date(schedule.getEndTimestamp())),
                         schedule.getPrice(),
@@ -903,7 +948,7 @@ public class ChargingUtils {
             }
         }
 
-        // Step 6: Fallback mechanism to ensure at least two schedules are retained
+        // Step 6: Final Fallback for minimum 2 schedules
         if (validatedSchedules.isEmpty() && sortedSchedules.size() >= 2) {
             validatedSchedules.add(sortedSchedules.get(0));
             validatedSchedules.add(sortedSchedules.get(1));
@@ -916,6 +961,7 @@ public class ChargingUtils {
 
         return validatedSchedules;
     }
+
 
     /**
      * Checks if the existing task matches the given schedule's timing based on its end timestamp.
