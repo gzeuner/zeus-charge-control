@@ -24,7 +24,7 @@ public class LogFilter {
      * Logs a message if it has not been logged recently.
      *
      * @param level The log level (INFO, WARN, ERROR, DEBUG).
-     * @param message The message to be logge
+     * @param message The message to be logged.
      */
     public static void log(String level, String message) {
         long now = System.currentTimeMillis();
@@ -55,5 +55,45 @@ public class LogFilter {
         } else {
             logger.debug("Filtered duplicate log: {}", message);
         }
+    }
+
+    /**
+     * Logs an INFO message with formatted arguments.
+     *
+     * @param message The message template with placeholders.
+     * @param args    The arguments to format the message.
+     */
+    public static void logInfo(String message, Object... args) {
+        log(LOG_LEVEL_INFO, String.format(message, args));
+    }
+
+    /**
+     * Logs a WARN message with formatted arguments.
+     *
+     * @param message The message template with placeholders.
+     * @param args    The arguments to format the message.
+     */
+    public static void logWarn(String message, Object... args) {
+        log(LOG_LEVEL_WARN, String.format(message, args));
+    }
+
+    /**
+     * Logs an ERROR message with formatted arguments.
+     *
+     * @param message The message template with placeholders.
+     * @param args    The arguments to format the message.
+     */
+    public static void logError(String message, Object... args) {
+        log(LOG_LEVEL_ERROR, String.format(message, args));
+    }
+
+    /**
+     * Logs a DEBUG message with formatted arguments.
+     *
+     * @param message The message template with placeholders.
+     * @param args    The arguments to format the message.
+     */
+    public static void logDebug(String message, Object... args) {
+        log(LOG_LEVEL_DEBUG, String.format(message, args));
     }
 }

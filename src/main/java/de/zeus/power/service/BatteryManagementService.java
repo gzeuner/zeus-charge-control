@@ -207,52 +207,6 @@ public class BatteryManagementService {
         ));
     }
 
-
-    /**
-     * Dynamically adjusts the charging point based on current RSOC, nighttime, and large consumer activity.
-     *
-     * @param currentRSOC        Current relative state of charge (RSOC) in percentage.
-     * @param isNightTime        Whether it is currently nighttime.
-     * @param largeConsumerActive Whether a large consumer is active.
-     * @return True if the charging point was successfully adjusted, false otherwise.
-     */
-    public boolean adjustChargingPointDynamically(int currentRSOC, boolean isNightTime, boolean largeConsumerActive) {
-        if (isBatteryNotConfigured()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "Battery not configured. Cannot adjust charging point.");
-            return false;
-        }
-
-        if (isNightTime && largeConsumerActive) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                    "Nighttime and large consumer detected. Adjusting charging point dynamically.");
-
-            // Dynamically reduce charging point based on RSOC
-            int reducedChargingPoint = currentRSOC < 50
-                    ? (int) (chargingPointInWatt * 0.5) // Charge faster if RSOC < 50%
-                    : (int) (chargingPointInWatt * 0.3); // Otherwise, charge at 30%
-
-            boolean success = setDynamicChargingPoint(reducedChargingPoint);
-            if (success) {
-                LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                        String.format("Charging point adjusted to %d Watt for nighttime with large consumer.", reducedChargingPoint));
-            }
-            return success;
-        }
-
-        if (currentRSOC >= targetStateOfCharge && isManualOperatingMode()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                    "RSOC at or above target. Setting charging point to 0 for idle mode.");
-
-            return setDynamicChargingPoint(0); // Set to idle mode if target state is reached
-        }
-
-        // Default behavior for other cases
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                "No special conditions met. Retaining current charging point.");
-        return true;
-    }
-
-
     public boolean initCharging(boolean forceCharging) {
         // Update the forced charging status
         this.forcedChargingActive = forceCharging;
@@ -358,21 +312,8 @@ public class BatteryManagementService {
         return true;
     }
 
-    public boolean isForcedChargingActive() {
-        return forcedChargingActive;
-    }
-
     public void setForcedChargingActive(boolean forcedChargingActive) {
         this.forcedChargingActive = forcedChargingActive;
-    }
-
-    public boolean isBatteryCharging() {
-        if (isBatteryNotConfigured()) {
-            return false;
-        }
-
-        BatteryStatusResponse batteryStatusResponse = getCurrentBatteryStatus();
-        return batteryStatusResponse != null && batteryStatusResponse.isBatteryCharging();
     }
 
     public int getRelativeStateOfCharge() {
