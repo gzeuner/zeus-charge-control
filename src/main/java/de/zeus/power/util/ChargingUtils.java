@@ -12,6 +12,9 @@ import org.springframework.stereotype.Component;
 
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -137,24 +140,6 @@ public class ChargingUtils {
 
         return futureSchedules;
     }
-
-    /**
-     * Finds available market periods that are not already scheduled.
-     *
-     * @param marketPrices      The list of available market prices.
-     * @param existingSchedules The list of currently scheduled charging periods.
-     * @param periodsToAdd      The maximum number of periods to retrieve.
-     * @return A sorted list of available market periods.
-     */
-    public List<MarketPrice> findAvailableMarketPeriods(List<MarketPrice> marketPrices, List<ChargingSchedule> existingSchedules, int periodsToAdd) {
-        return marketPrices.stream()
-                .filter(price -> existingSchedules.stream().noneMatch(schedule ->
-                        schedule.getStartTimestamp() == price.getStartTimestamp()))
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh)) // Sort by price
-                .limit(periodsToAdd)
-                .collect(Collectors.toList());
-    }
-
     /**
      * Handles transitions to automatic mode based on the current time and RSOC state.
      *
@@ -162,18 +147,38 @@ public class ChargingUtils {
      * @param isNearNightEnd    Whether the time is near the end of the nighttime period.
      */
     public void handleAutomaticModeTransition(long currentTimeMillis, boolean isNearNightEnd) {
-        if (isWithinNighttimeWindow(currentTimeMillis)
-                && isNearNightEnd) {
+
+        if (isNight(currentTimeMillis) && isNearNightEnd) {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Near the end of nighttime. Returning to Automatic Mode.");
             batteryManagementService.resetToAutomaticMode();
-        } else if (isWithinNighttimeWindow(currentTimeMillis)
-                && batteryManagementService.getRelativeStateOfCharge() >= targetStateOfCharge ) {
-            batteryManagementService.setDynamicChargingPoint(0);
-        } else if (!isWithinNighttimeWindow(currentTimeMillis)
+        } else if (isNight(currentTimeMillis)
                 && batteryManagementService.getRelativeStateOfCharge() >= targetStateOfCharge) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Daytime detected. Returning to Automatic Mode.");
+            batteryManagementService.setDynamicChargingPoint(0);
+        } else if (!isNight(currentTimeMillis)
+                && batteryManagementService.getRelativeStateOfCharge() >= targetStateOfCharge) {
             batteryManagementService.resetToAutomaticMode();
         }
+    }
+
+    /**
+     * Determines if the given timestamp belongs to the current night period.
+     *
+     * @param currentTimeMillis The current time in milliseconds.
+     * @return true if the timestamp belongs to the current night, false otherwise.
+     */
+    public boolean isNight(long currentTimeMillis) {
+        LocalDateTime now = LocalDateTime.ofInstant(Instant.ofEpochMilli(currentTimeMillis), ZoneId.systemDefault());
+        LocalDateTime nightStart = now.withHour(nightStartHour).withMinute(0).withSecond(0).withNano(0);
+        LocalDateTime nightEnd = nightStart.plusHours((nightEndHour >= nightStartHour)
+                ? nightEndHour - nightStartHour
+                : 24 - nightStartHour + nightEndHour);
+
+        // Check if we are before midnight but in the night window
+        if (now.getHour() < nightStartHour) {
+            nightStart = nightStart.minusDays(1); // Move start to the previous day
+        }
+
+        return !now.isBefore(nightStart) && now.isBefore(nightEnd);
     }
 
     /**
@@ -227,49 +232,6 @@ public class ChargingUtils {
         LogFilter.logInfo("Calculated price range: %.2f (min: %.2f, max: %.2f).", priceRange, minPrice, maxPrice);
 
         return priceRange;
-    }
-
-
-    /**
-     * Checks whether the given timestamp is within the nighttime window.
-     * Uses caching to reduce redundant calculations within the cache duration.
-     *
-     * @param timestamp The timestamp to check (in milliseconds).
-     * @return true if the timestamp is within the nighttime window, false otherwise.
-     */
-    public boolean isWithinNighttimeWindow(long timestamp) {
-        // Use cached result if still valid
-        if (cachedNighttimeWindow != null && System.currentTimeMillis() - cacheTimestamp < CACHE_DURATION_MS) {
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_DEBUG,
-                    String.format("Using cached result for nighttime window check: %b", cachedNighttimeWindow)
-            );
-            return cachedNighttimeWindow;
-        }
-
-        // Calculate nighttime window dynamically
-        Calendar nightStart = getNightStart();
-        Calendar nightEnd = getNightEnd(nightStart);
-
-        LogFilter.log(
-                LogFilter.LOG_LEVEL_INFO,
-                String.format(
-                        "Calculating nighttime window for timestamp %d (%s): Start=%s End=%s",
-                        timestamp,
-                        dateFormat.format(new Date(timestamp)),
-                        dateFormat.format(nightStart.getTime()),
-                        dateFormat.format(nightEnd.getTime())
-                )
-        );
-
-        // Determine if the timestamp is within the window
-        boolean isWithinWindow = isWithinTimeWindow(timestamp, nightStart.getTimeInMillis(), nightEnd.getTimeInMillis());
-
-        // Update cache
-        cachedNighttimeWindow = isWithinWindow;
-        cacheTimestamp = System.currentTimeMillis();
-
-        return isWithinWindow;
     }
 
     /**
