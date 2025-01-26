@@ -151,7 +151,7 @@
          * Steps:
          * 1. Collect and optimize schedules for nighttime and daytime periods.
          * 2. Calculate a dynamic RSOC threshold and compare it with the current RSOC.
-         * 3. If the current RSOC is below the threshold, initiate additional charging.
+         * 3. If the current RSOC is below the threshold, initiate additional charging (daytime only).
          * 4. Synchronize the optimized schedules with the existing ones.
          */
         private void optimizeChargingSchedule() {
@@ -173,30 +173,35 @@
             int dynamicThreshold = chargingUtils.calculateDynamicDaytimeThreshold();
             int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
 
-            // Check if additional charging is needed based on RSOC and threshold
-            if (currentRSOC <= dynamicThreshold) {
-                logger.info("RSOC is below the dynamic threshold (current: {}%, threshold: {}%). Initiating charging to reach target RSOC ({}%).",
-                        currentRSOC, dynamicThreshold, targetStateOfCharge);
+            // Check if it's daytime before evaluating additional charging
+            long currentTime = System.currentTimeMillis();
+            if (!chargingUtils.isNight(currentTime)) {
+                // Check if additional charging is needed based on RSOC and threshold
+                if (currentRSOC <= dynamicThreshold) {
+                    logger.info("RSOC is below the dynamic threshold (current: {}%, threshold: {}%). Initiating charging to reach target RSOC ({}%).",
+                            currentRSOC, dynamicThreshold, targetStateOfCharge);
 
-                // Add planned charges from the daytime buffer if below the target RSOC
-                if (currentRSOC < targetStateOfCharge) {
-                    logger.info("Scheduling additional charging to reach the target RSOC.");
+                    // Add planned charges from the daytime buffer if below the target RSOC
+                    if (currentRSOC < targetStateOfCharge) {
+                        logger.info("Scheduling additional charging to reach the target RSOC.");
 
-                    // Filter only future schedules from the daytime buffer
-                    long currentTime = System.currentTimeMillis();
-                    List<ChargingSchedule> futureSchedules = daytimeBuffer.stream()
-                            .filter(schedule -> schedule.getStartTimestamp() > currentTime) // Only future schedules
-                            .toList();
+                        // Filter only future schedules from the daytime buffer that are not during nighttime
+                        List<ChargingSchedule> futureSchedules = daytimeBuffer.stream()
+                                .filter(schedule -> schedule.getStartTimestamp() > currentTime) // Only future schedules
+                                .filter(schedule -> !chargingUtils.isNight(schedule.getStartTimestamp())) // Exclude nighttime schedules
+                                .toList();
 
-                    optimizedSchedules.addAll(futureSchedules);
+                        optimizedSchedules.addAll(futureSchedules);
 
-                    logger.info("Added {} future schedules from the daytime buffer for additional charging.", futureSchedules.size());
+                        logger.info("Added {} future schedules from the daytime buffer for additional charging.", futureSchedules.size());
+                    }
+                } else {
+                    logger.info("RSOC is above the dynamic threshold (current: {}%, threshold: {}%). Skipping additional daytime charging.",
+                            currentRSOC, dynamicThreshold);
                 }
             } else {
-                logger.info("RSOC is above the dynamic threshold (current: {}%, threshold: {}%). Skipping additional daytime charging.",
-                        currentRSOC, dynamicThreshold);
+                logger.info("Currently nighttime. Skipping evaluation of additional charging.");
             }
-
 
             // Synchronize the optimized schedules with the system
             synchronizeSchedules(optimizedSchedules);

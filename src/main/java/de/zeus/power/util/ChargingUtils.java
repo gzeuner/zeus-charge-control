@@ -148,15 +148,28 @@ public class ChargingUtils {
      */
     public void handleAutomaticModeTransition(long currentTimeMillis, boolean isNearNightEnd) {
 
-        if (isNight(currentTimeMillis) && isNearNightEnd) {
+        boolean isNight = isNight(currentTimeMillis);
+        int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
+
+        if (isNight && isNearNightEnd) {
+            // Near the end of nighttime, switch to automatic mode.
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Near the end of nighttime. Returning to Automatic Mode.");
             batteryManagementService.resetToAutomaticMode();
-        } else if (isNight(currentTimeMillis)
-                && batteryManagementService.getRelativeStateOfCharge() >= targetStateOfCharge) {
+        } else if (isNight && currentRSOC >= targetStateOfCharge) {
+            // During nighttime and RSOC has reached or exceeded the target, stop charging.
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Nighttime and RSOC target reached. Setting dynamic charging point to 0.");
             batteryManagementService.setDynamicChargingPoint(0);
-        } else if (!isNight(currentTimeMillis)
-                && batteryManagementService.getRelativeStateOfCharge() >= targetStateOfCharge) {
+        } else if (!isNight && currentRSOC >= targetStateOfCharge) {
+            // During daytime and RSOC has reached or exceeded the target, maintain current charging point and switch to automatic mode.
+            int currentChargingPoint = batteryManagementService.getCurrentChargingPoint();
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Daytime and RSOC target reached. Maintaining charging point: " + currentChargingPoint);
+            batteryManagementService.setDynamicChargingPoint(currentChargingPoint);
             batteryManagementService.resetToAutomaticMode();
+        } else {
+            // Log a debug message for cases where no action is taken.
+            LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "No transition required. Current state: "
+                    + (isNight ? "Nighttime" : "Daytime")
+                    + ", RSOC: " + currentRSOC);
         }
     }
 
