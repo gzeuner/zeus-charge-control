@@ -492,4 +492,8 @@ public class BatteryManagementService {
 
         return new ArrayList<>(rsocHistory);
     }
+
+    public int getCurrentChargingPoint() {
+        return currentChargingPoint;
+    }
 }
