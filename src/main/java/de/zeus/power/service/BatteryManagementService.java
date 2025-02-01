@@ -15,6 +15,8 @@ import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
+import static de.zeus.power.util.ChargingUtils.isNight;
+
 /**
  * Service for managing battery operations, such as charging and mode switching.
  * This class interacts with the battery system to ensure efficient and optimized operation.
@@ -59,9 +61,6 @@ public class BatteryManagementService {
     @Value("${battery.history.max.entries:24}")
     private int maxHistorySize;
 
-    @Value("${battery.large.consumer.threshold:0.5}")
-    private double largeConsumerThreshold;
-
     @Value("${night.start:22}")
     private int nightStartHour;
 
@@ -75,8 +74,6 @@ public class BatteryManagementService {
     private Instant cacheTimestamp;
     private volatile boolean isReducedChargingActive = false;
     private ChargingScheduleRepository chargingScheduleRepository;
-
-
     private final Queue<Map.Entry<Long, Integer>> rsocHistory = new ConcurrentLinkedQueue<>();
 
 
@@ -90,48 +87,6 @@ public class BatteryManagementService {
         this.batteryNotConfigured = commandService.isBatteryNotConfigured();
         this.weatherService = weatherService;
         this.chargingScheduleRepository = chargingScheduleRepositor;
-    }
-
-    @Scheduled(fixedRateString = "${large.consumer.check.interval:300000}") // Every 5 minutes (default)
-    public void scheduledLargeConsumerCheck() {
-        isLargeConsumerActive();
-    }
-
-    public boolean isLargeConsumerActive() {
-        int currentRSOC = getRelativeStateOfCharge();
-        long currentTime = System.currentTimeMillis();
-
-        // Update RSOC history
-        updateRsocHistory(currentTime, currentRSOC);
-
-        if (rsocHistory.size() < 2) {
-            LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "Not enough RSOC data points to determine large consumer activity.");
-            return false;
-        }
-
-        // Analyze RSOC data
-        Map.Entry<Long, Integer> oldest = rsocHistory.peek();
-        if (oldest == null) {
-            LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Failed to retrieve the oldest RSOC entry from history.");
-            return false;
-        }
-
-        double timeDifferenceInMinutes = (currentTime - oldest.getKey()) / 60000.0;
-        double rsocDifference = oldest.getValue() - currentRSOC;
-
-        // Calculate the RSOC drop per minute
-        double rsocDropPerMinute = rsocDifference / timeDifferenceInMinutes;
-        LogFilter.log(LogFilter.LOG_LEVEL_DEBUG,
-                String.format("RSOC drop per minute: %.2f%% (threshold: %.2f%%)", rsocDropPerMinute, largeConsumerThreshold));
-
-        // Determine large consumer activity
-        boolean largeConsumerDetected = rsocDropPerMinute >= largeConsumerThreshold;
-        if (largeConsumerDetected) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                    String.format("Large consumer detected. RSOC drop rate: %.2f%%/min exceeds threshold: %.2f%%.",
-                            rsocDropPerMinute, largeConsumerThreshold));
-        }
-        return largeConsumerDetected;
     }
 
     /**
@@ -172,7 +127,7 @@ public class BatteryManagementService {
      * @param currentTime The current timestamp in milliseconds.
      * @param currentRSOC The current relative state of charge (RSOC) in percentage.
      */
-    private void updateRsocHistory(long currentTime, int currentRSOC) {
+    public void updateRsocHistory(long currentTime, int currentRSOC) {
         // Validate input values
         if (currentRSOC < 0 || currentRSOC > 100) {
             LogFilter.log(
@@ -297,6 +252,10 @@ public class BatteryManagementService {
             return false;
         }
 
+        // Return to standard setting
+        if(!setDynamicChargingPoint(chargingPointInWatt)) {
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Failed to return to standard chargingPointSetting.");
+        }
         // Activate automatic mode
         ApiResponse<?> automaticModeResponse = activateAutomaticOperatingMode();
         if (!automaticModeResponse.success()) {
@@ -412,10 +371,8 @@ public class BatteryManagementService {
     }
 
     private void adjustChargingPointBasedOnWeather() {
-        LocalTime now = LocalTime.now();
-
-        // Skip adjustment if nighttime and no large consumer is active
-        if (isNightTime(now) && !isLargeConsumerActive()) {
+        // Skip adjustment if nighttime
+        if (isNight(System.currentTimeMillis())) {
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Nighttime detected. Skipping weather-based charging point adjustment.");
             currentChargingPoint = chargingPointInWatt;
             return;
@@ -450,18 +407,6 @@ public class BatteryManagementService {
                         cloudCover, currentChargingPoint));
     }
 
-
-    private boolean isNightTime(LocalTime currentTime) {
-        LocalTime nightStart = LocalTime.of(nightStartHour, 0);
-        LocalTime nightEnd = LocalTime.of(nightEndHour, 0);
-
-        if (nightStartHour > nightEndHour) {
-            return currentTime.isAfter(nightStart) || currentTime.isBefore(nightEnd);
-        } else {
-            return currentTime.isAfter(nightStart) && currentTime.isBefore(nightEnd);
-        }
-    }
-
     public synchronized List<Map.Entry<Long, Integer>> getRsocHistory() {
         if (rsocHistory.isEmpty()) {
             LogFilter.log(LogFilter.LOG_LEVEL_WARN, "RSOC history is empty. Unable to calculate time difference.");
@@ -493,7 +438,12 @@ public class BatteryManagementService {
         return new ArrayList<>(rsocHistory);
     }
 
-    public int getCurrentChargingPoint() {
-        return currentChargingPoint;
+    public int getNightStartHour() {
+        return nightStartHour;
     }
+
+    public int getNightEndHour() {
+        return nightEndHour;
+    }
+
 }

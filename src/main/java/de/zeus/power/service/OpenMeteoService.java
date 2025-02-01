@@ -2,6 +2,7 @@ package de.zeus.power.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.zeus.power.util.ChargingUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -9,8 +10,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
-import javax.annotation.PostConstruct;
-import java.time.LocalTime;
 import java.util.Optional;
 
 @Service
@@ -59,8 +58,7 @@ public class OpenMeteoService {
             return Optional.empty();
         }
 
-        LocalTime now = LocalTime.now();
-        if (isNightTime(now)) {
+        if (ChargingUtils.isNight(System.currentTimeMillis())) {
             logger.info("Ignoring weather data as it is nighttime ({}:00 to {}:00).", nightStartHour, nightEndHour);
             return Optional.empty();
         }
@@ -91,18 +89,6 @@ public class OpenMeteoService {
         }
 
         return Optional.empty();
-    }
-
-
-    private boolean isNightTime(LocalTime now) {
-        LocalTime nightStart = LocalTime.of(nightStartHour, 0);
-        LocalTime nightEnd = LocalTime.of(nightEndHour, 0);
-
-        if (nightStart.isBefore(nightEnd)) {
-            return now.isAfter(nightStart) && now.isBefore(nightEnd);
-        } else {
-            return now.isAfter(nightStart) || now.isBefore(nightEnd);
-        }
     }
 
 }
