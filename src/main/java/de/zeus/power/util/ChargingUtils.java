@@ -7,14 +7,11 @@ import de.zeus.power.repository.ChargingScheduleRepository;
 import de.zeus.power.service.BatteryManagementService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.scheduling.TaskScheduler;
 import org.springframework.stereotype.Component;
 
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
-import java.time.Instant;
-import java.time.LocalDateTime;
-import java.time.ZoneId;
+import java.time.*;
 import java.util.*;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -32,12 +29,6 @@ public class ChargingUtils {
     @Value("${battery.chargingPoint}")
     private int chargingPointInWatt;
 
-    @Value("${night.start:22}")
-    private int nightStartHour;
-
-    @Value("${night.end:6}")
-    private int nightEndHour;
-
     @Value("${marketdata.price.flexibility.threshold:10}")
     private double priceFlexibilityThreshold;
 
@@ -50,9 +41,6 @@ public class ChargingUtils {
     @Autowired
     private BatteryManagementService batteryManagementService;
 
-    private static Boolean cachedNighttimeWindow;
-    private static long cacheTimestamp;
-    private static final long CACHE_DURATION_MS = 60000; // 1 Minute Cache Duration
     private static final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 
     /**
@@ -144,55 +132,67 @@ public class ChargingUtils {
      * Handles transitions to automatic mode based on the current time and RSOC state.
      *
      * @param currentTimeMillis The current time in milliseconds.
-     * @param isNearNightEnd    Whether the time is near the end of the nighttime period.
      */
-    public void handleAutomaticModeTransition(long currentTimeMillis, boolean isNearNightEnd) {
-
+    public void handleAutomaticModeTransition(long currentTimeMillis) {
         boolean isNight = isNight(currentTimeMillis);
         int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
 
-        if (isNight && isNearNightEnd) {
-            // Near the end of nighttime, switch to automatic mode.
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Near the end of nighttime. Returning to Automatic Mode.");
-            batteryManagementService.resetToAutomaticMode();
-        } else if (isNight && currentRSOC >= targetStateOfCharge) {
-            // During nighttime and RSOC has reached or exceeded the target, stop charging.
+        // Log the current state for debugging
+        LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+                String.format("Current time: %d, isNight: %b, RSOC: %d%%, Target RSOC: %d%%",
+                        currentTimeMillis, isNight, currentRSOC, targetStateOfCharge));
+
+        if (isNight && currentRSOC >= targetStateOfCharge) {
+            // During nighttime and RSOC has reached or exceeded the target, stop charging
             LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Nighttime and RSOC target reached. Setting dynamic charging point to 0.");
             batteryManagementService.setDynamicChargingPoint(0);
         } else if (!isNight && currentRSOC >= targetStateOfCharge) {
-            // During daytime and RSOC has reached or exceeded the target, maintain current charging point and switch to automatic mode.
-            int currentChargingPoint = batteryManagementService.getCurrentChargingPoint();
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Daytime and RSOC target reached. Maintaining charging point: " + currentChargingPoint);
-            batteryManagementService.setDynamicChargingPoint(currentChargingPoint);
+            // During daytime, ensure automatic mode is active
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Daytime and RSOC target reached. Returning to Automatic Mode.");
             batteryManagementService.resetToAutomaticMode();
+        }
+    }
+
+
+    public static boolean isNight(long currentTimeMillis) {
+        int nightStartHour = NightConfig.getNightStartHour();
+        int nightEndHour = NightConfig.getNightEndHour();
+        ZoneId zoneId = ZoneId.systemDefault();
+
+        Instant currentInstant = Instant.ofEpochMilli(currentTimeMillis);
+        LocalDateTime currentDateTime = LocalDateTime.ofInstant(currentInstant, zoneId);
+        LocalDate currentDate = currentDateTime.toLocalDate();
+
+        LocalDateTime nightStart;
+        LocalDateTime nightEnd;
+
+        // If the night period extends beyond midnight (e.g. 19 to 6)
+        if (nightStartHour > nightEndHour) {
+            // If the current time is before the end of the night, it belongs to the night of the previous day
+            if (currentDateTime.getHour() < nightEndHour) {
+                nightStart = LocalDateTime.of(currentDate.minusDays(1), LocalTime.of(nightStartHour, 0));
+                nightEnd = LocalDateTime.of(currentDate, LocalTime.of(nightEndHour, 0));
+            } else {
+                // otherwise the night period is calculated from the current day to the next da
+                nightStart = LocalDateTime.of(currentDate, LocalTime.of(nightStartHour, 0));
+                nightEnd = LocalDateTime.of(currentDate.plusDays(1), LocalTime.of(nightEndHour, 0));
+            }
         } else {
-            // Log a debug message for cases where no action is taken.
-            LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "No transition required. Current state: "
-                    + (isNight ? "Nighttime" : "Daytime")
-                    + ", RSOC: " + currentRSOC);
-        }
-    }
-
-    /**
-     * Determines if the given timestamp belongs to the current night period.
-     *
-     * @param currentTimeMillis The current time in milliseconds.
-     * @return true if the timestamp belongs to the current night, false otherwise.
-     */
-    public boolean isNight(long currentTimeMillis) {
-        LocalDateTime now = LocalDateTime.ofInstant(Instant.ofEpochMilli(currentTimeMillis), ZoneId.systemDefault());
-        LocalDateTime nightStart = now.withHour(nightStartHour).withMinute(0).withSecond(0).withNano(0);
-        LocalDateTime nightEnd = nightStart.plusHours((nightEndHour >= nightStartHour)
-                ? nightEndHour - nightStartHour
-                : 24 - nightStartHour + nightEndHour);
-
-        // Check if we are before midnight but in the night window
-        if (now.getHour() < nightStartHour) {
-            nightStart = nightStart.minusDays(1); // Move start to the previous day
+            // If the night period does not extend beyond midnight
+            nightStart = LocalDateTime.of(currentDate, LocalTime.of(nightStartHour, 0));
+            nightEnd = LocalDateTime.of(currentDate, LocalTime.of(nightEndHour, 0));
         }
 
-        return !now.isBefore(nightStart) && now.isBefore(nightEnd);
+        // Log output for checking
+        LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, String.format(
+                "Night period: Start=%s, End=%s, Current=%s -> isNight=%b",
+                nightStart, nightEnd, currentDateTime,
+                !currentDateTime.isBefore(nightStart) && currentDateTime.isBefore(nightEnd)
+        ));
+
+        return !currentDateTime.isBefore(nightStart) && currentDateTime.isBefore(nightEnd);
     }
+
 
     /**
      * Creates and logs a new charging schedule based on a market price.
@@ -266,54 +266,28 @@ public class ChargingUtils {
                 .findFirst();
     }
 
+    public List<MarketPrice> findBestNightPeriods(List<MarketPrice> nighttimePeriods, int maxPeriods) {
+        List<MarketPrice> bestPeriods = new ArrayList<>();
 
-    /**
-     * Checks whether a timestamp is within a specified time window.
-     *
-     * @param timestamp The timestamp to check (in milliseconds).
-     * @param start The start of the window (in milliseconds).
-     * @param end The end of the window (in milliseconds).
-     * @return true if the timestamp is within the window, false otherwise.
-     */
-    private boolean isWithinTimeWindow(long timestamp, long start, long end) {
-        return timestamp >= start && timestamp < end;
-    }
+        List<MarketPrice> sortedByPrice = nighttimePeriods.stream()
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                .toList();
 
-    public Calendar getNightStart() {
-        Calendar now = Calendar.getInstance();
+        double minPrice = sortedByPrice.get(0).getPriceInCentPerKWh();
+        long lastEndTimestamp = -1;
 
-        // Start of the night (today or yesterday, depending on the time)
-        Calendar nightStart = (Calendar) now.clone();
-        nightStart.set(Calendar.HOUR_OF_DAY, nightStartHour);
-        nightStart.set(Calendar.MINUTE, 0);
-        nightStart.set(Calendar.SECOND, 0);
-        nightStart.set(Calendar.MILLISECOND, 0);
+        for (MarketPrice period : sortedByPrice) {
+            if (bestPeriods.size() >= maxPeriods) break;
 
-        if (now.get(Calendar.HOUR_OF_DAY) < nightStartHour) {
-            // If the current time is before the night start, set to yesterday
-            nightStart.add(Calendar.DATE, -1);
+            boolean isAcceptablePrice = period.getPriceInCentPerKWh() <= minPrice + 0.5;
+            boolean isConsecutive = lastEndTimestamp == -1 || period.getStartTimestamp() == lastEndTimestamp;
+
+            if (isAcceptablePrice || isConsecutive) {
+                bestPeriods.add(period);
+                lastEndTimestamp = period.getEndTimestamp();
+            }
         }
-        return nightStart;
-    }
-
-    public Calendar getNightEnd(Calendar nightStart) {
-        // End of the night (always the next day after the night start)
-        Calendar nightEnd = (Calendar) nightStart.clone();
-        nightEnd.add(Calendar.DATE, 1);
-        nightEnd.set(Calendar.HOUR_OF_DAY, nightEndHour);
-        return nightEnd;
-    }
-
-    /**
-     * Determines if the current time is near the end of the nighttime period.
-     *
-     * @param currentTimeMillis The current time in milliseconds.
-     * @return True if within 15 minutes of the end of nighttime, false otherwise.
-     */
-    public boolean isNearEndOfNightPeriod(long currentTimeMillis) {
-        long nightEndMillis = getNightEnd(getNightStart()).getTimeInMillis();
-        long timeUntilNightEnd = nightEndMillis - currentTimeMillis;
-        return timeUntilNightEnd <= 15 * 60 * 1000 && timeUntilNightEnd > 0;
+        return bestPeriods;
     }
 
     /**
@@ -621,21 +595,6 @@ public class ChargingUtils {
         }
     }
 
-    /**
-     * Reschedules the RSOC monitoring task if the current charging period is still active.
-     *
-     * @param endTime The end time of the current charging period.
-     */
-    public void rescheduleMonitoringTask(Date endTime, Runnable monitorTask, TaskScheduler taskScheduler) {
-        if (new Date().before(endTime)) {
-            taskScheduler.schedule(monitorTask, new Date(System.currentTimeMillis() + 5 * 60 * 1000)); // Check every 5 minutes
-        } else {
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_INFO,
-                    "Charging period ended. Stopping RSOC monitoring."
-            );
-        }
-    }
 
     /**
      * Cleans up expired charging schedules and optimizes remaining schedules.
@@ -651,7 +610,7 @@ public class ChargingUtils {
 
         // Step 1: Remove expired schedules
         List<ChargingSchedule> expiredSchedules = allSchedules.stream()
-                .filter(schedule -> schedule.getEndTimestamp() < currentTime) // Expired schedules
+                .filter(schedule -> schedule.getEndTimestamp() < currentTime)
                 .toList();
 
         expiredSchedules.forEach(schedule -> {
@@ -690,12 +649,12 @@ public class ChargingUtils {
 
         // Step 3: Optimize and retain future schedules
         List<ChargingSchedule> futureSchedules = schedulesToEvaluate.stream()
-                .filter(schedule -> schedule.getEndTimestamp() > currentTime) // Keep future schedules
-                .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice)) // Sort by price ascending
+                .filter(schedule -> schedule.getEndTimestamp() > currentTime)
+                .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice))
                 .toList();
 
         if (!futureSchedules.isEmpty()) {
-            futureSchedules = optimizeRemainingSchedules(futureSchedules); // Optimize the schedules
+            futureSchedules = optimizeRemainingSchedules(futureSchedules);
 
             futureSchedules.parallelStream().forEach(schedule -> {
                 chargingScheduleRepository.save(schedule);
@@ -822,8 +781,8 @@ public class ChargingUtils {
             return 0; // No charging periods needed if target RSOC is already reached
         }
 
-        // Calculate the maximum possible energy input per period
-        double energyPerPeriod = chargingPointInWatt * 3600; // Assuming one period is 1 hour (3600 seconds)
+        // Calculate the maximum possible energy input per period ( = 1 hour = 3600 seconds)
+        double energyPerPeriod = chargingPointInWatt * 3600;
 
         // Determine the base number of periods needed to fulfill the energy requirement
         int basePeriods = (int) Math.ceil(requiredCapacity / energyPerPeriod);
@@ -861,51 +820,30 @@ public class ChargingUtils {
             return Collections.emptySet();
         }
 
-        // Step 1: Sort schedules by price in ascending order
+        // Sort by price (ascending) and by start time as a secondary criterion
         List<ChargingSchedule> sortedSchedules = schedules.stream()
-                .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice))
+                .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice)
+                        .thenComparingLong(ChargingSchedule::getStartTimestamp))
                 .toList();
 
-        Set<ChargingSchedule> validatedSchedules = new HashSet<>();
-
-        // Step 2: Calculate minimum and maximum prices in the schedules
-        double minPrice = sortedSchedules.stream()
-                .mapToDouble(ChargingSchedule::getPrice)
-                .min()
-                .orElse(Double.POSITIVE_INFINITY); // Use a high default to flag potential issues
-        double maxPrice = sortedSchedules.stream()
-                .mapToDouble(ChargingSchedule::getPrice)
-                .max()
-                .orElse(Double.NEGATIVE_INFINITY); // Use a low default to flag potential issues
-
-        if (Double.isInfinite(minPrice) || Double.isInfinite(maxPrice)) {
-            LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Invalid price range detected. Returning an empty set.");
+        if (sortedSchedules.isEmpty()) {
+            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No valid schedules available for validation.");
             return Collections.emptySet();
         }
 
-        // Step 3: Calculate dynamic thresholds for price validation
-        double priceToleranceFactor = calculateDynamicPriceTolerance(minPrice, maxPrice, sortedSchedules.size());
-        double fallbackMargin = 0.50; // Minimum margin of 0.50 cents/kWh
-        double priceThreshold = Math.min(
-                Math.max(minPrice * (1 + priceToleranceFactor), minPrice + fallbackMargin),
-                maxAcceptableMarketPriceInCent
-        );
+        Set<ChargingSchedule> validatedSchedules = new LinkedHashSet<>();
+        double cheapestPriceSoFar = Double.MAX_VALUE;
+        long lastEndTimestamp = -1; // Saves the end timestamp of the last accepted time period
 
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                "Validation thresholds calculated: minPrice=%.2f, maxPrice=%.2f, priceThreshold=%.2f",
-                minPrice, maxPrice, priceThreshold
-        ));
-
-        // Step 4: Define extended threshold
-        double extendedThreshold = priceThreshold * 1.1; // 10% above the calculated threshold
-
-        // Step 5: Validate each schedule based on thresholds
+        // Iterate over the sorted time periods and prioritize contiguous favorable blocks
         for (ChargingSchedule schedule : sortedSchedules) {
-            boolean isWithinTolerance = schedule.getPrice() <= priceThreshold ||
-                    (validatedSchedules.size() < 2 && schedule.getPrice() <= extendedThreshold);
+            boolean isCheapestOrClose = schedule.getPrice() <= cheapestPriceSoFar + 0.3; // Price tolerance
+            boolean isConsecutive = lastEndTimestamp == -1 || schedule.getStartTimestamp() == lastEndTimestamp;
 
-            if (isWithinTolerance) {
+            if (isCheapestOrClose || isConsecutive) {
                 validatedSchedules.add(schedule);
+                cheapestPriceSoFar = schedule.getPrice();
+                lastEndTimestamp = schedule.getEndTimestamp();
                 LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
                         "Accepted schedule %s - %s (%.2f cents/kWh).",
                         dateFormat.format(new Date(schedule.getStartTimestamp())),
@@ -914,28 +852,33 @@ public class ChargingUtils {
                 ));
             } else {
                 LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                        "Rejected schedule %s - %s (%.2f cents/kWh) exceeding threshold %.2f.",
+                        "Rejected schedule %s - %s (%.2f cents/kWh) as it's neither the cheapest nor consecutive.",
                         dateFormat.format(new Date(schedule.getStartTimestamp())),
                         dateFormat.format(new Date(schedule.getEndTimestamp())),
-                        schedule.getPrice(),
-                        extendedThreshold
+                        schedule.getPrice()
                 ));
             }
         }
 
-        // Step 6: Final Fallback for minimum 2 schedules
-        if (validatedSchedules.isEmpty() && sortedSchedules.size() >= 2) {
-            validatedSchedules.add(sortedSchedules.get(0));
-            validatedSchedules.add(sortedSchedules.get(1));
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Fallback: Selected two cheapest periods due to empty validation result.");
+        // If no time periods have been selected, select the absolute cheapest as fallback
+        if (validatedSchedules.isEmpty() && !sortedSchedules.isEmpty()) {
+            ChargingSchedule fallbackSchedule = sortedSchedules.get(0);
+            validatedSchedules.add(fallbackSchedule);
+            LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
+                    "Fallback: Selected the cheapest period %s - %s (%.2f cents/kWh).",
+                    dateFormat.format(new Date(fallbackSchedule.getStartTimestamp())),
+                    dateFormat.format(new Date(fallbackSchedule.getEndTimestamp())),
+                    fallbackSchedule.getPrice()
+            ));
         }
 
         LogFilter.log(LogFilter.LOG_LEVEL_INFO, String.format(
-                "Validated %d schedules after applying thresholds.", validatedSchedules.size()
+                "Validated %d schedules after applying cheaper-future-checks and block prioritization.", validatedSchedules.size()
         ));
 
         return validatedSchedules;
     }
+
 
 
     /**
@@ -967,69 +910,6 @@ public class ChargingUtils {
                 .toList();
     }
 
-    /**
-     * Checks if the given schedule is one of the top best periods.
-     *
-     * @param schedule        The schedule to check.
-     * @param sortedSchedules A list of schedules sorted by price.
-     * @return True if the schedule is among the top best periods, false otherwise.
-     */
-    private boolean isOneOfBestPeriods(ChargingSchedule schedule, List<ChargingSchedule> sortedSchedules) {
-        int maxBestPeriods = 2; // Number of besFt periods to allow regardless of threshold
-        return sortedSchedules.indexOf(schedule) < maxBestPeriods;
-    }
-
-    /**
-     * Calculates a dynamic price tolerance to determine the flexibility
-     * in adjusting charging schedules based on market price characteristics.
-     * The tolerance is influenced by:
-     * - The range of market prices (variability between min and max prices).
-     * - The total number of periods available for evaluation.
-     * - Specific characteristics, such as exceptionally low minimum prices.
-     *
-     * @param minPrice The minimum price among the evaluated periods (cents/kWh).
-     * @param maxPrice The maximum price among the evaluated periods (cents/kWh).
-     * @param periodCount The number of periods being evaluated.
-     * @return The calculated dynamic price tolerance as a multiplier (e.g., 1.5 = 150%).
-     */
-    public double calculateDynamicPriceTolerance(double minPrice, double maxPrice, int periodCount) {
-        // Calculate the price range
-        double priceRange = maxPrice - minPrice;
-
-        // Initialize the base tolerance factor
-        double baseTolerance = 1.5;
-
-        // Adjust the base tolerance based on the price range
-        if (priceRange < 0.5) {
-            // Narrow price range → reduce tolerance (indicating less variability)
-            baseTolerance -= 0.2;
-        } else if (priceRange > 1.0) {
-            // Wide price range → increase tolerance (allowing more flexibility)
-            baseTolerance += 0.3;
-        }
-
-        // Further adjust tolerance based on the number of periods
-        if (periodCount <= 5) {
-            // Few periods → increase tolerance to accommodate limited options
-            baseTolerance += 0.3;
-        } else if (periodCount > 10) {
-            // Many periods → reduce tolerance for stricter evaluation
-            baseTolerance -= 0.2;
-        }
-
-        // Apply additional adjustments for exceptionally low prices
-        if (minPrice < 0.1) {
-            // Slightly increase tolerance for very low minimum prices
-            baseTolerance += 0.1;
-        }
-
-        // Ensure the tolerance stays within reasonable bounds (optional)
-        baseTolerance = Math.max(0.5, Math.min(baseTolerance, 2.0));
-
-        // Return the dynamically calculated tolerance
-        return baseTolerance;
-    }
-
     public double calculateDynamicTolerance(List<ChargingSchedule> allSchedules, double rsoc) {
         double averagePrice = allSchedules.stream()
                 .mapToDouble(ChargingSchedule::getPrice)
@@ -1054,14 +934,17 @@ public class ChargingUtils {
     }
 
     private double calculateVolatilityFactor(double standardDeviation, double averagePrice, int futureScheduleCount) {
-        double maxFactor = 0.03; // Maximum multiplier for high volatility
-        double minFactor = 0.01; // Minimum multiplier for low volatility
+        // Maximum multiplier for high volatility
+        double maxFactor = 0.03;
+        // Minimum multiplier for low volatility
+        double minFactor = 0.01;
 
         // Adjust based on price volatility
         double volatilityAdjustment = standardDeviation / averagePrice;
 
         // Adjust based on the number of future schedules
-        double scheduleAdjustment = futureScheduleCount > 10 ? 0.005 : 0.0; // Add 0.5% if many future schedules exist
+        // Add 0.5% if many future schedules exist
+        double scheduleAdjustment = futureScheduleCount > 10 ? 0.005 : 0.0;
 
         double dynamicFactor = minFactor + (volatilityAdjustment * 0.02) + scheduleAdjustment;
 
@@ -1070,8 +953,10 @@ public class ChargingUtils {
     }
 
     private double calculateBaseTolerance(double averagePrice, double rsoc) {
-        double lowPriceThreshold = 10.0; // Example: low price threshold (cents/kWh)
-        double highPriceThreshold = 30.0; // Example: high price threshold (cents/kWh)
+        // low price threshold (cents/kWh)
+        double lowPriceThreshold = 10.0;
+        // high price threshold (cents/kWh)
+        double highPriceThreshold = 30.0;
 
         // Adjust baseline based on price levels
         if (averagePrice <= lowPriceThreshold) {
@@ -1086,8 +971,8 @@ public class ChargingUtils {
         } else if (rsoc > 80.0) {
             return 0.06; // Flexible when RSOC is high
         }
-
-        return 0.05; // Default baseline tolerance (5%)
+        // Default baseline tolerance (5%)
+        return 0.05;
     }
 
     public List<ChargingSchedule> optimizeRemainingSchedules(List<ChargingSchedule> schedules) {
@@ -1095,11 +980,11 @@ public class ChargingUtils {
         double rangePrice = schedules.stream().mapToDouble(ChargingSchedule::getPrice).max().orElse(Double.MIN_VALUE) - minPrice;
 
         return schedules.stream()
-                .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice)) // Sort by price ascending
+                .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice))
                 .filter(schedule -> {
                     double priceDifference = schedule.getPrice() - minPrice;
                     double priceWeight = priceDifference / rangePrice;
-                    return priceWeight < 0.3; // Only keep schedules within 30% of the cheapest
+                    return priceWeight < 0.3;
                 })
                 .collect(Collectors.toList());
     }
