@@ -307,15 +307,6 @@ public class BatteryManagementService {
         return 15;
     }
 
-    public boolean isManualOperatingMode() {
-        if (isBatteryNotConfigured()) {
-            return false;
-        }
-
-        BatteryStatusResponse batteryStatusResponse = getCurrentBatteryStatus();
-        return batteryStatusResponse != null && OP_MODE_MANUAL.equals(batteryStatusResponse.getOperatingMode());
-    }
-
     public boolean isAutomaticOperatingMode() {
         if (isBatteryNotConfigured()) {
             return false;

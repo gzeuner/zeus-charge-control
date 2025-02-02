@@ -13,4 +13,4 @@ export AWATTAR_AUTH_TOKEN="your_awattar_auth_token"
 export TIBBER_AUTH_TOKEN="your_tibber_auth_token"
 
 # Run the Java application
-java -jar zeus-charge-control-1.6.0.jar
+java -jar zeus-charge-control-1.6.1.jar

@@ -148,7 +148,7 @@
             int currentRSOC = batteryManagementService.getRelativeStateOfCharge();
             boolean isNight = chargingUtils.isNight(currentTimeMillis);
 
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
+            LogFilter.log(LogFilter.LOG_LEVEL_DEBUG,
                     String.format("Monitoring RSOC: %d%%, Target: %d%%, Night: %b",
                             currentRSOC, targetStateOfCharge, isNight));
 
