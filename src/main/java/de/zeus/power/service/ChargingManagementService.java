@@ -416,12 +416,13 @@ public class ChargingManagementService {
 
         double dynamicMaxPrice = calculateDynamicMaxPrice(allPrices);
         int requiredPeriods = chargingUtils.calculateRequiredPeriods(chargingUtils.calculateRequiredCapacity(currentRsoc), allPrices.size());
-        LogFilter.logInfo(ChargingManagementService.class, "Required periods based on RSOC ({}%) and market conditions: {}", currentRsoc, requiredPeriods);
+        int periodsToPlan = Math.min(Math.max(requiredPeriods, 1), maxNighttimePeriods); // Mindestens 1, maximal 2
+        LogFilter.logInfo(ChargingManagementService.class, "Required periods based on RSOC ({}%) and market conditions: {}, planning: {}", currentRsoc, requiredPeriods, periodsToPlan);
 
         List<MarketPrice> selectedPeriods = nighttimePeriods.stream()
                 .filter(p -> p.getPriceInCentPerKWh() <= dynamicMaxPrice)
                 .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .limit(Math.min(requiredPeriods, maxNighttimePeriods))
+                .limit(periodsToPlan)
                 .collect(Collectors.toList());
 
         if (selectedPeriods.isEmpty()) {
@@ -488,7 +489,8 @@ public class ChargingManagementService {
         long currentTime = System.currentTimeMillis();
         long toleranceWindow = currentTime + (TIME_TOLERANCE_HOURS * 60 * 60 * 1000);
         List<MarketPrice> availablePeriods = marketPrices.stream()
-                .filter(p -> p.getStartTimestamp() > currentTime && p.getStartTimestamp() <= toleranceWindow && !ChargingUtils.isNight(p.getStartTimestamp()))
+                .filter(p -> p.getStartTimestamp() > currentTime && p.getStartTimestamp() <= toleranceWindow)
+                .filter(p -> !ChargingUtils.isNight(p.getStartTimestamp())) // Strenger Nachtfilter
                 .filter(p -> p.getPriceInCentPerKWh() <= dynamicMaxPrice)
                 .filter(p -> existingSchedules.stream().noneMatch(s -> Objects.equals(s.getStartTimestamp(), p.getStartTimestamp())))
                 .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
@@ -496,12 +498,12 @@ public class ChargingManagementService {
                 .collect(Collectors.toList());
 
         if (availablePeriods.isEmpty()) {
-            LogFilter.logInfo(ChargingManagementService.class, "No valid periods found to add within tolerance window below dynamic max price {}. All periods are either too expensive, duplicates, or within nighttime.", dynamicMaxPrice);
+            LogFilter.logInfo(ChargingManagementService.class, "No valid daytime periods found to add within tolerance window below dynamic max price {}.", dynamicMaxPrice);
             return;
         }
 
         availablePeriods.forEach(p -> chargingUtils.createAndLogChargingSchedule(p, chargingScheduleRepository, DATE_FORMAT));
-        LogFilter.logInfo(ChargingManagementService.class, "Added {} additional charging periods (excluding nighttime) below dynamic max price {}.", availablePeriods.size(), dynamicMaxPrice);
+        LogFilter.logInfo(ChargingManagementService.class, "Added {} additional daytime charging periods below dynamic max price {}.", availablePeriods.size(), dynamicMaxPrice);
     }
 
     /**
