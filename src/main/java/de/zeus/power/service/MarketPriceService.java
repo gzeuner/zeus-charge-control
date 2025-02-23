@@ -12,9 +12,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.http.*;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.HttpClientErrorException;
-import org.springframework.web.client.HttpServerErrorException;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
 import java.time.Instant;
@@ -26,9 +27,11 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 /**
+ * Service class for retrieving and managing market prices from external APIs (Tibber and Awattar).
+ *
  * Copyright 2024 Guido Zeuner
  *
- *  Licensed under the Apache License, Version 2.0 (the "License");
+ * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
@@ -41,16 +44,10 @@ import java.util.stream.Collectors;
  * limitations under the License.
  *
  * © 2024 - Guido Zeuner - https://tiny-tool.de
- *
- *
  */
-
 @Service
 public class MarketPriceService {
 
-    /**
-     * Logger instance for logging events in MarketPriceService.
-     */
     private static final Logger logger = LoggerFactory.getLogger(MarketPriceService.class);
     private static final String AWATTAR = "awattar";
     private static final String TIBBER = "tibber";
@@ -91,56 +88,45 @@ public class MarketPriceService {
     }
 
     /**
-     * Retrieves market prices from the configured data source, with a fallback mechanism.
-     * <p>
-     * The method attempts to fetch market prices from the primary data source specified by
-     * {@code marketDataSource}. If the primary source is "tibber", it tries to retrieve prices
-     * from Tibber. If the retrieval is unsuccessful or the data is invalid, it falls back to
-     * Awattar. If the primary source is "awattar", it directly fetches prices from Awattar.
-     * <p>
-     * The method returns an {@link ApiResponse} containing a {@link MarketPriceResponse} with
-     * the market price data or an error message if both sources fail.
+     * Retrieves market prices from the configured data source with a fallback mechanism.
+     * Attempts fetching from the primary source (Tibber or Awattar) and falls back to the other if necessary.
      *
-     * @return an {@link ApiResponse} containing the market price data or an error message.
+     * @return ApiResponse containing the market price data or an error message.
      */
     public ApiResponse<MarketPriceResponse> getMarketPrices() {
-        MarketPriceResponse marketPriceResponse = null;
+        ApiResponse<MarketPriceResponse> response = null;
 
-        // Try Tibber first
         if (TIBBER.equalsIgnoreCase(marketDataSource)) {
             logger.info("Fetching market prices from Tibber...");
-            ApiResponse<MarketPriceResponse> tibberResponse = getTibberPrices();
-
-            if (tibberResponse.data() != null && !tibberResponse.data().getData().isEmpty()) {
+            response = getTibberPrices();
+            if (response.success() && response.data() != null && !response.data().getData().isEmpty()) {
                 logger.info("Successfully retrieved market prices from Tibber.");
-                return tibberResponse;
+                return response;
             } else {
-                logger.warn("Failed to retrieve valid data from Tibber. Falling back to Awattar...");
+                logger.warn("Failed to retrieve valid data from Tibber (Status: {}). Falling back to Awattar...", response.statusCode());
             }
         }
 
-        // Try Awattar if Tibber fails or is not configured as the primary source
-        if (AWATTAR.equalsIgnoreCase(marketDataSource) || marketPriceResponse == null) {
+        if (response == null || !response.success()) {
             logger.info("Fetching market prices from Awattar...");
-            ApiResponse<MarketPriceResponse> awattarResponse = getAwattarPrices();
-
-            if (awattarResponse.data() != null && !awattarResponse.data().getData().isEmpty()) {
+            response = getAwattarPrices();
+            if (response.success() && response.data() != null && !response.data().getData().isEmpty()) {
                 logger.info("Successfully retrieved market prices from Awattar.");
-                return awattarResponse;
+                return response;
             } else {
-                logger.error("Failed to retrieve valid data from both Tibber and Awattar.");
+                logger.error("Failed to retrieve valid data from Awattar (Status: {}). No valid prices available.", response.statusCode());
             }
         }
 
-        // If all sources fail
-        return new ApiResponse<>(false, HttpStatus.INTERNAL_SERVER_ERROR, "No valid market prices retrieved", null);
+        return new ApiResponse<>(false, HttpStatus.INTERNAL_SERVER_ERROR, "Failed to retrieve market prices from all sources", null);
     }
 
     /**
-     * Retrieves market prices from Awattar and combines today's and tomorrow's data.
+     * Retrieves market prices from Awattar with retry logic for transient failures.
      *
      * @return ApiResponse containing the combined market price data or an error message.
      */
+    @Retryable(value = { RestClientException.class }, maxAttempts = 3, backoff = @Backoff(delay = 2000))
     private ApiResponse<MarketPriceResponse> getAwattarPrices() {
         try {
             long todayStart = LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toEpochSecond() * 1000;
@@ -155,10 +141,13 @@ public class MarketPriceService {
             if (responseToday.getStatusCode().is2xxSuccessful() && responseTomorrow.getStatusCode().is2xxSuccessful() &&
                     responseToday.getBody() != null && responseTomorrow.getBody() != null) {
                 MarketPriceResponse combinedResponse = combineAwattarResponses(responseToday.getBody(), responseTomorrow.getBody());
-                return new ApiResponse<>(true, HttpStatus.OK, "Market prices retrieved successfully", combinedResponse);
+                return new ApiResponse<>(true, HttpStatus.OK, "Market prices retrieved successfully from Awattar", combinedResponse);
             } else {
-                return new ApiResponse<>(false, HttpStatus.INTERNAL_SERVER_ERROR, "Failed to retrieve market prices from Awattar", null);
+                return new ApiResponse<>(false, HttpStatus.INTERNAL_SERVER_ERROR, "Failed to retrieve complete market prices from Awattar", null);
             }
+        } catch (RestClientException e) {
+            logger.warn("Transient error fetching Awattar prices, retrying... Error: {}", e.getMessage());
+            throw e; // Trigger retry
         } catch (Exception e) {
             return handleException(e);
         }
@@ -189,16 +178,18 @@ public class MarketPriceService {
     }
 
     /**
-     * Retrieves market prices from Tibber for today and tomorrow.
+     * Retrieves market prices from Tibber with retry logic for transient failures.
      *
      * @return ApiResponse containing the combined market price data or an error message.
      */
+    @Retryable(value = { RestClientException.class }, maxAttempts = 3, backoff = @Backoff(delay = 2000))
     private ApiResponse<MarketPriceResponse> getTibberPrices() {
         try {
             ResponseEntity<TibberResponse> responseToday = fetchTibberPrices(tibberQueryToday);
             ResponseEntity<TibberResponse> responseTomorrow = fetchTibberPrices(tibberQueryTomorrow);
 
             boolean hasTomorrowData = responseTomorrow.getBody() != null &&
+                    responseTomorrow.getBody().getData() != null &&
                     !responseTomorrow.getBody().getData().getViewer().getHomes().get(0).getCurrentSubscription().getPriceInfo().getTomorrow().isEmpty();
 
             if (responseToday.getStatusCode().is2xxSuccessful() && responseToday.getBody() != null) {
@@ -216,14 +207,17 @@ public class MarketPriceService {
                                         .isEqual(LocalDate.now().plusDays(1)))
                                 .collect(Collectors.toList()));
                     } else {
-                        logger.error("Failed to retrieve fallback prices from Awattar.");
+                        logger.error("Failed to retrieve fallback prices from Awattar: {}", awattarResponse.message());
                     }
                 }
 
-                return new ApiResponse<>(true, HttpStatus.OK, "Market prices retrieved successfully", marketPriceResponse);
+                return new ApiResponse<>(true, HttpStatus.OK, "Market prices retrieved successfully from Tibber", marketPriceResponse);
             } else {
                 return new ApiResponse<>(false, HttpStatus.INTERNAL_SERVER_ERROR, "Failed to retrieve market prices from Tibber", null);
             }
+        } catch (RestClientException e) {
+            logger.warn("Transient error fetching Tibber prices, retrying... Error: {}", e.getMessage());
+            throw e; // Trigger retry
         } catch (Exception e) {
             return handleException(e);
         }
@@ -257,20 +251,28 @@ public class MarketPriceService {
     }
 
     /**
-     * Handles exceptions that occur during the retrieval of market prices.
+     * Handles exceptions that occur during the retrieval of market prices, supporting all RestClientException subclasses.
      *
      * @param e The exception that occurred.
      * @return ApiResponse with an error message and status.
      */
     private ApiResponse<MarketPriceResponse> handleException(Exception e) {
-        if (e instanceof HttpClientErrorException || e instanceof HttpServerErrorException) {
-            HttpStatus status = ((HttpClientErrorException) e).getStatusCode();
-            logger.error("Exception occurred while retrieving market prices", e);
-            return new ApiResponse<>(false, status, "Error: " + ((HttpClientErrorException) e).getStatusText(), null);
+        HttpStatus status = HttpStatus.INTERNAL_SERVER_ERROR;
+        String message = "Internal server error";
+
+        if (e instanceof RestClientException) {
+            if (e instanceof org.springframework.web.client.HttpClientErrorException) {
+                status = ((org.springframework.web.client.HttpClientErrorException) e).getStatusCode();
+                message = "Client error: " + ((org.springframework.web.client.HttpClientErrorException) e).getStatusText();
+            } else if (e instanceof org.springframework.web.client.HttpServerErrorException) {
+                status = ((org.springframework.web.client.HttpServerErrorException) e).getStatusCode();
+                message = "Server error: " + ((org.springframework.web.client.HttpServerErrorException) e).getStatusText();
+            }
+            logger.error("HTTP error occurred while retrieving market prices: {} (Status: {})", message, status, e);
         } else {
-            logger.error("An error occurred while retrieving market prices", e);
-            return new ApiResponse<>(false, HttpStatus.INTERNAL_SERVER_ERROR, "Internal server error", null);
+            logger.error("Unexpected error occurred while retrieving market prices", e);
         }
+        return new ApiResponse<>(false, status, message, null);
     }
 
     /**
@@ -281,7 +283,7 @@ public class MarketPriceService {
      */
     private MarketPriceResponse convertAwattarToCentPerKWh(MarketPriceResponse response) {
         response.getData().forEach(data -> {
-            data.setMarketprice(Math.round((data.getMarketprice() / 10) * CONVERSION_FACTOR) / CONVERSION_FACTOR); // Convert Eur/MWh to cent/kWh and round to 2 decimals
+            data.setMarketprice(Math.round((data.getMarketprice() / 10) * CONVERSION_FACTOR) / CONVERSION_FACTOR); // Convert Eur/MWh to cent/kWh
             data.setUnit(CENT_KWH);
         });
         return response;
@@ -300,7 +302,7 @@ public class MarketPriceService {
         if (tomorrow != null && tomorrow.getData() != null) {
             marketDataList.addAll(mapTibberPriceData(tomorrow.getData().getViewer().getHomes().get(0).getCurrentSubscription().getPriceInfo().getTomorrow()));
         } else {
-            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No data available for tomorrow in Tibber response.");
+            LogFilter.logWarn( MarketPriceService.class,"No data available for tomorrow in Tibber response.");
         }
 
         MarketPriceResponse marketPriceResponse = new MarketPriceResponse();
@@ -320,7 +322,7 @@ public class MarketPriceService {
             MarketPriceResponse.MarketData marketData = new MarketPriceResponse.MarketData();
             marketData.setStartTimestamp(Instant.parse(data.getStartsAt()).toEpochMilli());
             marketData.setEndTimestamp(Instant.parse(data.getStartsAt()).plus(1, ChronoUnit.HOURS).toEpochMilli());
-            marketData.setMarketprice(Math.round((data.getEnergy() * CONVERSION_FACTOR) * CONVERSION_FACTOR) / CONVERSION_FACTOR); // Convert Eur/kWh to cent/kWh and round to 2 decimals
+            marketData.setMarketprice(Math.round((data.getEnergy() * CONVERSION_FACTOR) * CONVERSION_FACTOR) / CONVERSION_FACTOR); // Convert Eur/kWh to cent/kWh
             marketData.setUnit(CENT_KWH);
             return marketData;
         }).collect(Collectors.toList());
@@ -340,10 +342,7 @@ public class MarketPriceService {
     }
 
     /**
-     * Saves the market prices to the repository.
-     *
-     * This method processes the market price data, adjusts the end timestamps to prevent overlaps,
-     * and saves the resulting MarketPrice objects to the repository.
+     * Saves the market prices to the repository with adjusted end timestamps to prevent overlaps.
      *
      * @param marketPriceResponse The MarketPriceResponse containing the market price data to save.
      */
@@ -351,29 +350,17 @@ public class MarketPriceService {
         List<MarketPrice> marketPrices = marketPriceResponse.getData().stream().map(priceData -> {
             MarketPrice marketPrice = new MarketPrice();
             marketPrice.setStartTimestamp(priceData.getStartTimestamp());
-
-            // Adjust the end timestamp to prevent overlaps by subtracting 1 second
-            long adjustedEndTimestamp = priceData.getEndTimestamp() - 1000; // 1000 ms = 1 second
+            long adjustedEndTimestamp = priceData.getEndTimestamp() - 1000; // 1 second less to avoid overlap
             if (adjustedEndTimestamp <= priceData.getStartTimestamp()) {
-                // Ensure the end timestamp is always after the start timestamp
                 adjustedEndTimestamp = priceData.getStartTimestamp() + 1000;
             }
             marketPrice.setEndTimestamp(adjustedEndTimestamp);
-
-            // Set the market price and unit
             marketPrice.setMarketPrice(priceData.getMarketprice());
             marketPrice.setUnit(CENT_KWH);
             return marketPrice;
         }).collect(Collectors.toList());
 
-        // Save all adjusted market prices to the repository
         marketPriceRepository.saveAll(marketPrices);
-
-        // Log the operation
-        LogFilter.log(
-                LogFilter.LOG_LEVEL_INFO,
-                String.format("Saved %d market prices with adjusted end timestamps.", marketPrices.size())
-        );
+        LogFilter.logInfo(MarketPriceService.class, "Saved {} market prices with adjusted end timestamps.", marketPrices.size());
     }
-
 }

@@ -6,11 +6,9 @@ import de.zeus.power.model.ApiResponse;
 import de.zeus.power.model.BatteryStatusResponse;
 import de.zeus.power.repository.ChargingScheduleRepository;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
-import java.time.LocalTime;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -38,22 +36,28 @@ import static de.zeus.power.util.ChargingUtils.isNight;
 @Service
 public class BatteryManagementService {
 
-    public static final String OPERATING_MODE = "EM_OperatingMode";
-    public static final String OP_MODE_MANUAL = "1";
-    public static final String OP_MODE_AUTOMATIC = "2";
+    // Constants for operating modes
+    private static final String OPERATING_MODE = "EM_OperatingMode";
+    private static final String OP_MODE_MANUAL = "1";
+    private static final String OP_MODE_AUTOMATIC = "2";
 
+    // Constants for retry logic and default RSOC
+    private static final int RETRY_DELAY_MS = 15_000; // Delay between retry attempts in milliseconds
+    private static final int MAX_RETRIES = 4;         // Maximum number of retry attempts
+    private static final int DEFAULT_RSOC = 15;       // Default RSOC value if retrieval fails
+
+    // Dependencies injected via constructor
     private final BatteryCommandService commandService;
     private final OpenMeteoService weatherService;
+    private final ChargingScheduleRepository chargingScheduleRepository;
     private final boolean batteryNotConfigured;
-    private boolean forcedChargingActive = false;
 
-    @Value("${battery.target.stateOfCharge}")
-    private int targetStateOfChargeInPercent;
+    // Configuration values injected via Spring
+    @Value("${battery.target.stateOfCharge:90}")
+    private int targetStateOfCharge;
 
     @Value("${battery.chargingPoint}")
     private int chargingPointInWatt;
-
-    private int currentChargingPoint;
 
     @Value("${battery.status.cache.duration.seconds:60}")
     private int cacheDurationInSeconds;
@@ -61,380 +65,379 @@ public class BatteryManagementService {
     @Value("${battery.history.max.entries:24}")
     private int maxHistorySize;
 
-    @Value("${night.start:22}")
-    private int nightStartHour;
-
-    @Value("${night.end:6}")
-    private int nightEndHour;
-
-    @Value("${battery.target.stateOfCharge:90}")
-    private int targetStateOfCharge;
-
+    // Instance variables for state management
     private BatteryStatusResponse cachedBatteryStatus;
     private Instant cacheTimestamp;
+    private volatile boolean forcedChargingActive = false;
     private volatile boolean isReducedChargingActive = false;
-    private ChargingScheduleRepository chargingScheduleRepository;
+    private int currentChargingPoint;
     private final Queue<Map.Entry<Long, Integer>> rsocHistory = new ConcurrentLinkedQueue<>();
-
 
     /**
      * Constructor for BatteryManagementService.
      *
-     * @param commandService The service to interact with the battery commands.
+     * @param commandService The service to interact with battery commands.
+     * @param weatherService The service to fetch weather data.
+     * @param chargingScheduleRepository The repository for accessing charging schedules.
      */
-    public BatteryManagementService(BatteryCommandService commandService, OpenMeteoService weatherService, ChargingScheduleRepository chargingScheduleRepositor) {
+    public BatteryManagementService(BatteryCommandService commandService, OpenMeteoService weatherService,
+                                    ChargingScheduleRepository chargingScheduleRepository) {
         this.commandService = commandService;
-        this.batteryNotConfigured = commandService.isBatteryNotConfigured();
         this.weatherService = weatherService;
-        this.chargingScheduleRepository = chargingScheduleRepositor;
+        this.chargingScheduleRepository = chargingScheduleRepository;
+        this.batteryNotConfigured = commandService.isBatteryNotConfigured();
     }
 
     /**
-     * Dynamically sets the charging point in Watt.
+     * Dynamically sets the charging point in watts.
      *
-     * @param currentChargingPoint The desired charging point value in Watt.
-     * @return True if the charging point was successfully set, false otherwise.
+     * @param currentChargingPoint The desired charging point value in watts.
+     * @return True if the charging point was set successfully, false otherwise.
      */
     public boolean setDynamicChargingPoint(int currentChargingPoint) {
         if (isBatteryNotConfigured()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "Battery not configured. Cannot set charging point.");
+            LogFilter.logWarn(BatteryManagementService.class, "Battery not configured. Cannot set charging point.");
             return false;
         }
-
         if (currentChargingPoint < 0) {
-            LogFilter.log(LogFilter.LOG_LEVEL_WARN,
-                    String.format("Invalid charging point value: %d. Charging point must be 0 or greater.", currentChargingPoint));
+            LogFilter.logWarn(BatteryManagementService.class, "Invalid charging point value: {}. Charging point must be 0 or greater.", currentChargingPoint);
             return false;
         }
 
         ApiResponse<?> response = commandService.setChargePoint(currentChargingPoint);
         if (response.success()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                    String.format("Charging point successfully set to %d Watt.", currentChargingPoint));
-            isReducedChargingActive = currentChargingPoint == chargingPointInWatt;
+            this.currentChargingPoint = currentChargingPoint;
+            this.isReducedChargingActive = currentChargingPoint == chargingPointInWatt;
+            LogFilter.logInfo(BatteryManagementService.class, "Charging point successfully set to {} Watt", currentChargingPoint);
             return true;
         } else {
-            LogFilter.log(LogFilter.LOG_LEVEL_ERROR,
-                    String.format("Failed to set charging point to %d Watt. Response: %s", currentChargingPoint, response.message()));
+            LogFilter.logError(BatteryManagementService.class, "Failed to set charging point to {} Watt. Response: {}", currentChargingPoint, response.message());
             return false;
         }
     }
 
     /**
-     * Updates the RSOC history with the current RSOC value and its timestamp.
-     * Ensures that the history size does not exceed the maximum allowed entries.
+     * Updates the RSOC (Relative State of Charge) history with the current value and timestamp.
+     * Limits the history size to the configured maximum.
      *
      * @param currentTime The current timestamp in milliseconds.
-     * @param currentRSOC The current relative state of charge (RSOC) in percentage.
+     * @param currentRsoc The current RSOC in percentage.
      */
-    public void updateRsocHistory(long currentTime, int currentRSOC) {
-        // Validate input values
-        if (currentRSOC < 0 || currentRSOC > 100) {
-            LogFilter.log(
-                    LogFilter.LOG_LEVEL_WARN,
-                    String.format("Invalid RSOC value: %d%%. Skipping update.", currentRSOC)
-            );
+    public void updateRsocHistory(long currentTime, int currentRsoc) {
+        if (currentRsoc < 0 || currentRsoc > 100) {
+            LogFilter.logWarn(BatteryManagementService.class, "Invalid RSOC value: {}. Skipping update.", currentRsoc);
             return;
         }
 
-        // Add the current RSOC value with a timestamp to the history
-        rsocHistory.add(new AbstractMap.SimpleEntry<>(currentTime, currentRSOC));
-
-        // Ensure the history does not exceed the maximum allowed size
+        rsocHistory.add(new AbstractMap.SimpleEntry<>(currentTime, currentRsoc));
         while (rsocHistory.size() > maxHistorySize) {
-            AbstractMap.SimpleEntry<Long, Integer> removedEntry = (AbstractMap.SimpleEntry<Long, Integer>) rsocHistory.poll();
-            if (removedEntry != null) {
-                LogFilter.log(
-                        LogFilter.LOG_LEVEL_DEBUG,
-                        String.format("Removed oldest RSOC entry: %d%% at %s",
-                                removedEntry.getValue(),
-                                new Date(removedEntry.getKey()))
-                );
+            Map.Entry<Long, Integer> removed = rsocHistory.poll();
+            if (removed != null) {
+                LogFilter.logDebug(BatteryManagementService.class, "Removed oldest RSOC entry: {} at {}", removed.getValue(), new Date(removed.getKey()));
             }
         }
-
-        // Log the updated history size and the latest RSOC entry
-        LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, String.format(
-                "RSOC history updated: %d entries. Current RSOC: %d%% at %s",
-                rsocHistory.size(),
-                currentRSOC,
-                new Date(currentTime)
-        ));
+        LogFilter.logDebug(BatteryManagementService.class, "RSOC history updated: {} entries. Current RSOC: {} at {}",
+                rsocHistory.size(), currentRsoc, new Date(currentTime));
     }
 
+    /**
+     * Initiates charging, either forced or based on a scheduled period.
+     *
+     * @param forceCharging If true, forces charging regardless of schedule.
+     * @return True if charging was initiated successfully, false otherwise.
+     */
     public boolean initCharging(boolean forceCharging) {
-        // Update the forced charging status
         this.forcedChargingActive = forceCharging;
-
-        // Invalidate cached battery status
         invalidateBatteryCache();
 
-        // Check basic requirements
         if (!checkPreconditions()) {
-            this.forcedChargingActive = false; // Reset flag on failure
+            resetForcedCharging();
             return false;
         }
 
         long currentTime = System.currentTimeMillis();
-
-        // Ensure that the current time is within a scheduled period
-        LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "Checking for active charging schedule at current time: " + currentTime);
-        Optional<ChargingSchedule> activeSchedule = chargingScheduleRepository.findAll().stream()
-                .filter(schedule -> currentTime >= schedule.getStartTimestamp() && currentTime < schedule.getEndTimestamp())
-                .findFirst();
-
+        Optional<ChargingSchedule> activeSchedule = findActiveSchedule(currentTime);
         if (activeSchedule.isEmpty() && !forceCharging) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "No active charging schedule for the current time. Skipping charging.");
-            this.forcedChargingActive = false; // Reset flag if no active schedule and not forced
+            LogFilter.logInfo(BatteryManagementService.class, "No active charging schedule for the current time. Skipping charging.");
+            resetForcedCharging();
             return false;
         }
 
-        // Check whether the charge level has reached the target
-        int relativeStateOfCharge = getRelativeStateOfCharge();
-        LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, String.format(
-                "Relative state of charge (RSOC): %d%%, Target: %d%%",
-                relativeStateOfCharge, targetStateOfChargeInPercent));
-        if (relativeStateOfCharge >= targetStateOfChargeInPercent) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                    String.format("Charging skipped: Battery charge level (%d%%) is at or above the target (%d%%).",
-                            relativeStateOfCharge, targetStateOfChargeInPercent));
-            this.forcedChargingActive = false; // Reset flag if target is reached
+        int rsoc = getRelativeStateOfCharge();
+        if (rsoc >= targetStateOfCharge) {
+            LogFilter.logInfo(BatteryManagementService.class, "Charging skipped: Battery charge level ({}) is at or above the target ({})", rsoc, targetStateOfCharge);
+            resetForcedCharging();
             return false;
         }
 
-        // Allow grid charging during solar activity, adjusting the charging point dynamically
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Checking solar activity and adjusting charging point dynamically.");
         adjustChargingPointBasedOnWeather();
-
-        // Activate manual charging mode
-        LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "Activating manual operating mode...");
-        ApiResponse<?> manualModeResponse = activateManualOperatingMode();
-        if (!manualModeResponse.success()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Manual mode activation failed with response: " + manualModeResponse.message());
-            this.forcedChargingActive = false; // Reset flag on failure
+        ApiResponse<?> modeResponse = activateManualOperatingMode();
+        if (!modeResponse.success()) {
+            LogFilter.logError(BatteryManagementService.class, "Manual mode activation failed with response: {}", modeResponse.message());
+            resetForcedCharging();
             return false;
         }
 
-        // Set charging point dynamically
-        LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, String.format(
-                "Setting dynamic charging point to: %d Watt", currentChargingPoint));
-        boolean success = setDynamicChargingPoint(currentChargingPoint);
-        if (!success) {
-            LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Failed to set dynamic charging point. API response unsuccessful.");
-            this.forcedChargingActive = false; // Reset flag on failure
+        if (!setDynamicChargingPoint(currentChargingPoint)) {
+            LogFilter.logError(BatteryManagementService.class, "Failed to set dynamic charging point. API response unsuccessful.");
+            resetForcedCharging();
             return false;
         }
 
         isReducedChargingActive = false;
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                String.format("Charging initiated successfully at %d Watt in %s mode.", currentChargingPoint, forceCharging ? "Forced" : "Planned"));
+        LogFilter.logInfo(BatteryManagementService.class, "Charging initiated successfully at {} Watt in {} mode", currentChargingPoint, forceCharging ? "Forced" : "Planned");
         return true;
     }
 
-    private boolean checkPreconditions() {
-        if (isBatteryNotConfigured()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO , "Battery not configured. Skipping charging.");
-            return false;
-        }
-        return true;
-    }
-
+    /**
+     * Resets the battery to automatic operating mode.
+     *
+     * @return True if reset was successful, false otherwise.
+     */
     public boolean resetToAutomaticMode() {
-
         invalidateBatteryCache();
-
-        if(isAutomaticOperatingMode()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "Battery is not in manual mode, no need to switch to automatic mode.");
+        if (isAutomaticOperatingMode()) {
+            LogFilter.logDebug(BatteryManagementService.class, "Battery is not in manual mode, no need to switch to automatic mode.");
             return true;
         }
-
         if (isBatteryNotConfigured()) {
             return false;
         }
 
-        // Return to standard setting
-        if(!setDynamicChargingPoint(chargingPointInWatt)) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Failed to return to standard chargingPointSetting.");
+        if (!setDynamicChargingPoint(chargingPointInWatt)) {
+            LogFilter.logInfo(BatteryManagementService.class, "Failed to return to standard chargingPointSetting.");
         }
-        // Activate automatic mode
-        ApiResponse<?> automaticModeResponse = activateAutomaticOperatingMode();
-        if (!automaticModeResponse.success()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Failed to activate automatic operating mode.");
+        ApiResponse<?> response = activateAutomaticOperatingMode();
+        if (!response.success()) {
+            LogFilter.logInfo(BatteryManagementService.class, "Failed to activate automatic operating mode.");
             return false;
         }
 
-        // Reset the forced charging flag
         setForcedChargingActive(false);
-
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                String.format("Successfully returned to automatic operating mode and reset ChargingPoint to %d Watt.", chargingPointInWatt));
+        LogFilter.logInfo(BatteryManagementService.class, "Successfully returned to automatic operating mode and reset ChargingPoint to {} Watt", chargingPointInWatt);
         return true;
     }
 
+    /**
+     * Sets the forced charging flag.
+     *
+     * @param forcedChargingActive The new value for the forced charging flag.
+     */
     public void setForcedChargingActive(boolean forcedChargingActive) {
         this.forcedChargingActive = forcedChargingActive;
     }
 
+    /**
+     * Retrieves the current relative state of charge (RSOC) with retry logic.
+     *
+     * @return The current RSOC in percentage, or a default value if retrieval fails.
+     */
     public int getRelativeStateOfCharge() {
-        if (isBatteryNotConfigured()) {
-            return 0;
-        }
+        if (isBatteryNotConfigured()) return 0;
 
-        for (int attempt = 1; attempt <= 4; attempt++) {
+        for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
             try {
-                BatteryStatusResponse batteryStatusResponse = getCurrentBatteryStatus();
-                if (batteryStatusResponse != null) {
-                    int rsoc = batteryStatusResponse.getRsoc();
-                    LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                            String.format("Current relative state of charge (RSOC) is: %d%%", rsoc));
+                BatteryStatusResponse status = getCurrentBatteryStatus();
+                if (status != null) {
+                    int rsoc = status.getRsoc();
+                    LogFilter.logInfo(BatteryManagementService.class, "Current relative state of charge (RSOC) is: {}", rsoc);
                     return rsoc;
                 }
             } catch (Exception e) {
-                LogFilter.log(LogFilter.LOG_LEVEL_WARN,
-                        String.format("Failed to retrieve battery status. Attempt %d of 4. Retrying in 15 seconds...", attempt));
-                try {
-                    Thread.sleep(15_000);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Thread was interrupted during sleep.");
-                    break;
-                }
+                LogFilter.logWarn(BatteryManagementService.class, "Failed to retrieve battery status. Attempt {} of {}. Retrying in 15 seconds...", attempt, MAX_RETRIES);
+                sleepWithRetry(attempt);
             }
         }
-
-        LogFilter.log(LogFilter.LOG_LEVEL_ERROR,
-                "Failed to retrieve battery status after 4 attempts. Assuming RSOC is 15%.");
-        return 15;
+        LogFilter.logError(BatteryManagementService.class, "Failed to retrieve battery status after {} attempts. Assuming RSOC is {}", MAX_RETRIES, DEFAULT_RSOC);
+        return DEFAULT_RSOC;
     }
 
+    /**
+     * Checks if the battery is in automatic operating mode.
+     *
+     * @return True if in automatic mode, false otherwise.
+     */
     public boolean isAutomaticOperatingMode() {
-        if (isBatteryNotConfigured()) {
-            return false;
-        }
-
-        BatteryStatusResponse batteryStatusResponse = getCurrentBatteryStatus();
-        return batteryStatusResponse != null && OP_MODE_AUTOMATIC.equals(batteryStatusResponse.getOperatingMode());
+        if (isBatteryNotConfigured()) return false;
+        BatteryStatusResponse status = getCurrentBatteryStatus();
+        return status != null && OP_MODE_AUTOMATIC.equals(status.getOperatingMode());
     }
 
+    /**
+     * Activates manual operating mode.
+     *
+     * @return The API response from the command service.
+     */
     public ApiResponse<?> activateManualOperatingMode() {
         invalidateBatteryCache();
         return commandService.setConfiguration(OPERATING_MODE, OP_MODE_MANUAL);
     }
 
+    /**
+     * Activates automatic operating mode.
+     *
+     * @return The API response from the command service.
+     */
     public ApiResponse<?> activateAutomaticOperatingMode() {
         invalidateBatteryCache();
         return commandService.setConfiguration(OPERATING_MODE, OP_MODE_AUTOMATIC);
     }
 
+    /**
+     * Retrieves the current battery status, using cache if available.
+     *
+     * @return The current battery status, or null if unavailable.
+     */
     public BatteryStatusResponse getCurrentBatteryStatus() {
-        if (isBatteryNotConfigured()) {
-            return null;
-        }
+        if (isBatteryNotConfigured()) return null;
 
-        if (cachedBatteryStatus != null && cacheTimestamp != null) {
-            long secondsSinceLastUpdate = ChronoUnit.SECONDS.between(cacheTimestamp, Instant.now());
-            if (secondsSinceLastUpdate <= cacheDurationInSeconds) {
-                LogFilter.log(LogFilter.LOG_LEVEL_DEBUG,
-                        String.format("Returning cached battery status (%d seconds old)", secondsSinceLastUpdate));
-                return cachedBatteryStatus;
-            }
+        if (isCacheValid()) {
+            LogFilter.logDebug(BatteryManagementService.class, "Returning cached battery status ({} seconds old)",
+                    ChronoUnit.SECONDS.between(cacheTimestamp, Instant.now()));
+            return cachedBatteryStatus;
         }
 
         ApiResponse<BatteryStatusResponse> response = commandService.getStatus();
         if (response != null && response.data() != null) {
             cachedBatteryStatus = response.data();
             cacheTimestamp = Instant.now();
-            LogFilter.log("DEBUG", "Fetched new battery status");
+            LogFilter.logDebug(BatteryManagementService.class, "Fetched new battery status");
             return cachedBatteryStatus;
-        } else {
-            return null;
         }
+        return null;
     }
 
+    /**
+     * Checks if the battery is not configured.
+     *
+     * @return True if not configured, false otherwise.
+     */
     public boolean isBatteryNotConfigured() {
         return batteryNotConfigured;
     }
 
+    /**
+     * Invalidates the battery status cache.
+     */
     public void invalidateBatteryCache() {
         cachedBatteryStatus = null;
         cacheTimestamp = null;
-        LogFilter.log(LogFilter.LOG_LEVEL_DEBUG, "Battery status cache invalidated.");
+        LogFilter.logDebug(BatteryManagementService.class, "Battery status cache invalidated.");
     }
 
-    private void adjustChargingPointBasedOnWeather() {
-        // Skip adjustment if nighttime
-        if (isNight(System.currentTimeMillis())) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO, "Nighttime detected. Skipping weather-based charging point adjustment.");
-            currentChargingPoint = chargingPointInWatt;
-            return;
-        }
-
-        // Fetch cloud cover from weather service
-        Optional<Double> optionalCloudCover = weatherService.getCurrentCloudCover();
-
-        if (optionalCloudCover.isEmpty()) {
-            // Default behavior if no weather data is available
-            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "No cloud cover data available. Using default charging point.");
-            currentChargingPoint = (int) (chargingPointInWatt * 0.5); // Default to 50% of max charging point
-            return;
-        }
-
-        double cloudCover = optionalCloudCover.get();
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                String.format("Current cloud cover: %.2f%%. Evaluating charging strategy.", cloudCover));
-
-        // Optimize for solar energy usage if cloud cover is <= 60%
-        if (cloudCover <= 60.0) {
-            LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                    String.format("Cloud cover is %.2f%%. Switching to Automatic Mode for solar optimization.", cloudCover));
-            resetToAutomaticMode();
-            return;
-        }
-
-        // Dynamically adjust charging point based on cloud cover for cloudCover > 60%
-        currentChargingPoint = (int) Math.round((cloudCover / 100.0) * chargingPointInWatt);
-        LogFilter.log(LogFilter.LOG_LEVEL_INFO,
-                String.format("Cloud cover is %.2f%%. Dynamically adjusted charging point to %d Watt.",
-                        cloudCover, currentChargingPoint));
-    }
-
+    /**
+     * Retrieves the RSOC history, ensuring validity and order.
+     *
+     * @return A list of RSOC history entries, or empty list if invalid.
+     */
     public synchronized List<Map.Entry<Long, Integer>> getRsocHistory() {
-        if (rsocHistory.isEmpty()) {
-            LogFilter.log(LogFilter.LOG_LEVEL_WARN, "RSOC history is empty. Unable to calculate time difference.");
+        if (rsocHistory.isEmpty() || rsocHistory.size() < 2) {
+            LogFilter.logWarn(BatteryManagementService.class, "RSOC history is {}. Unable to calculate time difference.",
+                    rsocHistory.isEmpty() ? "empty" : "insufficient (only " + rsocHistory.size() + " entries)");
             return Collections.emptyList();
         }
 
-        if (rsocHistory.size() < 2) {
-            LogFilter.log(LogFilter.LOG_LEVEL_WARN,
-                    "RSOC history has insufficient data points (only " + rsocHistory.size() + " entries).");
-            return Collections.emptyList();
-        }
-
-        // Ensure timestamps are valid and in ascending order
+        List<Map.Entry<Long, Integer>> history = new ArrayList<>(rsocHistory);
         long lastTimestamp = 0;
-        for (Map.Entry<Long, Integer> entry : rsocHistory) {
+        for (Map.Entry<Long, Integer> entry : history) {
             if (entry == null || entry.getKey() == null || entry.getValue() == null) {
-                LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Invalid entry in RSOC history. Skipping corrupted entry.");
-                continue;
+                LogFilter.logError(BatteryManagementService.class, "Invalid entry in RSOC history. Resetting history.");
+                rsocHistory.clear();
+                return Collections.emptyList();
             }
-
             if (entry.getKey() < lastTimestamp) {
-                LogFilter.log(LogFilter.LOG_LEVEL_ERROR, "Invalid timestamp order in RSOC history. History will be reset.");
+                LogFilter.logError(BatteryManagementService.class, "Invalid timestamp order in RSOC history. Resetting history.");
                 rsocHistory.clear();
                 return Collections.emptyList();
             }
             lastTimestamp = entry.getKey();
         }
-
-        return new ArrayList<>(rsocHistory);
+        return history;
     }
 
-    public int getNightStartHour() {
-        return nightStartHour;
+    // Helper Methods
+
+    /**
+     * Checks preconditions for charging operations.
+     *
+     * @return True if preconditions are met, false otherwise.
+     */
+    private boolean checkPreconditions() {
+        boolean configured = !isBatteryNotConfigured();
+        if (!configured) {
+            LogFilter.logInfo(BatteryManagementService.class, "Battery not configured. Skipping charging.");
+        }
+        return configured;
     }
 
-    public int getNightEndHour() {
-        return nightEndHour;
+    /**
+     * Finds an active charging schedule for the given time.
+     *
+     * @param currentTime The current timestamp in milliseconds.
+     * @return An optional containing the active schedule, or empty if none found.
+     */
+    private Optional<ChargingSchedule> findActiveSchedule(long currentTime) {
+        return chargingScheduleRepository.findAll().stream()
+                .filter(s -> currentTime >= s.getStartTimestamp() && currentTime < s.getEndTimestamp())
+                .findFirst();
     }
 
+    /**
+     * Resets the forced charging flag to false.
+     */
+    private void resetForcedCharging() {
+        setForcedChargingActive(false);
+    }
+
+    /**
+     * Adjusts the charging point based on current weather conditions.
+     */
+    private void adjustChargingPointBasedOnWeather() {
+        if (isNight(System.currentTimeMillis())) {
+            LogFilter.logInfo(BatteryManagementService.class, "Nighttime detected. Skipping weather-based charging point adjustment.");
+            currentChargingPoint = chargingPointInWatt;
+            return;
+        }
+
+        Optional<Double> cloudCoverOpt = weatherService.getCurrentCloudCover();
+        if (cloudCoverOpt.isEmpty()) {
+            LogFilter.logWarn(BatteryManagementService.class, "No cloud cover data available. Using default charging point.");
+            currentChargingPoint = chargingPointInWatt / 2;
+            return;
+        }
+
+        double cloudCover = cloudCoverOpt.get();
+        LogFilter.logInfo(BatteryManagementService.class, "Current cloud cover: {}. Evaluating charging strategy.", cloudCover);
+        if (cloudCover <= 60.0) {
+            LogFilter.logInfo(BatteryManagementService.class, "Cloud cover is {}. Switching to Automatic Mode for solar optimization.", cloudCover);
+            resetToAutomaticMode();
+        } else {
+            currentChargingPoint = (int) Math.round((cloudCover / 100.0) * chargingPointInWatt);
+            LogFilter.logInfo(BatteryManagementService.class, "Cloud cover is {}. Dynamically adjusted charging point to {} Watt.", cloudCover, currentChargingPoint);
+        }
+    }
+
+    /**
+     * Checks if the cached battery status is still valid.
+     *
+     * @return True if cache is valid, false otherwise.
+     */
+    private boolean isCacheValid() {
+        return cachedBatteryStatus != null && cacheTimestamp != null &&
+                ChronoUnit.SECONDS.between(cacheTimestamp, Instant.now()) <= cacheDurationInSeconds;
+    }
+
+    /**
+     * Pauses execution for retry attempts with error handling.
+     *
+     * @param attempt The current retry attempt number.
+     */
+    private void sleepWithRetry(int attempt) {
+        try {
+            Thread.sleep(RETRY_DELAY_MS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            LogFilter.logError(BatteryManagementService.class, "Thread was interrupted during retry sleep after attempt {}.", attempt);
+        }
+    }
 }
