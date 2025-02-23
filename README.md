@@ -1,41 +1,44 @@
 # Zeus Charge Control
 
-**Zeus Charge Control** ist eine leistungsstarke Java-Anwendung, die Ladepläne für PV-Batteriespeicher auf Basis dynamischer Marktpreise verwaltet. Durch die Integration von Wetter- und Preisdaten optimiert sie Ladezeiten für maximale Effizienz. Unterstützt werden die **Sonnen API v2** und die Wetter-API von **Open-Meteo**.
+**Zeus Charge Control** ist eine leistungsstarke Java-Anwendung zur Optimierung von Ladeplänen für PV-Batteriespeicher basierend auf dynamischen Marktpreisen. Durch die Integration von Wetter- und Preisdaten maximiert sie die Effizienz des Ladevorgangs. Voraussetzung ist ein Batteriespeicher mit **Sonnen API v2**.
 
 ---
 
 ## Hauptfunktionen
 
-- **Batteriestatus-Überwachung**: Echtzeit-Überblick über den Ladezustand.
+- **Batteriestatus-Überwachung**: Echtzeit-Visualisierung des Ladezustands (RSOC) mit grafischer Darstellung.
 - **Marktpreismanagement**: Automatische Anpassung der Ladezeiten an Marktpreise mit konfigurierbaren Schwellenwerten.
-- **Dynamische Nachtplanung**: Optimierung der drei günstigsten Ladezeiten mit flexiblen Zusatzoptionen.
-- **Preisdiagramme**: Visualisierung von Marktpreisen zur Entscheidungsunterstützung.
-- **Wetterintegration**: Ladeentscheidungen basierend auf Wetterdaten (z. B. Bewölkungsgrad).
+- **Optimierte Ladezeiten**: Priorisierung der günstigsten Zeitfenster basierend auf Preis und RSOC-Bedarf.
+- **Preisvisualisierung**: Diagramme zur Darstellung der Marktpreise und Ladezeiten.
+- **Wetterintegration**: Ladeentscheidungen unter Berücksichtigung von Wetterdaten (z. B. Bewölkungsgrad).
+- **Nachtmodus-Steuerung**: Konfigurierbarer Nachtmodus (Idle oder Automatik) zur Optimierung des Batterieverhaltens.
 
 ---
 
 ## Dynamische Ladeplanung
 
-Zeus Charge Control kombiniert mehrere Faktoren für eine präzise Ladeplanung:
+Zeus Charge Control berücksichtigt mehrere Faktoren für eine präzise und effiziente Ladeplanung:
 
-1. **Dynamische Preisschwellen**: Basierend auf Minimum, Maximum und Median der Marktpreise.
-2. **Flexibilitätstoleranz**: Zusätzliche Perioden knapp oberhalb des Schwellenwerts können berücksichtigt werden.
-3. **Optimierung der Nachtplanung**: Auswahl der günstigsten Ladeperioden während der Nacht, priorisiert nach Marktpreisen.
-4. **Tageszeit-Pufferung**: Validierung und Zwischenspeicherung günstiger Ladeperioden außerhalb der Nachtzeit.
-5. **RSOC-Überwachung**: Dynamische Anpassung der Ladeplanung basierend auf dem Ladezustand (RSOC - Relative State of Charge).
-6. **Individuelle Konfiguration**: Alle Parameter lassen sich flexibel über die `application.properties` anpassen.
+1. **RSOC-basierte Planung**: Keine Ladung, wenn der Ladezustand den Zielwert (z. B. 90 %) erreicht oder übersteigt; bestehende Pläne werden entfernt.
+2. **Preisorientierte Optimierung**: Auswahl der günstigsten Perioden innerhalb eines konfigurierbaren Zeitfensters oder bis zum Ende der Nacht (standardmäßig 22:00 bis 06:00).
+3. **Dynamische Nachtplanung**: Planung von bis zu zwei Nachtperioden, wobei die Anzahl dynamisch an den RSOC-Bedarf angepasst wird. Nur die günstigsten Preise werden priorisiert.
+4. **Tageszeit-Pufferung**: Zwischenspeicherung günstiger Tagperioden außerhalb der Nachtzeit, falls zusätzliche Ladung nötig ist.
+5. **Flexibilitätstoleranz**: Berücksichtigung leicht erhöhter Preise bei Bedarf, gesteuert durch dynamische Preisschwellen.
+6. **Individuelle Konfiguration**: Anpassbare Parameter über `application.properties`, z. B. Ziel-RSOC, maximale Nachtperioden und Preisschwellen.
 
 ### Beispiel:
-Mit Standardeinstellungen werden die **drei günstigsten Ladeperioden** priorisiert. Falls nicht genügend günstige Zeiträume verfügbar sind, erweitert die Toleranzschwelle die Optionen. Während der Nacht werden nur Perioden innerhalb des definierten Zeitfensters berücksichtigt, mit einer Rückkehr zum Automatikmodus nach Ende der Nacht.
+- Bei RSOC ≥ 90 % werden keine Ladezeiten geplant, und bestehende Pläne entfernt.
+- Bei RSOC < 90 % plant das System dynamisch die günstigsten Perioden.
+- Nachts bleibt die Batterie im manuellen Modus, falls `nightChargingIdle` aktiviert ist (steuerbar über die GUI).
 
 ---
 
-## Integration von APIs
+## API-Integration
 
-- **Marktpreise**: Unterstützt werden die Quellen `awattar` und `tibber`.
-- **Wetterdaten**: Die [Open-Meteo API](https://open-meteo.com/) liefert Wettervorhersagen und ist für nicht-kommerzielle Zwecke kostenlos nutzbar.
+- **Marktpreise**: Unterstützte Anbieter sind `awattar` und `tibber`.
+- **Wetterdaten**: Die [Open-Meteo API](https://open-meteo.com/) liefert Wettervorhersagen und ist für nicht-kommerzielle Nutzung kostenlos.
 
-> **Hinweis**: Für kommerzielle Anwendungen ist ein API-Schlüssel erforderlich. Details finden sich in den [Nutzungsbedingungen von Open-Meteo](https://open-meteo.com/en/terms).
+> **Hinweis**: Für kommerzielle Anwendungen ist ein API-Schlüssel erforderlich. Details siehe [Nutzungsbedingungen von Open-Meteo](https://open-meteo.com/en/terms).
 
 ---
 
@@ -49,7 +52,7 @@ Mit Standardeinstellungen werden die **drei günstigsten Ladeperioden** priorisi
 
 ---
 
-## Konfigurationsparameter
+## Konfiguration
 
 ### Datenbank
 - **`spring.datasource.url`**: URL der Datenbank (Standard: `jdbc:h2:mem:testdb`)
@@ -59,103 +62,57 @@ Mit Standardeinstellungen werden die **drei günstigsten Ladeperioden** priorisi
 ### Ladeeinstellungen
 - **`battery.target.stateOfCharge`**: Ziel-Ladezustand in Prozent (Standard: `90`)
 - **`battery.chargingPoint`**: Ladepunkt in Watt (Standard: `4500`)
-- **`battery.large.consumer.threshold`**: Schwellenwert für große Verbraucher (Standard: `0.5`)
+- **`battery.nightChargingIdle`**: Nachts Idle-Modus aktivieren (Standard: `true`)
+- **`battery.automatic.mode.check.interval`**: Automatikmodus-Intervall (Standard: `300000`, 5 Minuten)
 
 ### Marktpreise
-- **`marketdata.source`**: Quelle (`awattar`, `tibber`)
-- **`marketdata.max.acceptable.price.cents`**: Maximale akzeptable Preise in Cent (Standard: `15`)
-- **`marketdata.price.flexibility.threshold`**: Toleranzschwelle (Standard: `2`)
+- **`marketdata.source`**: Anbieter (`awattar`, `tibber`)
+- **`marketdata.acceptable.price.cents`**: Maximaler Preis in Cent (Standard: `15`)
+- **`marketdata.price.flexibility.threshold`**: Preis-Toleranzschwelle (Standard: `10`)
 
 ### Nachtplanung
-- **`night.start`**: Start der Nachtzeit (Standard: `22`)
+- **`night.start`**: Beginn der Nachtzeit (Standard: `22`)
 - **`night.end`**: Ende der Nachtzeit (Standard: `6`)
+- **`nighttime.max.periods`**: Maximale Nachtladeperioden (Standard: `2`)
 
 ---
 
 ## Lizenz
 
-Zeus Charge Control wird unter der **Apache License, Version 2.0** bereitgestellt. Weitere Details findest Du in der Datei `LICENSE.txt`.
+Zeus Charge Control steht unter der **Apache License, Version 2.0**. Weitere Details in `LICENSE.txt`.
 
 > **Disclaimer**: Diese Software wird ohne Garantie bereitgestellt. Support oder Fehlerfreiheit sind nicht gewährleistet.
 
 ---
 
-# Zeus Charge Control (English)
+# Zeus Charge Control (English Version)
 
-**Zeus Charge Control** is a powerful Java application designed to manage charging schedules for PV battery storage systems based on dynamic market prices. By integrating weather and price data, it optimizes charging times for maximum efficiency. The application supports **Sonnen API v2** and the weather API from **Open-Meteo**.
-
----
-
-## Key Features
-
-- **Battery Status Monitoring**: Real-time overview of the battery's charge level.
-- **Market Price Management**: Automatic adjustment of charging times to market prices with configurable thresholds.
-- **Dynamic Night Planning**: Optimization of the three cheapest charging periods with flexible additional options.
-- **Price Charts**: Visualization of market prices to support decision-making.
-- **Weather Integration**: Charging decisions based on weather data (e.g., cloud cover).
+**Zeus Charge Control** is a powerful Java application for optimizing charging schedules for PV battery storage based on dynamic market prices. By integrating weather and price data, it maximizes the efficiency of the charging process. A battery storage system with **Sonnen API v2** is required.
 
 ---
 
-## Dynamic Charging Planning
+## Main Features
 
-Zeus Charge Control combines multiple factors for precise charging planning:
-
-1. **Dynamic Price Thresholds**: Based on the minimum, maximum, and median market prices.
-2. **Flexibility Tolerance**: Additional periods slightly above the threshold can be considered.
-3. **Nighttime Optimization**: Selection of the cheapest charging periods during the night, prioritized by market prices.
-4. **Daytime Buffering**: Validation and caching of favorable charging periods outside nighttime.
-5. **RSOC Monitoring**: Dynamic adjustment of charging schedules based on the Relative State of Charge (RSOC).
-6. **Custom Configuration**: All parameters can be flexibly adjusted via `application.properties`.
-
-### Example:
-With default settings, the **three cheapest charging periods** are prioritized. If insufficient cheap periods are available, the tolerance threshold expands the options. During the night, only periods within the defined timeframe are considered, with a return to automatic mode after the night ends.
+- **Battery Status Monitoring**: Real-time overview of the state of charge (RSOC) with graphical visualization.
+- **Market Price Management**: Automatic adjustment of charging times based on configurable price thresholds.
+- **Optimized Charging Periods**: Prioritization of the cheapest time slots based on price and RSOC requirements.
+- **Price Visualization**: Graphical charts for market prices and scheduled charging periods.
+- **Weather Integration**: Charging decisions based on weather data (e.g., cloud coverage).
+- **Night Mode Control**: Configurable toggle switch for manual or automatic battery behavior at night.
 
 ---
 
 ## API Integration
 
-- **Market Prices**: Supported sources are `awattar` and `tibber`.
+- **Market Prices**: Supported providers include `awattar` and `tibber`.
 - **Weather Data**: The [Open-Meteo API](https://open-meteo.com/) provides weather forecasts and is free for non-commercial use.
 
-> **Note**: For commercial applications, an API key is required. See the [Open-Meteo Terms of Use](https://open-meteo.com/en/terms) for details.
-
----
-
-## Screenshots
-
-### Battery Status
-![Battery Status](images/battery_status.jpg)
-
-### Market Price Visualization
-![Price Chart](images/price_chart.jpg)
-
----
-
-## Configuration Parameters
-
-### Database
-- **`spring.datasource.url`**: Database URL (default: `jdbc:h2:mem:testdb`)
-- **`spring.datasource.username`**: Username (default: `sa`)
-- **`spring.datasource.password`**: Password (default: `password`)
-
-### Charging Settings
-- **`battery.target.stateOfCharge`**: Target state of charge in percent (default: `90`)
-- **`battery.chargingPoint`**: Charging point in watts (default: `4500`)
-- **`battery.large.consumer.threshold`**: Threshold for large consumers (default: `0.5`)
-
-### Market Prices
-- **`marketdata.source`**: Source (`awattar`, `tibber`)
-- **`marketdata.max.acceptable.price.cents`**: Maximum acceptable prices in cents (default: `15`)
-- **`marketdata.price.flexibility.threshold`**: Tolerance threshold (default: `2`)
-
-### Night Planning
-- **`night.start`**: Start of nighttime (default: `22`)
-- **`night.end`**: End of nighttime (default: `6`)
+> **Note**: An API key is required for commercial applications. See the [Open-Meteo Terms of Use](https://open-meteo.com/en/terms) for details.
 
 ---
 
 ## License
 
-Zeus Charge Control is provided under the **Apache License, Version 2.0**. For more details, see the `LICENSE.txt` file.
+Zeus Charge Control is provided under the **Apache License, Version 2.0**. Further details can be found in `LICENSE.txt`.
 
-> **Disclaimer**: This software is provided "as is" without any warranties. Support or error-free functionality is not guaranteed.
+> **Disclaimer**: This software is provided "as is" without any guarantees. Support or bug-free operation is not guaranteed.
