@@ -28,7 +28,7 @@ Zeus Charge Control berücksichtigt mehrere Faktoren für eine präzise und effi
 
 ### Beispiel:
 - Bei RSOC ≥ 90 % werden keine Ladezeiten geplant, und bestehende Pläne entfernt.
-- Bei RSOC < 90 % plant das System dynamisch die günstigsten Perioden.
+- Bei RSOC < 90 % plant das System dynamisch die günstigsten Perioden, z. B. eine oder zwei Nachtperioden je nach Bedarf.
 - Nachts bleibt die Batterie im manuellen Modus, falls `nightChargingIdle` aktiviert ist (steuerbar über die GUI).
 
 ---
@@ -99,6 +99,24 @@ Zeus Charge Control steht unter der **Apache License, Version 2.0**. Weitere Det
 - **Price Visualization**: Graphical charts for market prices and scheduled charging periods.
 - **Weather Integration**: Charging decisions based on weather data (e.g., cloud coverage).
 - **Night Mode Control**: Configurable toggle switch for manual or automatic battery behavior at night.
+
+---
+
+## Dynamic Charging Schedule
+
+Zeus Charge Control considers multiple factors for precise and efficient charging planning:
+
+1. **RSOC-Based Planning**: No charging if the state of charge meets or exceeds the target (e.g., 90%); existing plans are removed.
+2. **Price-Oriented Optimization**: Selection of the cheapest periods within a configurable time window or until the end of the night (default: 22:00 to 06:00).
+3. **Dynamic Night Planning**: Schedules up to two night periods, dynamically adjusted to RSOC needs, prioritizing the lowest prices.
+4. **Daytime Buffering**: Buffering of cost-effective daytime periods outside of night hours if additional charging is required.
+5. **Flexibility Tolerance**: Consideration of slightly higher prices when necessary, guided by dynamic price thresholds.
+6. **Custom Configuration**: Adjustable parameters via `application.properties`, such as target RSOC, maximum night periods, and price thresholds.
+
+### Example:
+- At RSOC ≥ 90%, no charging times are scheduled, and existing plans are removed.
+- At RSOC < 90%, the system dynamically schedules the cheapest periods, e.g., one or two night periods based on demand.
+- At night, the battery remains in manual mode if `nightChargingIdle` is enabled (configurable via the GUI).
 
 ---
 
