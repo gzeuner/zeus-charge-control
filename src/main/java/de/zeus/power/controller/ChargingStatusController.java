@@ -7,8 +7,10 @@ import de.zeus.power.model.BatteryStatusResponse;
 import de.zeus.power.service.BatteryManagementService;
 import de.zeus.power.service.ChargingManagementService;
 import de.zeus.power.service.MarketPriceService;
+import de.zeus.power.util.ChargingUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.MessageSource;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
@@ -30,24 +32,29 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 @Controller
 public class ChargingStatusController {
 
-    // Service to fetch and manage market price data
     @Autowired
     private MarketPriceService marketPriceService;
 
-    // Service to manage battery operations
     @Autowired
     private BatteryManagementService batteryManagementService;
 
-    // Service to manage charging schedules and optimization
     @Autowired
     private ChargingManagementService chargingManagementService;
 
-    // Target state of charge for the battery, injected from configuration
+    @Autowired
+    private ChargingUtils chargingUtils;
+
+    @Autowired
+    private MessageSource messageSource;
+
     @Value("${battery.target.stateOfCharge}")
     private int targetStateOfCharge;
 
+    @Value("${battery.chargingPoint}")
+    private int chargingPointInWatt;
+
     /**
-     * Handles GET requests to display the charging status page.
+     * Handles GET requests to display the charging status page with grid charging info in a tooltip.
      *
      * @param request The HTTP request object, used to determine the locale.
      * @param lang Optional language parameter to override the default locale.
@@ -58,43 +65,34 @@ public class ChargingStatusController {
     @GetMapping("/charging-status")
     public String getChargingStatus(HttpServletRequest request, @RequestParam(name = "lang", required = false) String lang, Model model) throws Exception {
 
-        // Determine the locale, defaulting to the request's locale or overridden by the lang parameter
         Locale locale = request.getLocale();
         if (lang != null && !lang.isEmpty()) {
             locale = Locale.forLanguageTag(lang);
         }
-
-        // Add the current language to the model
         model.addAttribute("lang", locale.getLanguage());
 
-        // Fetch and sort market prices by start timestamp
         List<MarketPrice> marketPrices = marketPriceService.getAllMarketPrices()
                 .stream()
                 .sorted(Comparator.comparingLong(MarketPrice::getStartTimestamp))
                 .toList();
 
-        // Retrieve the current battery status
         BatteryStatusResponse batteryStatus = batteryManagementService.getCurrentBatteryStatus();
 
-        // Get the top 5 cheapest future periods, sorted by price and then start time
         List<MarketPrice> cheapestPeriods = marketPriceService.getAllMarketPrices()
                 .stream()
-                .filter(price -> price.getStartTimestamp() > System.currentTimeMillis()) // Only future periods
+                .filter(price -> price.getStartTimestamp() > System.currentTimeMillis())
                 .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh)
-                        .thenComparingLong(MarketPrice::getStartTimestamp)) // Sort by price, then start time
-                .limit(5) // Take top 5
+                        .thenComparingLong(MarketPrice::getStartTimestamp))
+                .limit(5)
                 .toList();
 
-        // Find the overall cheapest price across all periods
         MarketPrice cheapestPrice = marketPriceService.getAllMarketPrices()
                 .stream()
                 .min(Comparator.comparingDouble(MarketPrice::getMarketPrice))
                 .orElse(null);
 
-        // Fetch and sort scheduled charging periods by start timestamp
         List<ChargingSchedule> scheduledChargingPeriods = chargingManagementService.getSortedChargingSchedules();
 
-        // JSON mapper to serialize data for client-side use
         ObjectMapper mapper = new ObjectMapper();
         model.addAttribute("marketPrices", marketPrices);
         model.addAttribute("batteryStatus", batteryStatus);
@@ -106,23 +104,48 @@ public class ChargingStatusController {
         model.addAttribute("cheapestPeriodsJson", mapper.writeValueAsString(cheapestPeriods));
         model.addAttribute("scheduledChargingPeriodsJson", mapper.writeValueAsString(scheduledChargingPeriods));
 
-        // Check if the battery configuration is invalid
         boolean batteryNotConfigured = batteryManagementService.isBatteryNotConfigured();
         model.addAttribute("batteryNotConfigured", batteryNotConfigured);
 
-        // Add the night charging idle preference to the model
-        model.addAttribute("nightChargingIdle", chargingManagementService.isNightChargingIdle());
+        model.addAttribute("nightChargingIdle", chargingUtils.isNightChargingIdle());
 
-        // Return the view template name
+        // Add grid charging info for tooltip
+        Double dropRate = calculateDropRate();
+        Double currentPrice = marketPriceService.getCurrentPrice(); // Use the new method
+        Double estimatedTimeToTarget = calculateEstimatedTimeToTarget();
+        model.addAttribute("dropRate", dropRate);
+        model.addAttribute("currentPrice", currentPrice);
+        model.addAttribute("estimatedTimeToTarget", estimatedTimeToTarget);
+        model.addAttribute("currentTime", System.currentTimeMillis());
+
+        // Build tooltip text with current price prioritized
+        StringBuilder tooltipText = new StringBuilder();
+        if (currentPrice != null) {
+            tooltipText.append("<strong>").append(messageSource.getMessage("currentPriceLabel", null, locale))
+                    .append(":</strong> ").append(String.format("%.2f cent/kWh", currentPrice))
+                    .append("<br>");
+        } else {
+            tooltipText.append("<strong>").append(messageSource.getMessage("currentPriceLabel", null, locale))
+                    .append(":</strong> ").append("N/A")
+                    .append("<br>");
+        }
+        if (dropRate != null) {
+            tooltipText.append("<strong>").append(messageSource.getMessage("dropRateLabel", null, locale))
+                    .append(":</strong> ").append(String.format("%.2f %%/h", dropRate))
+                    .append("<br>");
+        }
+        if (estimatedTimeToTarget != null) {
+            tooltipText.append("<strong>").append(messageSource.getMessage("estimatedTimeToTargetLabel", null, locale))
+                    .append(":</strong> ").append(String.format("%.2f h", estimatedTimeToTarget));
+        }
+        if (tooltipText.length() == 0) {
+            tooltipText.append(messageSource.getMessage("noGridChargingInfo", null, locale));
+        }
+        model.addAttribute("gridChargingTooltip", tooltipText.toString());
+
         return "chargingStatusView";
     }
 
-    /**
-     * Handles POST requests to start charging the battery from the grid.
-     *
-     * @param model The model to pass data to the view (unused here due to redirect).
-     * @return A redirect to the charging status page after a delay.
-     */
     @PostMapping("/start-charging")
     public String startCharging(Model model) {
         batteryManagementService.initCharging(true);
@@ -130,12 +153,6 @@ public class ChargingStatusController {
         return "redirect:/charging-status";
     }
 
-    /**
-     * Handles POST requests to reset the battery to automatic mode.
-     *
-     * @param model The model to pass data to the view (unused here due to redirect).
-     * @return A redirect to the charging status page after a delay.
-     */
     @PostMapping("/reset-automatic")
     public String resetToAutomaticMode(Model model) {
         batteryManagementService.resetToAutomaticMode();
@@ -143,12 +160,6 @@ public class ChargingStatusController {
         return "redirect:/charging-status";
     }
 
-    /**
-     * Handles POST requests to reset the battery to idle mode.
-     *
-     * @param model The model to pass data to the view (unused here due to redirect).
-     * @return A redirect to the charging status page after a delay.
-     */
     @PostMapping("/reset-idle")
     public String resetToIdleMode(Model model) {
         batteryManagementService.activateManualOperatingMode();
@@ -157,18 +168,40 @@ public class ChargingStatusController {
         return "redirect:/charging-status";
     }
 
-    /**
-     * Handles POST requests to toggle the night charging idle behavior via AJAX.
-     *
-     * @param request JSON request containing the nightChargingIdle boolean.
-     * @return An ApiResponse indicating success or failure of the toggle operation as JSON.
-     */
     @PostMapping("/toggle-night-charging")
     @ResponseBody
     public ApiResponse<Void> toggleNightCharging(@RequestBody Map<String, Boolean> request) {
         boolean nightChargingIdle = request.getOrDefault("nightChargingIdle", true);
-        chargingManagementService.setNightChargingIdle(nightChargingIdle);
+        chargingUtils.setNightChargingIdle(nightChargingIdle);
         return new ApiResponse<>(true, HttpStatus.OK, "Night charging behavior updated", null);
+    }
+
+    /**
+     * Calculates the battery drop rate in percentage per hour based on RSOC history.
+     *
+     * @return The drop rate in %/h or null if insufficient data.
+     */
+    private Double calculateDropRate() {
+        List<Map.Entry<Long, Integer>> history = batteryManagementService.getRsocHistory();
+        if (history.size() < 2) return null;
+        Map.Entry<Long, Integer> oldest = history.get(0);
+        Map.Entry<Long, Integer> latest = history.get(history.size() - 1);
+        long timeDiffMinutes = (latest.getKey() - oldest.getKey()) / 60000;
+        if (timeDiffMinutes <= 0) return null;
+        return (double) (oldest.getValue() - latest.getValue()) / (timeDiffMinutes / 60.0);
+    }
+
+    /**
+     * Estimates the time required to reach the target state of charge.
+     *
+     * @return The estimated time in hours or null if already at or above target.
+     */
+    private Double calculateEstimatedTimeToTarget() {
+        int currentRsoc = batteryManagementService.getRelativeStateOfCharge();
+        if (currentRsoc >= targetStateOfCharge) return null;
+        double requiredCapacity = chargingUtils.calculateRequiredCapacity(currentRsoc);
+        if (requiredCapacity <= 0 || chargingPointInWatt <= 0) return null;
+        return requiredCapacity / chargingPointInWatt;
     }
 
     /**
@@ -176,7 +209,6 @@ public class ChargingStatusController {
      */
     private void delayRedirect() {
         try {
-            // Delay for 4 seconds to ensure operations complete before redirect
             Thread.sleep(4000);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

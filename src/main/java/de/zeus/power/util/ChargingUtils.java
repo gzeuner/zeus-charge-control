@@ -5,6 +5,7 @@ import de.zeus.power.entity.ChargingSchedule;
 import de.zeus.power.entity.MarketPrice;
 import de.zeus.power.repository.ChargingScheduleRepository;
 import de.zeus.power.service.BatteryManagementService;
+import de.zeus.power.service.ChargingManagementService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -69,6 +70,9 @@ public class ChargingUtils {
     @Value("${marketdata.acceptable.price.cents:15}")
     private int maxAcceptableMarketPriceInCent;
 
+    @Value("${battery.nightChargingIdle:true}")
+    private boolean nightChargingIdle;
+
     @Autowired
     private BatteryManagementService batteryManagementService;
 
@@ -109,14 +113,27 @@ public class ChargingUtils {
 
         if (currentRsoc >= targetStateOfCharge) {
             String mode = isNight ? "Nighttime" : "Daytime";
-            LogFilter.logInfo(ChargingUtils.class, "{} and RSOC target reached. {}", mode,
-                    isNight ? "Setting dynamic charging point to 0." : "Returning to Automatic Mode.");
-            if (isNight) {
+            if (isNight && nightChargingIdle) {
+                LogFilter.logInfo(ChargingUtils.class, "{} and RSOC target reached. Setting dynamic charging point to 0.", mode);
                 batteryManagementService.setDynamicChargingPoint(0);
-            } else {
+            } else if (!isNight) {
+                LogFilter.logInfo(ChargingUtils.class, "{} and RSOC target reached. Returning to Automatic Mode.", mode);
                 batteryManagementService.resetToAutomaticMode();
+            } else {
+                LogFilter.logDebug(ChargingUtils.class, "Nighttime with nightChargingIdle=false, no action taken.");
             }
         }
+    }
+
+    // Getter for the night charging idle flag
+    public boolean isNightChargingIdle() {
+        return nightChargingIdle;
+    }
+
+    // Setter for the night charging idle flag
+    public void setNightChargingIdle(boolean nightChargingIdle) {
+        this.nightChargingIdle = nightChargingIdle;
+        LogFilter.logInfo(ChargingManagementService.class, "Night charging idle mode set to: {}", nightChargingIdle);
     }
 
     public static boolean isNight(long currentTimeMillis) {
