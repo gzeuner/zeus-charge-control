@@ -87,9 +87,6 @@ public class ChargingManagementService {
     @Value("${battery.automatic.mode.check.interval:300000}")
     private long automaticModeCheckInterval;
 
-    @Value("${battery.nightChargingIdle:true}")
-    private boolean nightChargingIdle;
-
     private final List<ChargingSchedule> daytimeBuffer = new CopyOnWriteArrayList<>();
     private final Map<Long, ScheduledFuture<?>> scheduledTasks = new ConcurrentHashMap<>();
 
@@ -277,10 +274,6 @@ public class ChargingManagementService {
         LogFilter.logInfo(ChargingManagementService.class, "Scheduling end-of-night reset for: {}", resetDate);
         scheduledTasks.put(END_OF_NIGHT_RESET_ID, taskScheduler.schedule(() -> {
             LogFilter.logInfo(ChargingManagementService.class, "Executing end-of-night reset...");
-            if (nightChargingIdle) {
-                batteryManagementService.setDynamicChargingPoint(0);
-                LogFilter.logInfo(ChargingManagementService.class, "Battery set to idle mode for night charging.");
-            }
             logResetResult(batteryManagementService.resetToAutomaticMode());
         }, resetDate));
     }
@@ -572,17 +565,6 @@ public class ChargingManagementService {
         return chargingScheduleRepository.findAll().stream()
                 .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp))
                 .collect(Collectors.toList());
-    }
-
-    // Getter for the night charging idle flag
-    public boolean isNightChargingIdle() {
-        return nightChargingIdle;
-    }
-
-    // Setter for the night charging idle flag
-    public void setNightChargingIdle(boolean nightChargingIdle) {
-        this.nightChargingIdle = nightChargingIdle;
-        LogFilter.logInfo(ChargingManagementService.class, "Night charging idle mode set to: {}", nightChargingIdle);
     }
 
     // Helper Methods

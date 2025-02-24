@@ -302,7 +302,7 @@ public class MarketPriceService {
         if (tomorrow != null && tomorrow.getData() != null) {
             marketDataList.addAll(mapTibberPriceData(tomorrow.getData().getViewer().getHomes().get(0).getCurrentSubscription().getPriceInfo().getTomorrow()));
         } else {
-            LogFilter.logWarn( MarketPriceService.class,"No data available for tomorrow in Tibber response.");
+            LogFilter.logWarn(MarketPriceService.class, "No data available for tomorrow in Tibber response.");
         }
 
         MarketPriceResponse marketPriceResponse = new MarketPriceResponse();
@@ -339,6 +339,21 @@ public class MarketPriceService {
         long pastTime = now.minusMinutes(acceptedDelayInMinutes).atZone(ZoneId.systemDefault()).toEpochSecond() * 1000;
 
         return marketPriceRepository.findValidMarketPrices(currentTime, pastTime);
+    }
+
+    /**
+     * Retrieves the current market price based on the current time from the database.
+     *
+     * @return The current price in cent/kWh or null if no matching period exists.
+     */
+    public Double getCurrentPrice() {
+        long currentTime = Instant.now().toEpochMilli();
+        List<MarketPrice> prices = marketPriceRepository.findValidMarketPrices(currentTime, Instant.now().minus(acceptedDelayInMinutes, ChronoUnit.MINUTES).toEpochMilli());
+        return prices.stream()
+                .filter(p -> p.getStartTimestamp() <= currentTime && p.getEndTimestamp() > currentTime)
+                .map(MarketPrice::getMarketPrice)
+                .findFirst()
+                .orElse(null);
     }
 
     /**

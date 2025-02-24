@@ -5,7 +5,7 @@
 
     <groupId>de.zeus.power</groupId>
     <artifactId>zeus-power-control</artifactId>
-    <version>1.6.2-RELEASE</version>
+    <version>1.7-RELEASE</version>
 
     <parent>
         <groupId>org.springframework.boot</groupId>

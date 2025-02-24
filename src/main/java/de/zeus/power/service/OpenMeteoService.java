@@ -2,20 +2,18 @@ package de.zeus.power.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import de.zeus.power.config.LogFilter;
 import de.zeus.power.util.ChargingUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import java.util.Optional;
 
 @Service
 public class OpenMeteoService {
-
-    private static final Logger logger = LoggerFactory.getLogger(OpenMeteoService.class);
 
     @Value("${weather.api.base-url}")
     private String baseUrl;
@@ -48,47 +46,56 @@ public class OpenMeteoService {
 
     /**
      * Fetches the cloud cover data for the current hour.
-     * Ignores weather data if it is nighttime (based on configured hours).
+     * Ignores weather data if it is nighttime (based on configured hours) or if the API is disabled.
      *
      * @return Optional<Double> representing the cloud cover percentage (0 to 100).
      */
     public Optional<Double> getCurrentCloudCover() {
         if (!isWeatherApiEnabled) {
-            logger.info("Weather API is disabled. Skipping cloud cover check.");
+            LogFilter.logInfo(OpenMeteoService.class, "Weather API is disabled. Skipping cloud cover check.");
             return Optional.empty();
         }
 
         if (ChargingUtils.isNight(System.currentTimeMillis())) {
-            logger.info("Ignoring weather data as it is nighttime ({}:00 to {}:00).", nightStartHour, nightEndHour);
+            LogFilter.logInfo(OpenMeteoService.class, "Ignoring weather data as it is nighttime ({}:00 to {}:00).", nightStartHour, nightEndHour);
             return Optional.empty();
         }
 
-        // Generate URL manually
-        String url = baseUrl + "?latitude=" + latitude + "&longitude=" + longitude + "&hourly=" + hourlyParams;
-        logger.debug("Constructed Weather API URL: {}", url);
+        String url = buildWeatherApiUrl();
+        LogFilter.logDebug(OpenMeteoService.class, "Fetching cloud cover from URL: {}", url);
 
         try {
             ResponseEntity<String> response = restTemplate.getForEntity(url, String.class);
-            logger.debug("Weather API response: {}", response.getBody());
+            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
+                LogFilter.logWarn(OpenMeteoService.class, "Weather API call failed with status: {}", response.getStatusCode());
+                return Optional.empty();
+            }
 
-            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
-                JsonNode rootNode = objectMapper.readTree(response.getBody());
-                JsonNode hourlyNode = rootNode.path("hourly").path("cloudcover");
-                if (hourlyNode.isArray() && hourlyNode.size() > 0) {
-                    double cloudCover = hourlyNode.get(0).asDouble();
-                    logger.info("Fetched cloud cover data: {}%", cloudCover);
-                    return Optional.of(cloudCover);
-                } else {
-                    logger.warn("No cloud cover data available in the API response.");
-                }
+            JsonNode hourlyNode = parseCloudCoverNode(response.getBody());
+            if (hourlyNode != null && hourlyNode.isArray() && !hourlyNode.isEmpty()) {
+                double cloudCover = hourlyNode.get(0).asDouble();
+                LogFilter.logInfo(OpenMeteoService.class, "Fetched cloud cover data: {}%", cloudCover);
+                return Optional.of(cloudCover);
             } else {
-                logger.warn("Weather API call failed with status: {}", response.getStatusCode());
+                LogFilter.logWarn(OpenMeteoService.class, "No valid cloud cover data in API response.");
+                return Optional.empty();
             }
         } catch (Exception e) {
-            logger.error("Error occurred while fetching weather data: ", e);
+            LogFilter.logError(OpenMeteoService.class, "Failed to fetch weather data: {}", e.getMessage());
+            return Optional.empty();
         }
-
-        return Optional.empty();
     }
 
+    private String buildWeatherApiUrl() {
+        return UriComponentsBuilder.fromHttpUrl(baseUrl)
+                .queryParam("latitude", latitude)
+                .queryParam("longitude", longitude)
+                .queryParam("hourly", hourlyParams)
+                .toUriString();
+    }
+
+    private JsonNode parseCloudCoverNode(String responseBody) throws Exception {
+        JsonNode rootNode = objectMapper.readTree(responseBody);
+        return rootNode.path("hourly").path("cloudcover");
+    }
 }
