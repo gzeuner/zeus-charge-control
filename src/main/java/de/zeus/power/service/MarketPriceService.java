@@ -346,13 +346,25 @@ public class MarketPriceService {
      *
      * @return The current price in cent/kWh or null if no matching period exists.
      */
-    public Double getCurrentPrice() {
+    public Double getCurrentPriceForTimeRange() {
         long currentTime = Instant.now().toEpochMilli();
         List<MarketPrice> prices = marketPriceRepository.findValidMarketPrices(currentTime, Instant.now().minus(acceptedDelayInMinutes, ChronoUnit.MINUTES).toEpochMilli());
         return prices.stream()
                 .filter(p -> p.getStartTimestamp() <= currentTime && p.getEndTimestamp() > currentTime)
                 .map(MarketPrice::getMarketPrice)
                 .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * Retrieves the currently valid market price based on the current time.
+     *
+     * @return The current price in cent/kWh or null if no valid price exists for the current time.
+     */
+    public Double getCurrentlyValidPrice() {
+        long currentTime = Instant.now().toEpochMilli();
+        return marketPriceRepository.findCurrentMarketPrice(currentTime)
+                .map(MarketPrice::getMarketPrice)
                 .orElse(null);
     }
 

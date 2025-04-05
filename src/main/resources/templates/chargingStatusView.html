@@ -4,305 +4,81 @@
     <meta charset="UTF-8">
     <title th:text="#{title}">Charging Status and Market Prices</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css" rel="stylesheet">
-    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="https://unpkg.com/iframe-resizer/js/iframeResizer.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/luxon@3.0.3/build/global/luxon.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.0.0"></script>
-    <style>
-        /* General body styling */
-        body {
-            background-color: #f4f7fa;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            color: #333;
-        }
-        /* Main heading styling */
-        h1 {
-            color: #007bff;
-            font-weight: 600;
-            text-align: center;
-        }
-        /* Container styling for layout */
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        /* Button styling with lighter plastic 3D effect */
-        .btn {
-            background: linear-gradient(to bottom, #e6f2ff, #b3d9ff);
-            border: 1px solid #007bff;
-            border-radius: 8px;
-            color: #0056b3;
-            padding: 6px 12px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1),
-                       inset 0 1px 2px rgba(255, 255, 255, 0.4);
-            text-shadow: 0 1px 1px rgba(255, 255, 255, 0.8);
-            position: relative;
-            transition: all 0.2s ease;
-        }
-        .btn:hover {
-            background: linear-gradient(to bottom, #f0f7ff, #cce6ff);
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15),
-                       inset 0 1px 2px rgba(255, 255, 255, 0.5);
-            transform: translateY(1px);
-        }
-        .btn:active {
-            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1),
-                       inset 0 1px 2px rgba(0, 0, 0, 0.1);
-            transform: translateY(2px);
-        }
-        /* Special styling for the danger (Stop) button */
-        .btn.btn-danger {
-            background: linear-gradient(to bottom, #ffcccc, #ff9999);
-            border: 1px solid #dc3545;
-            color: #b02a37;
-        }
-        .btn.btn-danger:hover {
-            background: linear-gradient(to bottom, #ffe6e6, #ffadad);
-        }
-        /* Smaller toggle switch styling */
-        .toggle-switch {
-            display: inline-block;
-            position: relative;
-            width: 40px;
-            height: 20px;
-            vertical-align: middle;
-            margin: 0 5px;
-        }
-        .toggle-switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-        .slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: #ccc;
-            transition: .4s;
-            border-radius: 20px;
-            border: 1px solid #007bff;
-        }
-        .slider:before {
-            position: absolute;
-            content: "";
-            height: 16px;
-            width: 16px;
-            left: 2px;
-            bottom: 1px;
-            background-color: white;
-            transition: .4s;
-            border-radius: 50%;
-        }
-        input:checked + .slider {
-            background-color: #007bff;
-        }
-        input:checked + .slider:before {
-            transform: translateX(20px);
-        }
-        /* Toggle label styling for better readability */
-        .toggle-label {
-            font-size: 0.8rem;
-            color: #333;
-            text-shadow: 0 1px 1px rgba(255, 255, 255, 0.8);
-            margin-right: 8px; /* Increased margin for spacing */
-        }
-        /* Toggle container with flex for better alignment */
-        .toggle-container {
-            background-color: #fff;
-            padding: 5px 10px; /* Increased padding for more space */
-            border-radius: 4px;
-            display: flex; /* Flexbox for alignment */
-            align-items: center; /* Vertically center items */
-            gap: 5px; /* Space between label and toggle */
-        }
-        /* Dropdown menu styling */
-        .dropdown-menu {
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        }
-        .dropdown-item:hover {
-            background-color: #e6f2ff;
-        }
-        /* Card styling */
-        .card {
-            border: none;
-            border-radius: 12px;
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-            overflow: hidden;
-            margin-bottom: 20px;
-        }
-        .card-header {
-            background-color: #fff;
-            border-bottom: 1px solid #e0e0e0;
-            padding: 15px 20px;
-            color: #007bff;
-            font-weight: 500;
-        }
-        .card-body {
-            padding: 20px;
-            background-color: #fff;
-        }
-        /* Battery status and lowest price grid layout */
-        .battery-status, .lowest-price-status {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 20px;
-            justify-items: center;
-            text-align: center;
-        }
-        .battery-status-item span, .lowest-price-item span {
-            font-size: 1.5rem;
-            font-weight: bold;
-            margin-top: 5px;
-        }
-        .battery-status-item p, .lowest-price-item p {
-            margin: 0;
-            font-size: 0.9rem;
-            color: #666;
-        }
-        /* Highlighted table row styling */
-        .highlight {
-            background-color: #fff3cd;
-        }
-        /* Battery icon colors */
-        .fa-battery-full { color: #28a745; }
-        .fa-battery-half { color: #ffc107; }
-        .fa-battery-empty { color: #dc3545; }
-        /* Charging/discharging/idle icon styling */
-        .fa-charging-icon::before, .fa-discharging-icon::before, .fa-idle-icon::before {
-            content: "\f1e6";
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .fa-charging-icon::before { background: linear-gradient(to right, #28a745, #85e085); }
-        .fa-discharging-icon::before { background: linear-gradient(to right, #dc3545, #ff6666); }
-        .fa-idle-icon::before { background: linear-gradient(to right, #ffc107, #ffeb3b); }
-        /* Operating mode icon styling */
-        .fa-automatic { background: linear-gradient(to right, #007bff, #800080); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .fa-manual { background: linear-gradient(to right, #007bff, #40e0d0); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .fa-clock, .fa-euro-sign, .fa-tachometer-alt { color: #007bff; }
-        /* Text color utilities */
-        .text-success { color: #28a745 !important; }
-        .text-danger { color: #dc3545 !important; }
-        .text-muted { color: #6c757d !important; }
-        /* Navigation tabs styling */
-        .nav-tabs {
-            border-bottom: none;
-            margin-bottom: 20px;
-        }
-        .nav-link {
-            border: 1px solid #007bff;
-            border-radius: 8px;
-            margin-right: 10px;
-            color: #007bff;
-            background-color: #fff;
-            transition: background-color 0.3s;
-        }
-        .nav-link:hover, .nav-link.active {
-            background-color: #e6f2ff;
-            border-color: #0056b3;
-        }
-        /* Table styling */
-        .table {
-            background-color: #fff;
-            border-radius: 8px;
-            overflow: hidden;
-        }
-        .table th {
-            background-color: #f8f9fa;
-            color: #007bff;
-            border: none;
-            text-align: center;
-        }
-        .table td {
-            vertical-align: middle;
-        }
-        /* Chart container styling */
-        .chart-container {
-            position: relative;
-            height: 40vh;
-            width: 100%;
-            margin: 20px 0;
-            display: none;
-            background-color: #fff;
-            padding: 15px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-        }
-        /* Background colors for specific tab panes */
-        .market-prices-bg {
-            background-color: #e6f2ff;
-        }
-        .scheduled-charging-bg {
-            background-color: #e6ffe6;
-        }
-        /* Spinner animation for loading states */
-        .spinner-border {
-            display: none;
-            width: 3rem;
-            height: 3rem;
-            border: 0.3em solid #f3f3f3;
-            border-top: 0.3em solid #007bff;
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        /* Tooltip styling for grid charging info */
-        .grid-charging-tooltip {
-            max-width: 300px;
-            background-color: #fff;
-            border: 1px solid #007bff;
-            border-radius: 6px;
-            padding: 10px;
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-        }
-        .grid-charging-tooltip .tooltip-inner {
-            color: #333;
-            font-size: 0.9rem;
-            text-align: left;
-        }
-    </style>
-    <!-- Favicon for the browser tab -->
-    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+
+    <!-- Stylesheets -->
+    <link rel="stylesheet" th:href="@{/css/bootstrap.min.css}">
+    <link rel="stylesheet" th:href="@{/css/all.min.css}">
+    <link rel="stylesheet" th:href="@{/css/darkmode.css}">
+
+    <!-- Vendor Scripts -->
+    <script th:src="@{/js/jquery.slim.min.js}"></script>
+    <script th:src="@{/js/bootstrap.bundle.min.js}"></script>
+    <script th:src="@{/js/chart.min.js}"></script>
+    <script th:src="@{/js/luxon.min.js}"></script>
+    <script th:src="@{/js/chartjs-adapter-luxon.umd.js}"></script>
+
+    <!-- Initial AppData via Thymeleaf -->
+    <script th:inline="javascript">
+        /*<![CDATA[*/
+        window.AppData = {
+          translations: {
+            idle: /*[[#{idle}]]*/ 'Idle',
+            automatic: /*[[#{automatic}]]*/ 'Automatic',
+            nightIdle: /*[[#{nightIdle}]]*/ 'Night Idle',
+            on: /*[[#{on}]]*/ 'On',
+            off: /*[[#{off}]]*/ 'Off',
+            charging: /*[[#{charging}]]*/ 'Charging',
+            stopped: /*[[#{stopped}]]*/ 'Stopped',
+            chargingButtonTooltip: /*[[#{chargingButtonTooltip}]]*/ 'Starts or stops charging from the grid.',
+            currentPriceLabel: /*[[#{currentPriceLabel}]]*/ 'Current Price',
+            dropRateLabel: /*[[#{dropRateLabel}]]*/ 'Drop Rate',
+            noCurrentPriceInfo: /*[[#{noCurrentPriceInfo}]]*/ 'No current price available',
+            chart: /*[[#{chart}]]*/ 'Chart',
+            table: /*[[#{table}]]*/ 'Table',
+            startTime: /*[[#{startTime}]]*/ 'Start Time',
+            price: /*[[#{price}]]*/ 'Price'
+          },
+          cheapestPeriods: JSON.parse(/*[[${cheapestPeriodsJson}]]*/ "[]"),
+          marketPrices: JSON.parse(/*[[${marketPricesJson}]]*/ "[]"),
+          scheduledChargingPeriods: JSON.parse(/*[[${scheduledChargingPeriodsJson}]]*/ "[]")
+        };
+        /*]]>*/
+    </script>
+
+    <!-- Main App Script -->
+    <script th:src="@{/js/main.js}"></script>
+
+    <!-- Language Switch Helper -->
     <script>
-        // Function to toggle language and reload the page with the selected language
         function toggleLanguage(lang) {
-            window.location.href = '/charging-status?lang=' + lang;
+          window.location.href = '/charging-status?lang=' + lang;
         }
     </script>
 </head>
+
 <body>
 <div class="container">
-    <!-- Page title dynamically set with Thymeleaf -->
-    <h1 class="my-4" th:text="#{title}">Charging Status and Market Prices</h1>
-
-    <!-- Header section with language selector and license link -->
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <a th:href="@{/license(lang=${#locale.language})}" class="btn" th:text="#{licenseTerms}">License Terms</a>
-        <div class="dropdown">
-            <button class="btn dropdown-toggle" id="languageDropdown" data-bs-toggle="dropdown" aria-expanded="false"
-                    th:text="${#locale.language == 'de' ? 'Deutsch' : 'English'}">Deutsch</button>
-            <ul class="dropdown-menu" aria-labelledby="languageDropdown">
-                <li><a class="dropdown-item" href="#" onclick="toggleLanguage('de')">Deutsch</a></li>
-                <li><a class="dropdown-item" href="#" onclick="toggleLanguage('en')">English</a></li>
-            </ul>
+    <div class="top-bar">
+        <h1 th:text="#{title}">Charging Status and Market Prices</h1>
+        <div class="d-flex align-items-center gap-4">
+            <a th:href="@{/license(lang=${#locale.language})}" class="cool-btn">
+                <i class="fas fa-file-alt"></i>
+                <span th:text="#{licenseTerms}">License Terms</span>
+            </a>
+            <div class="dropdown">
+                <button class="cool-btn dropdown-toggle" id="languageDropdown" data-bs-toggle="dropdown">
+                    <i class="fas fa-globe"></i>
+                    <span th:text="${#locale.language == 'de' ? 'Deutsch' : 'English'}">Deutsch</span>
+                </button>
+                <ul class="dropdown-menu" aria-labelledby="languageDropdown">
+                    <li><a class="dropdown-item" href="#" onclick="toggleLanguage('de')">Deutsch</a></li>
+                    <li><a class="dropdown-item" href="#" onclick="toggleLanguage('en')">English</a></li>
+                </ul>
+            </div>
         </div>
     </div>
 
-    <!-- Thymeleaf variables for internationalization -->
     <div th:with="chargingText=#{charging}, dischargingText=#{discharging}, idleText=#{idle}, manualText=#{manual}, automaticText=#{automatic}">
-
-        <!-- Battery status section, displayed if configuration is invalid -->
         <div class="card" th:if="${batteryNotConfigured}">
             <div class="card-header">
                 <h2 th:text="#{batteryNotConfiguredTitle}">Battery Configuration Error</h2>
@@ -311,141 +87,150 @@
                 <p th:text="#{batteryNotConfiguredMessage}">The battery is not configured properly.</p>
             </div>
         </div>
-        <!-- Battery status section, displayed if configuration is valid -->
         <div class="card" th:unless="${batteryNotConfigured}">
             <div class="card-header">
                 <h2 th:text="#{currentBatteryStatus}">Current Battery Status</h2>
             </div>
             <div class="card-body">
-                <!-- Display battery status in a grid layout -->
-                <div class="battery-status">
-                    <!-- Capacity display with conditional icons -->
-                    <div class="battery-status-item">
-                        <i class="fas fa-battery-full fa-3x" th:classappend="${batteryStatus.rsoc >= 80} ? '' : 'd-none'"></i>
-                        <i class="fas fa-battery-half fa-3x" th:classappend="${batteryStatus.rsoc < 80 && batteryStatus.rsoc > 20} ? '' : 'd-none'"></i>
-                        <i class="fas fa-battery-empty fa-3x" th:classappend="${batteryStatus.rsoc <= 20} ? '' : 'd-none'"></i>
+                <div class="status-grid">
+                    <div class="status-item">
+                        <i class="fas fa-battery-full fa-4x"
+                           th:classappend="${batteryStatus.rsoc >= 80} ? '' : 'd-none'"></i>
+                        <i class="fas fa-battery-half fa-4x"
+                           th:classappend="${batteryStatus.rsoc < 80 && batteryStatus.rsoc > 20} ? '' : 'd-none'"></i>
+                        <i class="fas fa-battery-empty fa-4x"
+                           th:classappend="${batteryStatus.rsoc <= 20} ? '' : 'd-none'"></i>
                         <p th:text="#{capacity}">Capacity:</p>
                         <span th:text="${batteryStatus.rsoc}">0</span>%
                     </div>
-                    <!-- Charging/Discharging status -->
-                    <div class="battery-status-item">
-                        <i class="fas fa-3x" th:classappend="${batteryStatus.batteryCharging ? 'fa-charging-icon' : batteryStatus.batteryDischarging ? 'fa-discharging-icon' : 'fa-idle-icon'}"></i>
+                    <div class="status-item">
+                        <i class="fas fa-4x"
+                           th:classappend="${batteryStatus.batteryCharging ? 'fa-charging fa-plug' : batteryStatus.batteryDischarging ? 'fa-discharging fa-bolt' : 'fa-idle fa-pause'}"></i>
                         <p th:text="#{chargingDischarging}">Charging/Discharging:</p>
                         <span th:text="${batteryStatus.batteryCharging ? chargingText : batteryStatus.batteryDischarging ? dischargingText : idleText}">Idle</span>
                     </div>
-                    <!-- Operating mode -->
-                    <div class="battery-status-item">
-                        <i class="fas fa-cogs fa-3x" th:classappend="${batteryStatus.operatingMode == '1' ? 'fa-manual' : 'fa-automatic'}"></i>
+                    <div class="status-item">
+                        <i class="fas fa-cogs fa-4x"
+                           th:classappend="${batteryStatus.operatingMode == '1' ? 'fa-manual' : 'fa-automatic'}"></i>
                         <p th:text="#{operatingMode}">Operating Mode:</p>
                         <span th:text="${batteryStatus.operatingMode == '1' ? manualText : automaticText}">Automatic</span>
                     </div>
                 </div>
-
-                <!-- Mode and charging control buttons -->
-                <div class="row mt-4">
-                    <!-- Operating mode controls -->
-                    <div class="col-md-6">
-                        <div class="card">
-                            <div class="card-header text-center" th:text="#{toggleModeTitle}">Switch Operating Mode</div>
-                            <div class="card-body text-center">
-                                <!-- Mode switch buttons -->
-                                <form th:action="@{/reset-idle}" method="post" class="d-inline-block mx-2">
-                                    <button type="submit" class="btn" th:text="#{switchToIdle}">Switch to Idle</button>
-                                </form>
-                                <form th:action="@{/reset-automatic}" method="post" class="d-inline-block mx-2">
-                                    <button type="submit" class="btn" th:text="#{switchToStandard}">Switch to Standard</button>
-                                </form>
-                                <!-- Night charging toggle styled smaller -->
-                                <div class="d-inline-block mx-2 mt-2">
-                                    <div class="toggle-container">
-                                        <span class="toggle-label" th:text="#{nightChargingIdleToggle}">Keep Battery Idle at Night</span>
-                                        <div class="toggle-switch">
-                                            <input type="checkbox" id="nightChargingToggle" th:checked="${nightChargingIdle}" onchange="toggleNightCharging()">
-                                            <span class="slider"></span>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
+                <div class="action-buttons mt-4">
+                    <div class="card control-group">
+                        <div class="card-header">
+                            <h3 th:text="#{controlPanel}">Control Panel</h3>
                         </div>
-                    </div>
-                    <!-- Grid charging controls with tooltip -->
-                    <div class="col-md-6">
-                        <div class="card"
-                             data-bs-toggle="tooltip"
-                             data-bs-placement="top"
-                             data-bs-html="true"
-                             th:attr="data-bs-title=${gridChargingTooltip}">
-                            <div class="card-header text-center" th:text="#{chargeFromGrid}">Charge from the Grid</div>
-                            <div class="card-body text-center">
-                                <form id="startForm" th:action="@{/start-charging}" method="post" class="d-inline-block mx-2">
-                                    <button type="button" class="btn" onclick="confirmStartCharging()" th:text="#{startCharging}">Start</button>
-                                </form>
-                                <form id="resetForm" th:action="@{/reset-automatic}" method="post" class="d-inline-block mx-2">
-                                    <button type="submit" class="btn btn-danger" th:text="#{resetToAutomatic}">Stop</button>
-                                </form>
+                        <div class="card-body">
+                            <div class="button-container">
+                                <button class="on-off-btn" id="modeBtn"
+                                        th:classappend="${currentMode == 'idle' ? 'on' : 'off'}"
+                                        onclick="debouncedToggleMode()" data-bs-toggle="tooltip" data-bs-html="true"
+                                        th:attr="data-bs-title=#{modeTooltip}">
+                                    <i class="fas"
+                                       th:classappend="${currentMode == 'idle' ? 'fa-pause' : 'fa-play'}"></i>
+                                    <span th:if="${currentMode == 'idle'}" th:text="#{idle}">Idle</span>
+                                    <span th:unless="${currentMode == 'idle'}" th:text="#{automatic}">Automatic</span>
+                                    <span class="status-indicator"
+                                          th:classappend="${currentMode == 'idle' ? 'active' : 'inactive'}"></span>
+                                </button>
+                                <button class="on-off-btn" id="nightChargingBtn"
+                                        th:classappend="${nightChargingIdle ? 'on' : 'off'}"
+                                        onclick="debouncedToggleNightCharging()" data-bs-toggle="tooltip"
+                                        data-bs-html="true"
+                                        th:attr="data-bs-title=#{nightIdleTooltip}">
+                                    <i class="fas fa-moon"></i>
+                                    <span th:text="#{nightIdle}">Night Idle</span>
+                                    <span class="status-indicator"
+                                          th:classappend="${nightChargingIdle ? 'active' : 'inactive'}"></span>
+                                </button>
+                                <button class="on-off-btn" id="chargingBtn"
+                                        th:classappend="${isCharging ? 'on' : 'off'}"
+                                        onclick="debouncedToggleCharging()" data-bs-toggle="tooltip" data-bs-html="true"
+                                        th:attr="data-bs-title=${gridChargingTooltip}">
+                                    <i class="fas" th:classappend="${isCharging ? 'fa-stop' : 'fa-bolt'}"></i>
+                                    <span th:if="${isCharging}" th:text="#{charging}">Charging</span>
+                                    <span th:unless="${isCharging}" th:text="#{stopped}">Stopped</span>
+                                    <span class="status-indicator"
+                                          th:classappend="${isCharging ? 'active' : 'inactive'}"></span>
+                                </button>
                             </div>
                         </div>
                     </div>
                 </div>
-
-                <!-- Loading spinner -->
                 <div class="text-center mt-4">
                     <div class="spinner-border" id="loader" role="status">
                         <span class="visually-hidden">Loading...</span>
                     </div>
+                    <div id="progress-text">Processing...</div>
                 </div>
             </div>
         </div>
 
-        <!-- Lowest market price section -->
         <div class="card" th:if="${cheapestPrice != null}">
             <div class="card-header">
                 <h2 th:text="#{lowestMarketPrice}">Lowest Market Price</h2>
             </div>
             <div class="card-body">
-                <div class="lowest-price-status">
-                    <div class="lowest-price-item">
-                        <i class="fas fa-clock fa-3x"></i>
+                <div class="status-grid">
+                    <div class="status-item">
+                        <i class="fas fa-clock fa-4x"></i>
                         <p th:text="#{startTime}">Start Time:</p>
                         <span th:text="${#dates.format(cheapestPrice.startTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</span>
                     </div>
-                    <div class="lowest-price-item">
-                        <i class="fas fa-clock fa-3x"></i>
+                    <div class="status-item">
+                        <i class="fas fa-clock fa-4x"></i>
                         <p th:text="#{endTime}">End Time:</p>
                         <span th:text="${#dates.format(cheapestPrice.endTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</span>
                     </div>
-                    <div class="lowest-price-item">
-                        <i class="fas fa-euro-sign fa-3x"></i>
+                    <div class="status-item">
+                        <i class="fas fa-euro-sign fa-4x"></i>
                         <p th:text="#{price}">Price:</p>
-                        <span class="text-success" th:text="${#numbers.formatDecimal(cheapestPrice.marketPrice, 1, 2)}">N/A</span>
+                        <span class="cheapest-price"
+                              th:text="${#numbers.formatDecimal(cheapestPrice.marketPrice, 1, 2)}">N/A</span>
                         <span th:text="#{centPerKwh}">cent/kWh</span>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- Tabbed interface for cheapest periods, market prices, and scheduled charging -->
+        <select class="tab-select" onchange="showTab(this.value)">
+            <option value="scheduled-charging-periods" th:text="#{scheduledChargingPeriods}" selected></option>
+            <option value="cheapest-periods" th:text="#{cheapestPeriods}"></option>
+            <option value="market-prices" th:text="#{marketPrices}"></option>
+        </select>
         <ul class="nav nav-tabs" id="priceTabs" role="tablist">
             <li class="nav-item">
-                <button class="nav-link" id="cheapest-periods-tab" data-bs-toggle="tab" data-bs-target="#cheapest-periods" type="button"
-                        role="tab" aria-controls="cheapest-periods" th:text="#{cheapestPeriods}">Cheapest Periods</button>
+                <button class="nav-link" id="cheapest-periods-tab" data-bs-toggle="tab"
+                        data-bs-target="#cheapest-periods" type="button"
+                        role="tab" aria-controls="cheapest-periods" th:text="#{cheapestPeriods}">Cheapest Periods
+                </button>
             </li>
             <li class="nav-item">
-                <button class="nav-link" id="market-prices-tab" data-bs-toggle="tab" data-bs-target="#market-prices" type="button"
-                        role="tab" aria-controls="market-prices" th:text="#{marketPrices}">Market Prices</button>
+                <button class="nav-link" id="market-prices-tab" data-bs-toggle="tab" data-bs-target="#market-prices"
+                        type="button"
+                        role="tab" aria-controls="market-prices" th:text="#{marketPrices}">Market Prices
+                </button>
             </li>
             <li class="nav-item">
-                <button class="nav-link active" id="scheduled-charging-periods-tab" data-bs-toggle="tab" data-bs-target="#scheduled-charging-periods"
-                        type="button" role="tab" aria-controls="scheduled-charging-periods" th:text="#{scheduledChargingPeriods}">Scheduled Charging Periods</button>
+                <button class="nav-link active" id="scheduled-charging-periods-tab" data-bs-toggle="tab"
+                        data-bs-target="#scheduled-charging-periods"
+                        type="button" role="tab" aria-controls="scheduled-charging-periods"
+                        th:text="#{scheduledChargingPeriods}">Scheduled Charging Periods
+                </button>
             </li>
         </ul>
 
         <div class="tab-content" id="priceTabsContent">
-            <!-- Cheapest Periods Tab -->
             <div class="tab-pane fade" id="cheapest-periods" role="tabpanel" aria-labelledby="cheapest-periods-tab">
                 <div class="card">
                     <div class="card-body">
-                        <button class="btn mb-3" id="toggleCheapestPeriods" th:text="#{toggleView}">Toggle View</button>
+                        <div class="action-buttons mb-3">
+                            <button class="cool-btn" id="toggleCheapestPeriods">
+                                <i class="fas fa-eye"></i>
+                                <span th:text="#{toggleView}">Toggle View</span>
+                            </button>
+                        </div>
                         <div id="cheapestPeriodsTable" class="table-responsive">
                             <table class="table table-hover">
                                 <thead>
@@ -472,12 +257,15 @@
                     </div>
                 </div>
             </div>
-
-            <!-- Market Prices Tab -->
-            <div class="tab-pane fade market-prices-bg" id="market-prices" role="tabpanel" aria-labelledby="market-prices-tab">
+            <div class="tab-pane fade" id="market-prices" role="tabpanel" aria-labelledby="market-prices-tab">
                 <div class="card">
                     <div class="card-body">
-                        <button class="btn mb-3" id="toggleMarketPrices" th:text="#{toggleView}">Toggle View</button>
+                        <div class="action-buttons mb-3">
+                            <button class="cool-btn" id="toggleMarketPrices">
+                                <i class="fas fa-eye"></i>
+                                <span th:text="#{toggleView}">Toggle View</span>
+                            </button>
+                        </div>
                         <div id="marketPricesTable" class="table-responsive">
                             <table class="table table-hover">
                                 <thead>
@@ -503,12 +291,16 @@
                     </div>
                 </div>
             </div>
-
-            <!-- Scheduled Charging Periods Tab -->
-            <div class="tab-pane fade show active scheduled-charging-bg" id="scheduled-charging-periods" role="tabpanel" aria-labelledby="scheduled-charging-periods-tab">
+            <div class="tab-pane fade show active" id="scheduled-charging-periods" role="tabpanel"
+                 aria-labelledby="scheduled-charging-periods-tab">
                 <div class="card">
                     <div class="card-body">
-                        <button class="btn mb-3" id="toggleChargingSchedule" th:text="#{toggleView}">Toggle View</button>
+                        <div class="action-buttons mb-3">
+                            <button class="cool-btn" id="toggleChargingSchedule">
+                                <i class="fas fa-eye"></i>
+                                <span th:text="#{toggleView}">Toggle View</span>
+                            </button>
+                        </div>
                         <div id="chargingScheduleTable" class="table-responsive">
                             <table class="table table-hover">
                                 <thead>
@@ -538,203 +330,22 @@
     </div>
 </div>
 
-<!-- Confirmation modal for charging start -->
-<div class="modal fade" id="confirmationModal" tabindex="-1" aria-labelledby="confirmationModalLabel" aria-hidden="true">
+<div class="modal fade" id="confirmationModal" tabindex="-1" aria-labelledby="confirmationModalLabel"
+     aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title" id="confirmationModalLabel" th:text="#{confirm_start_charging_title}">Ladevorgang starten?</h5>
+                <h5 class="modal-title" id="confirmationModalLabel" th:text="#{confirm_start_charging_title}">Start Charging?</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body" th:text="#{confirm_start_charging_message}"></div>
             <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" id="cancelStart" data-bs-dismiss="modal" th:text="#{confirm_start_charging_cancel}">Abbrechen</button>
-                <button type="button" class="btn btn-primary" id="confirmStart" th:text="#{confirm_start_charging_confirm}">OK</button>
+                <button type="button" class="cool-btn" id="cancelStart" th:text="#{confirm_start_charging_cancel}"
+                        onclick="hideLoader();">Cancel</button>
+                <button type="button" class="cool-btn" id="confirmStart" th:text="#{confirm_start_charging_confirm}">OK</button>
             </div>
         </div>
     </div>
 </div>
-
-<script th:inline="javascript">
-    // Initialize iframe resizer for any ad banners
-    iFrameResize({ log: false, checkOrigin: false }, '.ad-banner');
-
-    // Document ready event handler for initializing charts, tooltips, and event listeners
-    document.addEventListener("DOMContentLoaded", function () {
-        // Parse JSON data for charts
-        var cheapestPeriodsData = /*[[${cheapestPeriodsJson}]]*/ '[]';
-        var marketPricesData = /*[[${marketPricesJson}]]*/ '[]';
-        var chargingPeriodsData = /*[[${scheduledChargingPeriodsJson}]]*/ '[]';
-
-        if (typeof cheapestPeriodsData === 'string') cheapestPeriodsData = JSON.parse(cheapestPeriodsData);
-        if (typeof marketPricesData === 'string') marketPricesData = JSON.parse(marketPricesData);
-        if (typeof chargingPeriodsData === 'string') chargingPeriodsData = JSON.parse(chargingPeriodsData);
-
-        // Internationalization messages
-        var i18nMessages = {
-            charging: /*[[${chargingText}]]*/ 'Charging',
-            discharging: /*[[${dischargingText}]]*/ 'Discharging',
-            idle: /*[[${idleText}]]*/ 'Idle',
-            manual: /*[[${manualText}]]*/ 'Manual',
-            automatic: /*[[${automaticText}]]*/ 'Automatic'
-        };
-
-        // Initialize tooltips (Bootstrap 5)
-        var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-        var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
-            return new bootstrap.Tooltip(tooltipTriggerEl);
-        });
-
-        // Initialize Cheapest Periods Chart
-        var ctxCheapest = document.getElementById('cheapestPeriodsChart').getContext('2d');
-        new Chart(ctxCheapest, {
-            type: 'bar',
-            data: {
-                labels: cheapestPeriodsData.map(period => new Date(period.startTimestamp)),
-                datasets: [{
-                    label: 'cent/kWh',
-                    data: cheapestPeriodsData.map(period => period.marketPrice),
-                    backgroundColor: 'rgba(0, 123, 255, 0.6)',
-                    borderColor: 'rgba(0, 123, 255, 1)',
-                    borderWidth: 1
-                }]
-            },
-            options: {
-                scales: {
-                    x: { type: 'time', time: { unit: 'hour', tooltipFormat: 'dd LLLL HH:mm', displayFormats: { hour: 'dd LLLL HH:mm' } }, title: { display: true, text: /*[[#{startTime}]]*/ 'Start Time' } },
-                    y: { beginAtZero: true, title: { display: true, text: /*[[#{price}]]*/ 'Price (cent/kWh)' } }
-                },
-                responsive: true,
-                maintainAspectRatio: false
-            }
-        });
-
-        // Initialize Market Prices Chart
-        var ctxMarket = document.getElementById('marketPricesChart').getContext('2d');
-        new Chart(ctxMarket, {
-            type: 'line',
-            data: {
-                labels: marketPricesData.map(period => new Date(period.startTimestamp)),
-                datasets: [{
-                    label: 'cent/kWh',
-                    data: marketPricesData.map(period => period.marketPrice),
-                    backgroundColor: 'rgba(0, 123, 255, 0.2)',
-                    borderColor: 'rgba(0, 123, 255, 1)',
-                    borderWidth: 1,
-                    fill: true
-                }]
-            },
-            options: {
-                scales: {
-                    x: { type: 'time', time: { unit: 'hour', tooltipFormat: 'dd LLLL HH:mm', displayFormats: { hour: 'dd LLLL HH:mm' } }, title: { display: true, text: /*[[#{startTime}]]*/ 'Start Time' } },
-                    y: { beginAtZero: true, title: { display: true, text: /*[[#{price}]]*/ 'Price (cent/kWh)' } }
-                },
-                responsive: true,
-                maintainAspectRatio: false
-            }
-        });
-
-        // Initialize Scheduled Charging Periods Chart
-        var ctxCharging = document.getElementById('chargingScheduleChart').getContext('2d');
-        new Chart(ctxCharging, {
-            type: 'bar',
-            data: {
-                labels: chargingPeriodsData.map(period => new Date(period.startTimestamp)),
-                datasets: [{
-                    label: 'cent/kWh',
-                    data: chargingPeriodsData.map(period => period.price),
-                    backgroundColor: 'rgba(0, 123, 255, 0.6)',
-                    borderColor: 'rgba(0, 123, 255, 1)',
-                    borderWidth: 1
-                }]
-            },
-            options: {
-                scales: {
-                    x: { type: 'time', time: { unit: 'hour', tooltipFormat: 'dd LLLL HH:mm', displayFormats: { hour: 'dd LLLL HH:mm' } }, title: { display: true, text: /*[[#{startTime}]]*/ 'Start Time' } },
-                    y: { beginAtZero: true, title: { display: true, text: /*[[#{price}]]*/ 'Price (cent/kWh)' } }
-                },
-                responsive: true,
-                maintainAspectRatio: false
-            }
-        });
-
-        // Function to toggle between table and chart views
-        function toggleView(buttonId, tableId, chartContainerId) {
-            document.getElementById(buttonId).addEventListener('click', function () {
-                var table = document.getElementById(tableId);
-                var chart = document.getElementById(chartContainerId);
-                if (table.style.display === 'none') {
-                    table.style.display = 'block';
-                    chart.style.display = 'none';
-                    this.textContent = /*[[#{chart}]]*/ 'Chart';
-                } else {
-                    table.style.display = 'none';
-                    chart.style.display = 'block';
-                    this.textContent = /*[[#{table}]]*/ 'Table';
-                }
-            });
-        }
-
-        // Apply toggle view functions to tabs
-        toggleView('toggleCheapestPeriods', 'cheapestPeriodsTable', 'cheapestPeriodsChartContainer');
-        toggleView('toggleMarketPrices', 'marketPricesTable', 'marketPricesChartContainer');
-        toggleView('toggleChargingSchedule', 'chargingScheduleTable', 'chargingScheduleChartContainer');
-
-        // Add submit event listeners to show loader
-        const startForm = document.getElementById("startForm");
-        const resetForm = document.getElementById("resetForm");
-        startForm.addEventListener("submit", showLoader);
-        resetForm.addEventListener("submit", showLoader);
-    });
-
-    // Function to show the loading spinner
-    function showLoader() {
-        document.getElementById("loader").style.display = "block";
-    }
-
-    // Function to confirm start charging with a modal
-    function confirmStartCharging() {
-        let modal = new bootstrap.Modal(document.getElementById('confirmationModal'));
-        modal.show();
-        let timeout = setTimeout(() => modal.hide(), 5000);
-
-        document.getElementById('confirmStart').onclick = function () {
-            clearTimeout(timeout);
-            document.getElementById('startForm').submit();
-            modal.hide();
-        };
-        document.getElementById('cancelStart').onclick = function () {
-            clearTimeout(timeout);
-            modal.hide();
-        };
-    }
-
-    // Function to toggle night charging behavior via AJAX
-    function toggleNightCharging() {
-        var toggle = document.getElementById('nightChargingToggle');
-        var isChecked = toggle.checked;
-        fetch('/toggle-night-charging', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ nightChargingIdle: isChecked })
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                console.log('Night charging behavior updated:', isChecked);
-            } else {
-                alert('Failed to update night charging behavior');
-                toggle.checked = !isChecked; // Revert on failure
-            }
-        })
-        .catch(error => {
-            console.error('Error updating night charging:', error);
-            alert('Error updating night charging behavior');
-            toggle.checked = !isChecked; // Revert on error
-        });
-    }
-</script>
 </body>
 </html>

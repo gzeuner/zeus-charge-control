@@ -51,6 +51,7 @@ public class BatteryManagementService {
     private final OpenMeteoService weatherService;
     private final ChargingScheduleRepository chargingScheduleRepository;
     private final boolean batteryNotConfigured;
+    private boolean manualIdleActive = false;
 
     // Configuration values injected via Spring
     @Value("${battery.target.stateOfCharge:90}")
@@ -195,13 +196,15 @@ public class BatteryManagementService {
      * @return True if reset was successful, false otherwise.
      */
     public boolean resetToAutomaticMode() {
+
+        if (isBatteryNotConfigured()) {
+            return false;
+        }
+
         invalidateBatteryCache();
         if (isAutomaticOperatingMode()) {
             LogFilter.logDebug(BatteryManagementService.class, "Battery is not in manual mode, no need to switch to automatic mode.");
             return true;
-        }
-        if (isBatteryNotConfigured()) {
-            return false;
         }
 
         if (!setDynamicChargingPoint(chargingPointInWatt)) {
@@ -387,6 +390,18 @@ public class BatteryManagementService {
      */
     private void resetForcedCharging() {
         setForcedChargingActive(false);
+    }
+
+    public boolean isManualIdleActive() {
+        return manualIdleActive;
+    }
+
+    public void setManualIdleActive(boolean active) {
+        this.manualIdleActive = active;
+    }
+
+    public boolean isForcedChargingActive() {
+        return forcedChargingActive;
     }
 
     /**
