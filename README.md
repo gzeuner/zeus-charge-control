@@ -63,9 +63,30 @@ nighttime.max.periods=2
 
 ---
 
+## Verwendete Bibliotheken und Lizenzen
+
+| Komponente                  | Lizenz         | Quelle                                              |
+|----------------------------|----------------|-----------------------------------------------------|
+| Bootstrap 5.3.0            | MIT            | https://getbootstrap.com                            |
+| Font Awesome 6 (Free)      | MIT            | https://fontawesome.com                             |
+| jQuery 3.5.1 Slim          | MIT            | https://jquery.com                                  |
+| Chart.js                   | MIT            | https://www.chartjs.org/                            |
+| Luxon                      | MIT            | https://moment.github.io/luxon/                     |
+| chartjs-adapter-luxon      | MIT            | https://github.com/chartjs/chartjs-adapter-luxon    |
+| Roboto Font                | Apache 2.0     | https://fonts.google.com/specimen/Roboto            |
+
+## Verwendete APIs
+
+- **Open-Meteo API**: Wetterdaten ([Nutzungsbedingungen](https://open-meteo.com/en/terms))
+- **aWATTar API**: Strommarktdaten
+- **Tibber API**: Strommarktdaten (Beta)
+- **Sonnen API v2**: Batteriezustände und Steuerung
+
+---
+
 ## Lizenz
 
-Zeus Charge Control steht unter der **Apache License, Version 2.0**. Siehe [`LICENSE`](./LICENSE) für Details.
+Zeus Charge Control steht unter der **Apache License, Version 2.0**. Siehe [LICENSE](LICENSE) für Details.
 
 ---
 
@@ -120,6 +141,28 @@ Zeus Charge Control steht unter der **Apache License, Version 2.0**. Siehe [`LIC
 
 ---
 
+## Libraries & Licenses
+
+| Component                 | License        | Source                                               |
+|--------------------------|----------------|------------------------------------------------------|
+| Bootstrap 5.3.0          | MIT            | https://getbootstrap.com                             |
+| Font Awesome 6 (Free)    | MIT            | https://fontawesome.com                              |
+| jQuery 3.5.1 Slim        | MIT            | https://jquery.com                                   |
+| Chart.js                 | MIT            | https://www.chartjs.org/                             |
+| Luxon                    | MIT            | https://moment.github.io/luxon/                      |
+| chartjs-adapter-luxon    | MIT            | https://github.com/chartjs/chartjs-adapter-luxon     |
+| Roboto Font              | Apache 2.0     | https://fonts.google.com/specimen/Roboto             |
+
+## Third-Party APIs
+
+- **Open-Meteo API** – Weather data ([Terms](https://open-meteo.com/en/terms))
+- **aWATTar API** – Market prices
+- **Tibber API** – Market prices (Beta)
+- **Sonnen API v2** – Battery status and control
+
+---
+
 ## License
 
-Licensed under the **Apache License, Version 2.0**. See [`LICENSE`](./LICENSE) file for full terms.
+Licensed under the **Apache License, Version 2.0**. See [LICENSE](LICENSE) file for full terms.
+
