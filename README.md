@@ -65,7 +65,7 @@ nighttime.max.periods=2
 
 ## Lizenz
 
-Zeus Charge Control steht unter der **Apache License, Version 2.0**. Siehe `LICENSE` für Details.
+Zeus Charge Control steht unter der **Apache License, Version 2.0**. Siehe [`LICENSE`](./LICENSE) für Details.
 
 ---
 
@@ -122,5 +122,4 @@ Zeus Charge Control steht unter der **Apache License, Version 2.0**. Siehe `LICE
 
 ## License
 
-Licensed under the **Apache License, Version 2.0**. See `LICENSE` file for full terms.
-
+Licensed under the **Apache License, Version 2.0**. See [`LICENSE`](./LICENSE) file for full terms.
