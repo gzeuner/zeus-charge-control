@@ -2,39 +2,71 @@
 <html lang="de">
 <head>
     <meta charset="UTF-8">
+    <meta name="license" content="Apache-2.0">
     <title>Lizenzbedingungen</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 </head>
 <body>
 <div class="container mt-5">
     <h1>Lizenzbedingungen</h1>
+
     <p>
-        Diese Software wird Ihnen unter der Apache License, Version 2.0, zur Verfügung gestellt. Sie dürfen die Software kostenlos verwenden, kopieren, modifizieren und weitergeben, sowohl für private als auch für kommerzielle Zwecke, solange Sie die Bedingungen der Apache License, Version 2.0, einhalten. Die Nutzung erfolgt auf eigenes Risiko, ohne jegliche Garantie auf Fehlerfreiheit, ohne Anspruch auf Unterstützung und ohne Verpflichtung zu Updates. Jegliche Haftungsansprüche sind ausgeschlossen.
+        Diese Software wird unter der <strong>Apache License, Version 2.0</strong> lizenziert. Sie dürfen die Software kostenlos
+        verwenden, kopieren, verändern und verbreiten – sowohl für private als auch kommerzielle Zwecke – solange Sie die Bedingungen
+        der Lizenz einhalten. Die Nutzung erfolgt auf eigenes Risiko, ohne Garantie, Support oder Updates.<br>
+        Eine Kopie der Lizenz finden Sie unter: <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank">
+        https://www.apache.org/licenses/LICENSE-2.0</a> oder <a href="./LICENSE">LICENSE</a> im Projektverzeichnis.
+    </p>
+
+    <p>
+        Dieses Produkt basiert auf Open-Source-Komponenten und Frameworks. Es werden u.a. folgende Bibliotheken verwendet:
+    </p>
+
+    <h3 class="mt-4">Frontend-Bibliotheken (MIT / Apache-2.0)</h3>
+    <ul>
+        <li><strong>Bootstrap 5.3.0</strong> – <a href="https://getbootstrap.com">getbootstrap.com</a> (MIT)</li>
+        <li><strong>Font Awesome 6 (Free Icons)</strong> – <a href="https://fontawesome.com">fontawesome.com</a> (MIT)<br>
+            <em>Font Awesome ist eine Marke von Fonticons, Inc.</em></li>
+        <li><strong>jQuery 3.5.1 (Slim)</strong> – <a href="https://jquery.com">jquery.com</a> (MIT)</li>
+        <li><strong>Chart.js</strong> – <a href="https://www.chartjs.org/">chartjs.org</a> (MIT)</li>
+        <li><strong>Luxon</strong> – <a href="https://moment.github.io/luxon/">luxon</a> (MIT)</li>
+        <li><strong>chartjs-adapter-luxon</strong> (MIT)</li>
+        <li><strong>Roboto Font</strong> – <a href="https://fonts.google.com/specimen/Roboto">Google Fonts</a> (Apache 2.0)</li>
+    </ul>
+
+    <h3 class="mt-4">Java-Backend-Komponenten (Apache-2.0 / EPL)</h3>
+    <ul>
+        <li><strong>Spring Boot Framework</strong> (Web, Data JPA, Thymeleaf, AOP) – <a href="https://spring.io/projects/spring-boot">spring.io</a> (Apache License 2.0)</li>
+        <li><strong>Spring Retry</strong> – <a href="https://github.com/spring-projects/spring-retry">spring-retry</a> (Apache License 2.0)</li>
+        <li><strong>H2 Database</strong> – <a href="https://www.h2database.com/">h2database.com</a> (Eclipse Public License 1.0)</li>
+        <li><strong>Jakarta Persistence API</strong> – <a href="https://projects.eclipse.org/projects/ee4j.jpa">Eclipse EE4J</a> (EPL / EDL)</li>
+    </ul>
+
+    <h3 class="mt-4">Externe APIs und Datenquellen</h3>
+    <p>
+        Unterstützt werden die Sonnen API v2, aWATTar API v1, Tibber API (Beta) sowie Wetterdaten über die
+        <a href="https://open-meteo.com/">Open-Meteo API</a>.
     </p>
     <p>
-        Lizenz: Apache License, Version 2.0.<br><br>
-        Dieses Produkt enthält Software, die im Rahmen des Spring Boot-Projekts <a href="http://spring.io/projects/spring-boot"> (http://spring.io/projects/spring-boot)</a> entwickelt wurde. Die Spring Boot-Komponenten stehen ebenfalls unter der Apache License, Version 2.0 <a href="http://www.apache.org/licenses/LICENSE-2.0">(http://www.apache.org/licenses/LICENSE-2.0)</a>.
+        Die Open-Meteo API ist kostenlos für <strong>nicht-kommerzielle Nutzung</strong>. Für kommerzielle Zwecke ist ggf. ein API-Schlüssel erforderlich.
+        Weitere Informationen: <a href="https://open-meteo.com/en/terms" target="_blank">Nutzungsbedingungen von Open-Meteo</a>.
     </p>
-    <p>
-        Alle in der App und auf unserem Blog <a href="https://tiny-tool.de">https://tiny-tool.de</a> genannten Produktnamen, Logos und Marken sind Eigentum der jeweiligen Inhaber.
-    </p>
-    <p>
-        Unterstützt werden die Sonnen API v2, aWATTar API v1, Tibber API v beta und die Wetter-API von Open-Meteo.
-    </p>
-    <p>
-        Wenn die Wetter-API von <a href="https://open-meteo.com/">Open-Meteo</a> verwendet wird, ist zu beachten, dass diese nur für nicht kommerzielle Zwecke kostenfrei ist. Für kommerzielle Nutzung ist ein API-Schlüssel erforderlich. Weitere Informationen finden Sie in den <a href="https://open-meteo.com/en/terms">Nutzungsbedingungen von Open-Meteo</a>.
-    </p>
-    <p>
+
+    <p class="mt-4">
         Diese Software <strong>stammt nicht</strong> von aWATTar GmbH, Tibber Deutschland GmbH, sonnen GmbH oder Open-Meteo.
     </p>
-    <p>
-        Copyright 2024 - Guido Zeuner - <a href="https://tiny-tool.de">https://tiny-tool.de</a>
+
+    <p class="mt-4">
+        © 2024 Guido Zeuner – <a href="https://tiny-tool.de">tiny-tool.de</a><br>
+        Diese Software enthält Bestandteile Dritter und steht unter den jeweils genannten Lizenzen.
     </p>
-    <button class="btn btn-secondary" onclick="goBack()">Zurück</button>
+
+    <button class="btn btn-secondary mt-4" onclick="goBack()">Zurück</button>
 </div>
+
 <script>
     function goBack() {
-        window.history.back();
+      window.history.back();
     }
 </script>
 </body>
