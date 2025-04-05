@@ -106,6 +106,11 @@ public class ChargingUtils {
     }
 
     public void handleAutomaticModeTransition(long currentTimeMillis) {
+
+        if (batteryManagementService.isManualIdleActive()) {
+            return;
+        }
+
         boolean isNight = isNight(currentTimeMillis);
         int currentRsoc = batteryManagementService.getRelativeStateOfCharge();
         LogFilter.logInfo(ChargingUtils.class, "Current time: {}, isNight: {}, RSOC: {}%, Target RSOC: {}%",

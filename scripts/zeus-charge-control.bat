@@ -13,6 +13,6 @@ set AWATTAR_AUTH_TOKEN=your_awattar_auth_token
 set TIBBER_AUTH_TOKEN=your_tibber_auth_token
 
 REM Run the Java application
-java -jar zeus-charge-control-1.7.jar
+java -jar zeus-charge-control-2.0.jar
 
 

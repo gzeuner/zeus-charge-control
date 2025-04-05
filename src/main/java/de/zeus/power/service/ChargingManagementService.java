@@ -274,6 +274,7 @@ public class ChargingManagementService {
         LogFilter.logInfo(ChargingManagementService.class, "Scheduling end-of-night reset for: {}", resetDate);
         scheduledTasks.put(END_OF_NIGHT_RESET_ID, taskScheduler.schedule(() -> {
             LogFilter.logInfo(ChargingManagementService.class, "Executing end-of-night reset...");
+            batteryManagementService.setManualIdleActive(false);
             logResetResult(batteryManagementService.resetToAutomaticMode());
         }, resetDate));
     }
@@ -321,6 +322,9 @@ public class ChargingManagementService {
      * Schedules stop tasks for all planned charging periods.
      */
     public void scheduleStopPlannedCharging() {
+        if(!ChargingUtils.isNight(System.currentTimeMillis())) {
+            return;
+        }
         chargingScheduleRepository.findAll().stream()
                 .filter(s -> s.getStartTimestamp() > System.currentTimeMillis())
                 .sorted(Comparator.comparingLong(ChargingSchedule::getEndTimestamp))
