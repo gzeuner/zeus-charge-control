@@ -150,8 +150,19 @@ public class ChargingUtils {
         ZonedDateTime nightStart = currentTime.withHour(nightStartHour).withMinute(0).withSecond(0).withNano(0);
         ZonedDateTime nightEnd = currentTime.withHour(nightEndHour).withMinute(0).withSecond(0).withNano(0);
 
+        // Handle date adjustment for night period crossing midnight
         if (nightStartHour > nightEndHour) {
-            nightEnd = currentTime.getHour() < nightEndHour ? nightStart.minusDays(1) : nightEnd.plusDays(1);
+            // Night crosses midnight
+            if (currentTime.getHour() < nightEndHour) {
+                // Current time is after midnight but before nightEndHour
+                nightStart = nightStart.minusDays(1); // Set nightStart to previous day
+            } else {
+                // Current time is before midnight, so nightEnd is next day
+                nightEnd = nightEnd.plusDays(1);
+            }
+        } else if (nightStartHour == nightEndHour) {
+            // If start and end hours are equal, assume full 24-hour period
+            return true;
         }
 
         boolean isNight = !currentTime.isBefore(nightStart) && currentTime.isBefore(nightEnd);
