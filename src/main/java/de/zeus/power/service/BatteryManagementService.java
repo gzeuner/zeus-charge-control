@@ -39,7 +39,9 @@ public class BatteryManagementService {
     // Constants for operating modes
     private static final String OPERATING_MODE = "EM_OperatingMode";
     private static final String OP_MODE_MANUAL = "1";
-    private static final String OP_MODE_AUTOMATIC = "11";
+    private static final String OP_MODE_AUTOMATIC = "2";
+    private static final String OP_MODE_TIME_OF_USE = "10";
+    private static final String OP_MODE_AUTOMATIC_WITH_OPTIMIZATION = "11";
 
     // Constants for retry logic and default RSOC
     private static final int RETRY_DELAY_MS = 15_000; // Delay between retry attempts in milliseconds
