@@ -6,24 +6,20 @@ import org.springframework.stereotype.Component;
 import javax.annotation.PostConstruct;
 
 /**
- * Copyright 2024 Guido Zeuner - https://tiny-tool.de
+ * Copyright 2025 Guido Zeuner - https://tiny-tool.de
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * ...
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Holds night start/end hour configuration for reuse across services and utilities.
  */
-
 @Component
 public class NightConfig {
 
+    /**
+     * Holds night start/end hour configuration for reuse across services and utilities.
+     * Author: User
+     */
     @Value("${night.start:22}")
     private int nightStartHourConfig;
 
@@ -39,11 +35,23 @@ public class NightConfig {
         nightEndHour = nightEndHourConfig;
     }
 
+    public static synchronized void updateNightHours(int startHour, int endHour) {
+        validate(startHour, endHour);
+        nightStartHour = startHour;
+        nightEndHour = endHour;
+    }
+
     public static int getNightStartHour() {
         return nightStartHour;
     }
 
     public static int getNightEndHour() {
         return nightEndHour;
+    }
+
+    private static void validate(int start, int end) {
+        if (start < 0 || start > 23 || end < 0 || end > 23) {
+            throw new IllegalArgumentException("Invalid night hours: " + start + " to " + end);
+        }
     }
 }

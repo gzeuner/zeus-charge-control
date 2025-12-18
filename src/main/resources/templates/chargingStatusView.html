@@ -25,6 +25,15 @@
             idle: /*[[#{idle}]]*/ 'Idle',
             automatic: /*[[#{automatic}]]*/ 'Automatic',
             nightIdle: /*[[#{nightIdle}]]*/ 'Night Idle',
+            nightWindowKicker: /*[[#{nightWindowKicker}]]*/ 'Night idle window',
+            nightWindowTitle: /*[[#{nightWindowTitle}]]*/ 'Set quiet hours',
+            nightWindowStartLabel: /*[[#{nightWindowStartLabel}]]*/ 'Start',
+            nightWindowEndLabel: /*[[#{nightWindowEndLabel}]]*/ 'End',
+            nightWindowSave: /*[[#{nightWindowSave}]]*/ 'Save',
+            nightWindowStatusDefault: /*[[#{nightWindowStatusDefault}]]*/ 'Default values apply until saved.',
+            nightWindowStatusSaved: /*[[#{nightWindowStatusSaved}]]*/ 'Saved',
+            nightWindowInvalidHours: /*[[#{nightWindowInvalidHours}]]*/ 'Please enter hours between 0 and 23.',
+            nightWindowSaveError: /*[[#{nightWindowSaveError}]]*/ 'Saving night window failed',
             on: /*[[#{on}]]*/ 'On',
             off: /*[[#{off}]]*/ 'Off',
             charging: /*[[#{charging}]]*/ 'Charging',
@@ -40,7 +49,9 @@
           },
           cheapestPeriods: JSON.parse(/*[[${cheapestPeriodsJson}]]*/ "[]"),
           marketPrices: JSON.parse(/*[[${marketPricesJson}]]*/ "[]"),
-          scheduledChargingPeriods: JSON.parse(/*[[${scheduledChargingPeriodsJson}]]*/ "[]")
+          scheduledChargingPeriods: JSON.parse(/*[[${scheduledChargingPeriodsJson}]]*/ "[]"),
+          nightStartHour: /*[[${nightStartHour}]]*/ 22,
+          nightEndHour: /*[[${nightEndHour}]]*/ 6
         };
         /*]]>*/
     </script>
@@ -54,6 +65,14 @@
           window.location.href = '/charging-status?lang=' + lang;
         }
     </script>
+
+    <style id="spinner-styles">
+        #loaderOverlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.35);z-index:2000}
+        #loaderOverlay.show{display:flex}
+        .loader{width:56px;height:56px;border:6px solid #e0e0e0;border-top-color:#3b82f6;border-radius:50%;animation:spin 1s linear infinite}
+        @keyframes spin{to{transform:rotate(360deg)}}
+    </style>
+
 </head>
 
 <body>
@@ -109,11 +128,18 @@
                         <p th:text="#{chargingDischarging}">Charging/Discharging:</p>
                         <span th:text="${batteryStatus.batteryCharging ? chargingText : batteryStatus.batteryDischarging ? dischargingText : idleText}">Idle</span>
                     </div>
+                    <!-- Steuerung (Automatisch/Manuell + ggf. Setpoint) -->
                     <div class="status-item">
-                        <i class="fas fa-cogs fa-4x"
-                           th:classappend="${batteryStatus.operatingMode == '1' ? 'fa-manual' : 'fa-automatic'}"></i>
-                        <p th:text="#{operatingMode}">Operating Mode:</p>
-                        <span th:text="${batteryStatus.operatingMode == '1' ? manualText : automaticText}">Automatic</span>
+                        <i class="fas fa-4x"
+                           th:classappend="${lastSetpointW == 0} ? 'fa-play' : 'fa-sliders-h'"
+                           style="background: linear-gradient(135deg, #6a0dad, #00008b); -webkit-background-clip: text; -webkit-text-fill-color: transparent;"></i>
+                        <p th:text="#{controlMode}">Betriebsmodus</p>
+                        <span th:if="${lastSetpointW == 0}" th:text="#{automatic}">Automatic</span>
+                        <span th:if="${lastSetpointW != 0}" th:text="#{manual}">Manual</span>
+                        <div class="small text-muted" th:if="${lastSetpointW != 0}">
+                            <span th:text="${lastSetpointW}">0</span>
+                            <span th:text="#{watts}">W</span>
+                        </div>
                     </div>
                 </div>
                 <div class="action-buttons mt-4">
@@ -154,6 +180,34 @@
                                     <span class="status-indicator"
                                           th:classappend="${isCharging ? 'active' : 'inactive'}"></span>
                                 </button>
+                            </div>
+                            <div class="night-window-card" id="nightWindowConfig">
+                                <div class="night-window-head">
+                                    <div>
+                                        <p class="night-window-kicker" th:text="#{nightIdle}">Night Idle</p>
+                                        <h4 class="night-window-title" th:text="#{nightIdle}">Night Idle</h4>
+                                    </div>
+                                    <span class="night-window-badge">
+                                        <i class="fas fa-moon"></i>
+                                    </span>
+                                </div>
+                                <div class="night-window-body">
+                                    <div class="night-input">
+                                        <label for="nightStartInput" th:text="#{nightWindowStartLabel}">Start</label>
+                                        <input type="number" id="nightStartInput" min="0" max="23" step="1" th:value="${nightStartHour}">
+                                    </div>
+                                    <div class="night-input">
+                                        <label for="nightEndInput" th:text="#{nightWindowEndLabel}">End</label>
+                                        <input type="number" id="nightEndInput" min="0" max="23" step="1" th:value="${nightEndHour}">
+                                    </div>
+                                    <button class="cool-btn night-window-save" type="button" id="saveNightWindow">
+                                        <i class="fas fa-save"></i>
+                                        <span th:text="#{nightWindowSave}">Save</span>
+                                    </button>
+                                </div>
+                                <div class="night-window-status" id="nightWindowStatus">
+                                    <span th:text="#{nightWindowStatusDefault}">Default values apply until saved.</span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -347,5 +401,10 @@
         </div>
     </div>
 </div>
+
+<div id="loaderOverlay" aria-live="polite" aria-busy="true">
+    <div class="loader" role="status" aria-label="Laden..."></div>
+</div>
+
 </body>
 </html>

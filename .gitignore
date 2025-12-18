@@ -1,0 +1,83 @@
+########################################
+# Maven / Java
+########################################
+target/
+*.class
+*.jar
+*.war
+*.ear
+*.log
+
+########################################
+# Spring Boot / Runtime
+########################################
+*.pid
+*.pid.lock
+
+########################################
+# IDEs
+########################################
+# IntelliJ IDEA
+.idea/
+*.iml
+
+# VS Code
+.vscode/
+
+# Eclipse / STS
+.project
+.classpath
+.settings/
+.springBeans
+
+########################################
+# OS / Editor
+########################################
+# Windows
+Thumbs.db
+Desktop.ini
+
+# macOS
+.DS_Store
+
+# Linux / Editors
+*.swp
+*.tmp
+*.bak
+*.old
+
+########################################
+# Build / Runtime artifacts
+########################################
+out/
+bin/
+dist/
+
+########################################
+# Test output
+########################################
+test-output/
+surefire-reports/
+failsafe-reports/
+
+########################################
+# Environment / Secrets
+########################################
+.env
+.env.*
+application-local.properties
+application-dev.properties
+application-test.properties
+application-prod.properties
+
+########################################
+# Node / Frontend (optional, future-proof)
+########################################
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+
+########################################
+# GitHub / CI
+########################################
+.github/workflows/*.local.yml

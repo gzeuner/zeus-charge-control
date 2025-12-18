@@ -69,14 +69,18 @@ public class BatteryCommandService {
      */
     @PostConstruct
     public void init() {
-        batteryNotConfigured = authToken.isEmpty() || url.isEmpty();
+        String token = authToken == null ? "" : authToken.trim();
+        String baseUrl = url == null ? "" : url.trim();
+        batteryNotConfigured = token.isEmpty() || baseUrl.isEmpty();
         if (batteryNotConfigured) {
-            LOG.warn("Battery configuration is incomplete. authToken or url is missing.");
-        } else {
-            restTemplate = new RestTemplateBuilder()
-                    .defaultHeader(AUTH_HEADER, authToken)
-                    .build();
+            LOG.warn("Battery configuration is incomplete. authToken or url is missing/blank.");
+            return;
         }
+        authToken = token;
+        url = baseUrl;
+        restTemplate = new RestTemplateBuilder()
+                .defaultHeader(AUTH_HEADER, authToken)
+                .build();
     }
 
     /**
@@ -84,9 +88,7 @@ public class BatteryCommandService {
      *
      * @return True if the battery configuration is incomplete, false otherwise.
      */
-    public boolean isBatteryNotConfigured() {
-        return batteryNotConfigured;
-    }
+    public boolean isBatteryNotConfigured() { return batteryNotConfigured; }
 
     /**
      * Retrieves the current battery status via a GET request to the API.
@@ -94,8 +96,14 @@ public class BatteryCommandService {
      * @return An ApiResponse containing the BatteryStatusResponse or an error message.
      */
     public ApiResponse<BatteryStatusResponse> getStatus() {
+        if (batteryNotConfigured || restTemplate == null) {
+            LOG.warn("Battery status requested but configuration is incomplete.");
+            return errorResponse("Battery not configured");
+        }
+
+        String endpoint = buildUrl(STATUS_PATH);
         try {
-            ResponseEntity<BatteryStatusResponse> response = restTemplate.getForEntity(buildUrl(STATUS_PATH), BatteryStatusResponse.class);
+            ResponseEntity<BatteryStatusResponse> response = restTemplate.getForEntity(endpoint, BatteryStatusResponse.class);
             BatteryStatusResponse data = response.getBody();
             return new ApiResponse<>(
                     data != null,
@@ -103,6 +111,11 @@ public class BatteryCommandService {
                     data != null ? "Battery status retrieved successfully" : "No Status available",
                     data
             );
+        } catch (org.springframework.web.client.ResourceAccessException e) {
+            // Battery API temporarily unreachable (connection refused/timeout)
+            LOG.warn("Battery status unreachable at {}: {}", endpoint, e.getMessage());
+            LOG.debug("Battery status unreachable exception detail", e);
+            return errorResponse("Battery API unreachable");
         } catch (Exception e) {
             LOG.error("Error occurred while retrieving battery status", e);
             return errorResponse("Internal Server Error");
@@ -131,6 +144,18 @@ public class BatteryCommandService {
         return executePostRequest(endpoint, "set discharge point", HttpStatus.CREATED);
     }
 
+
+
+    /**
+     * Sets a neutral setpoint (0 W) to hand control back to the internal Energy Manager.
+     * This does not change EM_OperatingMode; it only neutralizes the external setpoint.
+     *
+     * @return ApiResponse indicating the outcome.
+     */
+    public ApiResponse<?> setNeutralSetPoint() {
+        String endpoint = buildUrl(SETPOINT_PATH + CHARGE_PATH + 0);
+        return executePostRequest(endpoint, "set neutral setpoint (0W)", HttpStatus.CREATED);
+    }
     /**
      * Sets a configuration key-value pair for the battery via a PUT request.
      *

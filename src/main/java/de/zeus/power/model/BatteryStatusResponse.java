@@ -339,6 +339,15 @@ public class BatteryStatusResponse {
         this.generatorAutostart = generatorAutostart;
     }
 
+    public boolean isIdle() {
+        return !batteryCharging && !batteryDischarging;
+    }
+
+    public String getHumanMode() {
+        return "1".equals(operatingMode) ? "Manual" : "Automatic";
+    }
+
+
     @Override
     public String toString() {
         return "BatteryStatus{" +
