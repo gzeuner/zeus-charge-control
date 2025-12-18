@@ -1,5 +1,6 @@
 package de.zeus.power.service;
 
+import de.zeus.power.config.BatteryProperties;
 import de.zeus.power.config.LogFilter;
 import de.zeus.power.entity.ChargingSchedule;
 import de.zeus.power.entity.MarketPrice;
@@ -16,6 +17,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.text.SimpleDateFormat;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
@@ -23,54 +25,32 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 /**
- * ChargingManagementService handles the scheduling and optimization of charging tasks
- * based on market prices, day/night periods, and the current battery state.
- *
- * Copyright 2024 Guido Zeuner
+ * Copyright 2025 Guido Zeuner - https://tiny-tool.de
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * ...
  *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- * © 2024 - Guido Zeuner - https://tiny-tool.de
+ * Coordinates optimization of charging periods based on market prices, RSOC and weather.
+ * Handles scheduling (start/stop/HOLD tasks) and keeps persisted plans in sync.
  */
 @Service
 public class ChargingManagementService {
-
-    // Date format for logging timestamps
     private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
-    // Cron expression to execute every hour
     private static final String EVERY_HOUR_CRON = "0 0 * * * ?";
-    // Unique ID for the end-of-night reset task
     private static final long END_OF_NIGHT_RESET_ID = -1L;
-    // Maximum time tolerance in hours for considering cheaper future periods
     private static final int TIME_TOLERANCE_HOURS = 5;
 
-    @Autowired
-    private ChargingScheduleRepository chargingScheduleRepository;
-
-    @Autowired
-    private MarketPriceRepository marketPriceRepository;
-
-    @Autowired
-    private BatteryManagementService batteryManagementService;
-
-    @Autowired
-    private TaskScheduler taskScheduler;
-
-    @Autowired
-    private ChargingUtils chargingUtils;
+    @Autowired private ChargingScheduleRepository chargingScheduleRepository;
+    @Autowired private MarketPriceRepository marketPriceRepository;
+    @Autowired private BatteryManagementService batteryManagementService;
+    @Autowired private TaskScheduler taskScheduler;
+    @Autowired private ChargingUtils chargingUtils;
+    @Autowired(required = false) private BatteryProperties batteryProperties; // nightPauseWatts & holdIntervalSeconds
+    @Autowired private WeatherForecastService weatherForecastService;
 
     @Value("${battery.target.stateOfCharge:90}")
     private int targetStateOfCharge;
@@ -84,168 +64,130 @@ public class ChargingManagementService {
     @Value("${nighttime.max.periods:2}")
     private int maxNighttimePeriods;
 
-    @Value("${battery.automatic.mode.check.interval:300000}")
-    private long automaticModeCheckInterval;
+    @Value("${weather.wait.max.minutes:120}")
+    private int weatherWaitMaxMinutes;
+
+    @Value("${scheduling.wait.max.defer.hours:6}")
+    private int waitMaxDeferHours;
+
+    @Value("${scheduling.wait.min.price.diff.cents:0.5}")
+    private double waitMinPriceDiffCents;
+
+    @Value("${scheduling.wait.relative.drop.pct:5.0}")
+    private double waitRelativeDropPct;
+
+    @Value("${scheduling.night.latestStart.offset.minutes:60}")
+    private int nightLatestStartOffsetMinutes;
+
+    @Value("${battery.pv.only.enabled:true}")
+    private boolean pvOnlyEnabled;
+
+    // --- Holds & Setpoints ---
+    @Value("${battery.manual.hold.ms:900000}")              // 15 min (Forced-Charge)
+    private long manualHoldMs;
+
+    @Value("${battery.manual.idle.hold.ms:900000}")         // 15 min (Manual Idle 1W)
+    private long manualIdleHoldMs;
+
+    @Value("${battery.night.pause.watts:1}")                // 1 W idle setpoint
+    private int nightPauseWatts;
+
+    /** Interval to refresh >0W setpoints so EMS does not reclaim control. */
+    @Value("${battery.setpoint.refresh.ms:0}")
+    private long setpointRefreshMsConfigured;
+
+    // Flag indicating whether manual idle is active
+    private final AtomicBoolean manualIdleHoldActive = new AtomicBoolean(false);
+    private ScheduledFuture<?> manualHoldHeartbeat;
+
+
+    private int holdIntervalSeconds() { return batteryProperties != null ? batteryProperties.getHoldIntervalSeconds() : 15; }
+    private int nightPauseWatts()     { return batteryProperties != null ? batteryProperties.getNightPauseWatts()     : 1; }
+    private long setpointRefreshMs() {
+        if (setpointRefreshMsConfigured > 0) return setpointRefreshMsConfigured;
+        return Math.max(5, holdIntervalSeconds()) * 1000L;
+    }
 
     private final List<ChargingSchedule> daytimeBuffer = new CopyOnWriteArrayList<>();
     private final Map<Long, ScheduledFuture<?>> scheduledTasks = new ConcurrentHashMap<>();
+    private final Map<Long, ScheduledFuture<?>> holdTasks = new ConcurrentHashMap<>();
 
-    /**
-     * Handles the MarketPricesUpdatedEvent and triggers the charging optimization process.
-     *
-     * @param event The MarketPricesUpdatedEvent triggered when market prices are updated.
-     */
+    // -------- events & schedulers
+
     @EventListener
     public void onMarketPricesUpdated(MarketPricesUpdatedEvent event) {
         LogFilter.logInfo(ChargingManagementService.class, "Market prices updated event received. Recalculating charging schedule...");
         optimizeChargingProcess();
     }
 
-    /**
-     * Scheduled method to optimize the charging schedule every hour.
-     */
     @Scheduled(cron = EVERY_HOUR_CRON)
     public void scheduledOptimizeChargingSchedule() {
-        LogFilter.logInfo(ChargingManagementService.class, "Scheduled optimization of charging schedule triggered.");
         chargingUtils.cleanUpExpiredSchedules(chargingScheduleRepository, scheduledTasks);
         if (shouldOptimize()) {
             optimizeChargingProcess();
-            LogFilter.logInfo(ChargingManagementService.class, "Optimization completed successfully.");
-        } else {
-            LogFilter.logInfo(ChargingManagementService.class, "No significant changes detected. Skipping optimization.");
         }
     }
 
-    /**
-     * Scheduled method to monitor RSOC and handle mode transitions at fixed intervals.
-     */
-    @Scheduled(fixedRateString = "${battery.automatic.mode.check.interval:300000}")
+
+    /** RSOC/mode monitor; keeps FE-forced alive and respects the RSOC cap. */
+    @Scheduled(fixedRateString = "${battery.automatic.mode.check.interval:60000}")
     private void monitorRsocAndHandleMode() {
-        long currentTimeMillis = System.currentTimeMillis();
-        int currentRsoc = batteryManagementService.getRelativeStateOfCharge();
-        boolean isNight = ChargingUtils.isNight(currentTimeMillis);
-        LogFilter.logDebug(ChargingManagementService.class, "Monitoring RSOC: {}%, Target: {}%, Night: {}", currentRsoc, targetStateOfCharge, isNight);
-        chargingUtils.handleAutomaticModeTransition(currentTimeMillis);
-        batteryManagementService.updateRsocHistory(currentTimeMillis, currentRsoc);
+        long now = System.currentTimeMillis();
+        int rsoc = batteryManagementService.getRelativeStateOfCharge();
+
+        // FE: "Manual-Hold" (forced charging)
+        if (batteryManagementService.isForcedChargingActive()) {
+            ensureManualHoldHeartbeat();
+        } else {
+            cancelManualHoldHeartbeat();
+        }
+
+        // Keep manually activated idle (1W) alive
+        if (batteryManagementService.isManualIdleActive()) {
+            // enforce ~1W setpoint
+            boolean okTiny = batteryManagementService.pauseWithTinySetpoint();
+            if (okTiny) {
+                // Extend MANUAL lease continuously
+                batteryManagementService.startManualIdleHold();
+                LogFilter.logDebug(ChargingManagementService.class,
+                        "Manual Idle Hold extended (1W setpoint confirmed).");
+            } else {
+                LogFilter.logInfo(ChargingManagementService.class,
+                        "Manual Idle Hold failed to set 1W -> return control to EM.");
+                batteryManagementService.setManualIdleActive(false);
+                batteryManagementService.resetToAutomaticMode(true);
+            }
+        }
+
+
+        chargingUtils.handleAutomaticModeTransition(now);
+        batteryManagementService.updateRsocHistory(now, rsoc);
     }
 
-    /**
-     * Optimizes the charging schedule by combining nighttime and daytime optimizations.
-     */
+    // -------- optimize flow
+
     private void optimizeChargingSchedule() {
-        LogFilter.logInfo(ChargingManagementService.class, "Starting optimization of charging schedule...");
-        Set<ChargingSchedule> optimizedSchedules = new HashSet<>();
-        optimizedSchedules.addAll(optimizeNighttimeCharging());
-        optimizedSchedules.addAll(optimizeDaytimeCharging());
+        Set<ChargingSchedule> optimized = new HashSet<>();
+        optimized.addAll(optimizeNighttimeCharging());
+        optimized.addAll(optimizeDaytimeCharging());
 
         int dynamicThreshold = chargingUtils.calculateDynamicDaytimeThreshold();
         int currentRsoc = batteryManagementService.getRelativeStateOfCharge();
         long currentTime = System.currentTimeMillis();
 
         if (!ChargingUtils.isNight(currentTime) && currentRsoc <= dynamicThreshold) {
-            LogFilter.logInfo(ChargingManagementService.class, "RSOC is below the dynamic threshold (current: {}%, threshold: {}%). Initiating charging to reach target RSOC ({}%).",
-                    currentRsoc, dynamicThreshold, targetStateOfCharge);
             if (currentRsoc < targetStateOfCharge) {
-                LogFilter.logInfo(ChargingManagementService.class, "Scheduling additional charging to reach the target RSOC.");
-                optimizedSchedules.addAll(getFutureDaytimeSchedules(currentTime));
+                optimized.addAll(getFutureDaytimeSchedules(currentTime));
             }
-        } else {
-            LogFilter.logInfo(ChargingManagementService.class, currentRsoc > dynamicThreshold
-                    ? "RSOC is above the dynamic threshold (current: {}%, threshold: {}%). Skipping additional daytime charging."
-                    : "Currently nighttime. Skipping evaluation of additional charging.", currentRsoc, dynamicThreshold);
         }
-
-        synchronizeSchedules(optimizedSchedules);
-        LogFilter.logInfo(ChargingManagementService.class, "Charging schedule optimization completed.");
+        synchronizeSchedules(optimized);
     }
 
-    /**
-     * Buffers daytime charging periods dynamically based on market price analysis.
-     *
-     * @param marketPrices List of available market prices to determine the dynamic threshold.
-     */
-    private void bufferDaytimeCharging(List<MarketPrice> marketPrices) {
-        LogFilter.logInfo(ChargingManagementService.class, "Buffering daytime charging periods dynamically based on price analysis.");
-        long currentTime = System.currentTimeMillis();
-        List<MarketPrice> daytimePeriods = getDaytimePeriods(currentTime);
-
-        if (daytimePeriods.isEmpty()) {
-            LogFilter.logWarn(ChargingManagementService.class, "No daytime periods available for buffering.");
-            daytimeBuffer.clear();
-            return;
-        }
-
-        double dynamicMaxPrice = calculateDynamicMaxPrice(marketPrices);
-        double threshold = chargingUtils.calculateDynamicThreshold(daytimePeriods, priceFlexibilityThreshold);
-        double maxAcceptablePrice = Math.min(dynamicMaxPrice, chargingUtils.calculateMaxAcceptablePrice(batteryManagementService.getRelativeStateOfCharge(), maxAcceptableMarketPriceInCent));
-        logThresholds(threshold, maxAcceptablePrice);
-
-        int dynamicMaxPeriods = chargingUtils.calculateDynamicMaxChargingPeriods(daytimePeriods.size(),
-                chargingUtils.calculatePriceRange(daytimePeriods), batteryManagementService.getRelativeStateOfCharge());
-
-        Set<ChargingSchedule> validatedSchedules = daytimePeriods.stream()
-                .filter(p -> p.getPriceInCentPerKWh() <= threshold && p.getPriceInCentPerKWh() <= maxAcceptablePrice)
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .limit(dynamicMaxPeriods)
-                .map(chargingUtils::convertToChargingSchedule)
-                .filter(s -> chargingUtils.isValidSchedule(s, currentTime, new HashSet<>(daytimeBuffer), daytimePeriods))
-                .collect(Collectors.toSet());
-
-        daytimeBuffer.clear();
-        daytimeBuffer.addAll(validatedSchedules);
-        LogFilter.logInfo(ChargingManagementService.class, "Buffered {} validated daytime schedules for potential use.", validatedSchedules.size());
-    }
-
-    /**
-     * Calculates a dynamic maximum acceptable price based on available market prices.
-     *
-     * @param marketPrices List of available market prices.
-     * @return The dynamically calculated maximum acceptable price in cent/kWh.
-     */
-    private double calculateDynamicMaxPrice(List<MarketPrice> marketPrices) {
-        if (marketPrices == null || marketPrices.isEmpty()) {
-            LogFilter.logWarn(ChargingManagementService.class, "No market prices available for dynamic max price calculation. Using default: {}", maxAcceptableMarketPriceInCent);
-            return maxAcceptableMarketPriceInCent;
-        }
-
-        double medianPrice = marketPrices.stream()
-                .mapToDouble(MarketPrice::getPriceInCentPerKWh)
-                .sorted()
-                .skip(marketPrices.size() / 2)
-                .findFirst()
-                .orElse(maxAcceptableMarketPriceInCent);
-
-        double dynamicMaxPrice = Math.min(medianPrice * 1.2, maxAcceptableMarketPriceInCent);
-        LogFilter.logInfo(ChargingManagementService.class, "Calculated dynamic max acceptable price: {} cent/kWh (Median: {} cent/kWh)", dynamicMaxPrice, medianPrice);
-        return dynamicMaxPrice;
-    }
-
-    /**
-     * Retrieves future daytime periods excluding nighttime.
-     *
-     * @param currentTime The current timestamp in milliseconds.
-     * @return A list of daytime market price periods.
-     */
-    private List<MarketPrice> getDaytimePeriods(long currentTime) {
-        long toleranceWindow = currentTime + (TIME_TOLERANCE_HOURS * 60 * 60 * 1000);
-        return marketPriceRepository.findAll().stream()
-                .filter(p -> !ChargingUtils.isNight(p.getStartTimestamp()) &&
-                        p.getStartTimestamp() > currentTime &&
-                        p.getStartTimestamp() <= toleranceWindow)
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .collect(Collectors.toList());
-    }
-
-    /**
-     * Central method to perform the full charging optimization process.
-     */
     private void optimizeChargingProcess() {
         int currentRsoc = batteryManagementService.getRelativeStateOfCharge();
         List<MarketPrice> marketPrices = marketPriceRepository.findAll();
-        logRsocAndPeriods(currentRsoc, marketPrices.size());
 
         if (currentRsoc >= targetStateOfCharge) {
-            LogFilter.logInfo(ChargingManagementService.class, "RSOC ({}) is at or above target ({}). Removing all planned periods and skipping further scheduling.", currentRsoc, targetStateOfCharge);
             removeAllPlannedChargingPeriods();
             return;
         }
@@ -255,13 +197,461 @@ public class ChargingManagementService {
         bufferDaytimeCharging(marketPrices);
         optimizeChargingSchedule();
         scheduleEndOfNightResetTask();
-        LogFilter.logInfo(ChargingManagementService.class, "Market price update handled and schedules synchronized.");
     }
 
-    /**
-     * Schedules a task to reset the battery mode at the end of the night period.
-     */
+    // -------- buffering / thresholds
+
+    private void bufferDaytimeCharging(List<MarketPrice> marketPrices) {
+        long currentTime = System.currentTimeMillis();
+        List<MarketPrice> daytimePeriods = getDaytimePeriods(currentTime);
+        daytimeBuffer.clear();
+        if (daytimePeriods.isEmpty()) return;
+
+        double dynamicMaxPrice = calculateDynamicMaxPrice(marketPrices);
+        double threshold = chargingUtils.calculateDynamicThreshold(daytimePeriods, priceFlexibilityThreshold);
+        double maxAcceptablePrice = Math.min(dynamicMaxPrice,
+                chargingUtils.calculateMaxAcceptablePrice(batteryManagementService.getRelativeStateOfCharge(), maxAcceptableMarketPriceInCent));
+
+        int dynamicMaxPeriods = chargingUtils.calculateDynamicMaxChargingPeriods(daytimePeriods.size(),
+                chargingUtils.calculatePriceRange(daytimePeriods), batteryManagementService.getRelativeStateOfCharge());
+
+        Set<ChargingSchedule> validated = daytimePeriods.stream()
+                .filter(p -> p.getPriceInCentPerKWh() <= threshold && p.getPriceInCentPerKWh() <= maxAcceptablePrice)
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                .limit(dynamicMaxPeriods)
+                .map(chargingUtils::convertToChargingSchedule)
+                .filter(s -> chargingUtils.isValidSchedule(s, currentTime, new HashSet<>(daytimeBuffer), daytimePeriods))
+                .collect(Collectors.toSet());
+
+        daytimeBuffer.addAll(validated);
+    }
+
+    private double calculateDynamicMaxPrice(List<MarketPrice> marketPrices) {
+        if (marketPrices == null || marketPrices.isEmpty()) return maxAcceptableMarketPriceInCent;
+        double median = marketPrices.stream().mapToDouble(MarketPrice::getPriceInCentPerKWh).sorted()
+                .skip(marketPrices.size() / 2).findFirst().orElse(maxAcceptableMarketPriceInCent);
+        return Math.min(median * 1.2, maxAcceptableMarketPriceInCent);
+    }
+
+    private List<MarketPrice> getDaytimePeriods(long currentTime) {
+        long toleranceWindow = currentTime + (TIME_TOLERANCE_HOURS * 60L * 60L * 1000L);
+        return marketPriceRepository.findAll().stream()
+                .filter(p -> !ChargingUtils.isNight(p.getStartTimestamp())
+                        && p.getStartTimestamp() > currentTime
+                        && p.getStartTimestamp() <= toleranceWindow)
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                .collect(Collectors.toList());
+    }
+
+    /** Reintroduced: future daytime schedules come from the daytime buffer. */
+    private List<ChargingSchedule> getFutureDaytimeSchedules(long currentTime) {
+        List<ChargingSchedule> future = daytimeBuffer.stream()
+                .filter(s -> s.getStartTimestamp() > currentTime && !ChargingUtils.isNight(s.getStartTimestamp()))
+                .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp))
+                .collect(Collectors.toList());
+        LogFilter.logInfo(ChargingManagementService.class, "Added {} future schedules from daytime buffer.", future.size());
+        return future;
+    }
+
+    // -------- add/remove & synchronize
+
+    private boolean shouldOptimize() {
+        int currentRsoc = batteryManagementService.getRelativeStateOfCharge();
+        long currentTime = System.currentTimeMillis();
+        boolean hasFuture = chargingScheduleRepository.findAll().stream().anyMatch(s -> s.getEndTimestamp() > currentTime);
+        return !hasFuture || currentRsoc < targetStateOfCharge;
+    }
+
+    private void removeAllPlannedChargingPeriods() {
+        chargingScheduleRepository.findAll().stream()
+                .filter(s -> s.getEndTimestamp() > System.currentTimeMillis())
+                .forEach(s -> {
+                    cancelHoldForSchedule(s.getId());
+                    chargingUtils.cancelTask(s.getId(), scheduledTasks);
+                    chargingScheduleRepository.delete(s);
+                });
+    }
+
+    public void schedulePlannedCharging() {
+        chargingScheduleRepository.findAll().stream()
+                .filter(s -> s.getStartTimestamp() > System.currentTimeMillis())
+                .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp))
+                .forEach(this::scheduleChargingTask);
+    }
+
+    public void scheduleStopPlannedCharging() {
+        chargingScheduleRepository.findAll().stream()
+                .filter(s -> s.getStartTimestamp() > System.currentTimeMillis())
+                .sorted(Comparator.comparingLong(ChargingSchedule::getEndTimestamp))
+                .forEach(this::scheduleStopTask);
+    }
+
+    private List<ChargingSchedule> optimizeDaytimeCharging() {
+        List<MarketPrice> day = chargingUtils.filterFuturePeriods(marketPriceRepository.findAll()).stream()
+                .filter(p -> !ChargingUtils.isNight(p.getStartTimestamp()))
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                .collect(Collectors.toList());
+        if (day.isEmpty()) return Collections.emptyList();
+
+        double threshold = chargingUtils.calculateDynamicThreshold(day, priceFlexibilityThreshold);
+        double maxAcceptablePrice = chargingUtils.calculateMaxAcceptablePrice(
+                batteryManagementService.getRelativeStateOfCharge(), maxAcceptableMarketPriceInCent);
+
+        int dynamicMaxPeriods = chargingUtils.calculateDynamicMaxChargingPeriods(day.size(),
+                chargingUtils.calculatePriceRange(day), batteryManagementService.getRelativeStateOfCharge());
+
+        long now = System.currentTimeMillis();
+        long toleranceWindow = now + (TIME_TOLERANCE_HOURS * 60L * 60L * 1000L);
+
+        return day.stream()
+                .filter(p -> p.getPriceInCentPerKWh() <= threshold && p.getPriceInCentPerKWh() <= maxAcceptablePrice)
+                .filter(p -> p.getStartTimestamp() <= toleranceWindow)
+                .filter(p -> chargingUtils.findCheaperFuturePeriod(p, day).isEmpty())
+                .limit(dynamicMaxPeriods)
+                .map(chargingUtils::convertToChargingSchedule)
+                .collect(Collectors.toList());
+    }
+
+    private List<ChargingSchedule> optimizeNighttimeCharging() {
+        int rsoc = batteryManagementService.getRelativeStateOfCharge();
+        if (rsoc >= targetStateOfCharge) return Collections.emptyList();
+
+        ZoneId zone = ZoneId.systemDefault();
+        LocalDateTime now = LocalDateTime.now(zone);
+        int nightStartHour = NightConfig.getNightStartHour();
+        int nightEndHour = NightConfig.getNightEndHour();
+
+        LocalDateTime nightStartTime = now.with(LocalTime.of(nightStartHour, 0));
+        LocalDateTime nightEndTime = now.with(LocalTime.of(nightEndHour, 0));
+
+        if (nightStartHour > nightEndHour) { // spans midnight
+            if (now.getHour() < nightEndHour) {
+                nightStartTime = nightStartTime.minusDays(1);
+            } else {
+                nightEndTime = nightEndTime.plusDays(1);
+            }
+        } else if (nightStartHour == nightEndHour) {
+            nightEndTime = nightEndTime.plusDays(1);
+        } else {
+            if (!now.isBefore(nightEndTime)) {
+                nightStartTime = nightStartTime.plusDays(1);
+                nightEndTime = nightEndTime.plusDays(1);
+            }
+        }
+
+        long nightStartTimestamp = nightStartTime.atZone(zone).toInstant().toEpochMilli();
+        long nightEndTimestamp = nightEndTime.atZone(zone).toInstant().toEpochMilli();
+        long latestAcceptableStart = nightEndTimestamp - Math.max(0, nightLatestStartOffsetMinutes) * 60_000L;
+        long currentTime = System.currentTimeMillis();
+
+        List<MarketPrice> all = marketPriceRepository.findAll();
+        List<MarketPrice> night = all.stream()
+                .filter(p -> p.getEndTimestamp() > currentTime)
+                .filter(p -> p.getStartTimestamp() >= nightStartTimestamp && p.getStartTimestamp() < nightEndTimestamp)
+                .collect(Collectors.toList());
+        if (night.isEmpty()) return Collections.emptyList();
+
+        double dynamicMaxPrice = calculateDynamicMaxPrice(all);
+        int requiredPeriods = chargingUtils.calculateRequiredPeriods(
+                chargingUtils.calculateRequiredCapacity(rsoc), all.size());
+        int periodsToPlan = Math.min(Math.max(requiredPeriods, 1), maxNighttimePeriods);
+
+        Comparator<MarketPrice> comparator = Comparator
+                .comparingDouble(MarketPrice::getPriceInCentPerKWh)
+                .thenComparingLong(MarketPrice::getStartTimestamp);
+
+        List<MarketPrice> preferred = night.stream()
+                .filter(p -> p.getPriceInCentPerKWh() <= dynamicMaxPrice)
+                .filter(p -> p.getStartTimestamp() <= latestAcceptableStart)
+                .sorted(comparator)
+                .limit(periodsToPlan)
+                .collect(Collectors.toList());
+
+        if (preferred.isEmpty()) { // fallback: allow late starts if nothing else fits
+            preferred = night.stream()
+                    .filter(p -> p.getPriceInCentPerKWh() <= dynamicMaxPrice)
+                    .filter(p -> p.getStartTimestamp() < nightEndTimestamp)
+                    .sorted(comparator)
+                    .limit(periodsToPlan)
+                    .collect(Collectors.toList());
+        }
+
+        LogFilter.logInfo(ChargingManagementService.class,
+                "Night window {} -> {} (latest start {}), candidates={}, selected={}",
+                DATE_FORMAT.format(new Date(nightStartTimestamp)),
+                DATE_FORMAT.format(new Date(nightEndTimestamp)),
+                DATE_FORMAT.format(new Date(latestAcceptableStart)),
+                night.size(),
+                preferred.size());
+
+        return preferred.stream()
+                .map(chargingUtils::convertToChargingSchedule)
+                .collect(Collectors.toList());
+    }
+
+    private void adjustChargingPeriodsDynamically(int currentRsoc, int totalPeriods,
+                                                  List<MarketPrice> marketPrices, double dynamicMaxPrice) {
+        double requiredCapacity = chargingUtils.calculateRequiredCapacity(currentRsoc);
+        if (requiredCapacity <= 0) { removeAllPlannedChargingPeriods(); return; }
+
+        List<ChargingSchedule> existing = chargingUtils.getFutureChargingSchedules(
+                chargingScheduleRepository.findAll(), System.currentTimeMillis());
+        int requiredPeriods = chargingUtils.calculateRequiredPeriods(requiredCapacity, totalPeriods);
+        int excess = existing.size() - requiredPeriods;
+        if (excess > 0) {
+            chargingUtils.removeExcessChargingPeriods(existing, excess, chargingScheduleRepository, scheduledTasks);
+        }
+
+        int missing = requiredPeriods - existing.size();
+        if (missing > 0) addAdditionalChargingPeriodsExcludingNighttime(marketPrices, missing, existing, dynamicMaxPrice);
+    }
+
+    private void addAdditionalChargingPeriodsExcludingNighttime(List<MarketPrice> marketPrices, int periodsToAdd,
+                                                                List<ChargingSchedule> existingSchedules, double dynamicMaxPrice) {
+        long currentTime = System.currentTimeMillis();
+        long toleranceWindow = currentTime + (TIME_TOLERANCE_HOURS * 60L * 60L * 1000L);
+
+        List<MarketPrice> available = marketPrices.stream()
+                .filter(p -> p.getStartTimestamp() > currentTime && p.getStartTimestamp() <= toleranceWindow)
+                .filter(p -> !ChargingUtils.isNight(p.getStartTimestamp()))
+                .filter(p -> p.getPriceInCentPerKWh() <= dynamicMaxPrice)
+                .filter(p -> existingSchedules.stream().noneMatch(s -> Objects.equals(s.getStartTimestamp(), p.getStartTimestamp())))
+                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
+                .limit(periodsToAdd)
+                .collect(Collectors.toList());
+
+        available.forEach(p -> chargingUtils.createAndLogChargingSchedule(p, chargingScheduleRepository, DATE_FORMAT));
+    }
+
+    // -------- run/start/stop tasks (HOLD via scheduleHoldTick)
+
+    private void executeChargingTask(ChargingSchedule schedule) {
+        Date startTime = new Date(schedule.getStartTimestamp());
+        Date endTime = new Date(schedule.getEndTimestamp());
+        LogFilter.logInfo(ChargingManagementService.class, "Window start: {} - {}", DATE_FORMAT.format(startTime), DATE_FORMAT.format(endTime));
+
+        // Check before start if waiting for a much cheaper near-term window makes sense
+        try {
+            long now = System.currentTimeMillis();
+            long finalNow = now;
+            List<ChargingSchedule> future = chargingScheduleRepository.findAll().stream()
+                    .filter(s -> s.getStartTimestamp() >= finalNow)
+                    .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp))
+                    .collect(Collectors.toList());
+
+            Optional<ChargingSchedule> waitFor = chargingUtils.shouldWaitForCheaperWindow(schedule, future, batteryManagementService);
+            if (waitFor.isPresent()) {
+                ChargingSchedule cand = waitFor.get();
+                boolean isNight = ChargingUtils.isNight(schedule.getStartTimestamp());
+                boolean candidateTooLateForNight = isNight && cand.getStartTimestamp() > calculateLatestNightStart(schedule.getStartTimestamp());
+                if (candidateTooLateForNight) {
+                    LogFilter.logInfo(ChargingManagementService.class,
+                            "Will start charging at {} ({} ct/kWh). Cheaper window {} ({} ct/kWh) is after the latest acceptable night start.",
+                            DATE_FORMAT.format(startTime), schedule.getPrice(),
+                            DATE_FORMAT.format(new Date(cand.getStartTimestamp())), cand.getPrice());
+                } else {
+                    /* price-based waiting chosen */
+                    LogFilter.logInfo(ChargingManagementService.class,
+                            "Will NOT start charging at {} ({} ct/kWh). Waiting for cheaper window {} ({} ct/kWh).",
+                            DATE_FORMAT.format(startTime), schedule.getPrice(),
+                            DATE_FORMAT.format(new Date(cand.getStartTimestamp())), cand.getPrice());
+                    // Important: do nothing here; do not take ownership, EM keeps control.
+                    return;
+                }
+            }
+            if (!waitFor.isPresent()) {
+                // Fine-grained: defer to a clearly cheaper daytime slot within the configured horizon
+                try {
+                    if (!ChargingUtils.isNight(startTime.getTime())) {
+                        long now2 = System.currentTimeMillis();
+                        long horizon = now2 + Math.max(1, waitMaxDeferHours) * 3_600_000L;
+
+                        java.util.List<ChargingSchedule> nearFuture = future.stream()
+                                .filter(s -> s.getStartTimestamp() > now2 && s.getStartTimestamp() <= horizon)
+                                .filter(s -> !ChargingUtils.isNight(s.getStartTimestamp()))
+                                .sorted(java.util.Comparator.comparingLong(ChargingSchedule::getStartTimestamp))
+                                .collect(java.util.stream.Collectors.toList());
+
+                        if (!nearFuture.isEmpty()) {
+                            double pNow = schedule.getPrice();
+                            ChargingSchedule best = nearFuture.stream()
+                                    .min(java.util.Comparator.comparingDouble(ChargingSchedule::getPrice))
+                                    .orElse(null);
+                            if (best != null) {
+                                double absDrop = pNow - best.getPrice();
+                                double relDropPct = (absDrop / Math.max(0.01, pNow)) * 100.0;
+
+                                boolean clearlyCheaper = (absDrop >= waitMinPriceDiffCents) || (relDropPct >= waitRelativeDropPct);
+                                if (clearlyCheaper) {
+                                    LogFilter.logInfo(ChargingManagementService.class,
+                                            "Defer: {} ct/kWh now vs {} ct/kWh at {} (delta {} ct, {}%). Waiting for cheaper slot.",
+                                            pNow, best.getPrice(),
+                                            DATE_FORMAT.format(new java.util.Date(best.getStartTimestamp())),
+                                            String.format(java.util.Locale.ROOT, "%.2f", absDrop),
+                                            String.format(java.util.Locale.ROOT, "%.1f", relDropPct));
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception ex) {
+                    LogFilter.logWarn(ChargingManagementService.class, "Defer-to-cheaper decision failed: {}", ex.getMessage());
+                }
+
+                try {
+                    now = System.currentTimeMillis();
+                    long latestStart = now + Math.max(0, weatherWaitMaxMinutes) * 60_000L;
+                    // Extend horizon to tonight when PV-first is enabled (avoid early morning grid charging)
+                    if (pvOnlyEnabled && !ChargingUtils.isNight(startTime.getTime())) {
+                        java.time.ZoneId zone = java.time.ZoneId.systemDefault();
+                        java.time.LocalDateTime nowLdt = java.time.LocalDateTime.now(zone);
+                        java.time.LocalDateTime tonight = nowLdt.with(java.time.LocalTime.of(22, 0));
+                        if (!nowLdt.isBefore(tonight)) {
+                            tonight = tonight.plusDays(1);
+                        }
+                        long nightStartMillis = tonight.atZone(zone).toInstant().toEpochMilli();
+                        if (nightStartMillis > latestStart) {
+                            latestStart = nightStartMillis;
+                        }
+                    }
+
+
+                    // Daytime & PV-only: wait for today's night start to use solar if possible
+                    if (pvOnlyEnabled && !ChargingUtils.isNight(startTime.getTime())) {
+                        ZoneId zone = ZoneId.systemDefault();
+                        LocalDateTime nowLdt = LocalDateTime.now(zone);
+                        LocalDateTime tonight = nowLdt.with(LocalTime.of(22, 0));
+                        if (!nowLdt.isBefore(tonight)) {
+                            tonight = tonight.plusDays(1);
+                        }
+                        long nightStartMillis = tonight.atZone(zone).toInstant().toEpochMilli();
+                        latestStart = Math.max(latestStart, nightStartMillis); // extend horizon to the night window
+                    }
+
+                    // Only consider weather if the current start lies outside night hours
+                    if (!ChargingUtils.isNight(startTime.getTime()) && weatherForecastService.isEnabled()) {
+                        java.util.Optional<Long> sunny = weatherForecastService.findSunnySlot(now, latestStart);
+                        if (sunny.isPresent()) {
+                            LogFilter.logInfo(ChargingManagementService.class,
+                                    "Will NOT start charging at {} ({} ct/kWh). Weather suggests sunshine around {} — waiting for PV.",
+                                    DATE_FORMAT.format(startTime), schedule.getPrice(),
+                                    DATE_FORMAT.format(new java.util.Date(sunny.get())));
+                            return; // do nothing, keep control with EM (0 W)
+                        }
+                    }
+
+                } catch (Exception ex) {
+                    LogFilter.logWarn(ChargingManagementService.class, "Weather wait-decision failed: {}", ex.getMessage());
+                }
+            }
+
+        } catch (Exception ex) {
+            LogFilter.logWarn(ChargingManagementService.class, "Wait-decision check failed: {}", ex.getMessage());
+        }
+
+        try {
+            boolean keep = batteryManagementService.scheduleHoldTick();
+            if (!keep) return; // e.g. RSOC >= target and outside window -> do not start
+        } catch (Exception ex) {
+            LogFilter.logWarn(ChargingManagementService.class, "Initial HOLD tick failed: {}", ex.getMessage());
+        }
+
+        long periodMs = Math.max(5_000L, setpointRefreshMs());
+        ScheduledFuture<?> hold = taskScheduler.scheduleAtFixedRate(() -> {
+            try {
+                boolean keep = batteryManagementService.scheduleHoldTick();
+                if (!keep) cancelHoldForSchedule(schedule.getId());
+            } catch (Exception ex) {
+                LogFilter.logWarn(ChargingManagementService.class, "HOLD tick failed: {}", ex.getMessage());
+            }
+        }, periodMs);
+        holdTasks.put(schedule.getId(), hold);
+    }
+
+    private void scheduleChargingTask(ChargingSchedule schedule) {
+        long id = schedule.getId();
+        Date startTime = new Date(schedule.getStartTimestamp());
+        ScheduledFuture<?> existingTask = scheduledTasks.get(id);
+
+        if (existingTask == null || !chargingUtils.isTaskUpToDate(existingTask, schedule)) {
+            if (existingTask != null) chargingUtils.cancelTask(id, scheduledTasks);
+            ScheduledFuture<?> task = taskScheduler.schedule(() -> executeChargingTask(schedule), startTime);
+            scheduledTasks.put(id, task);
+            LogFilter.logInfo(ChargingManagementService.class, "Scheduled start task for: {}", DATE_FORMAT.format(startTime));
+        }
+    }
+
+    private void scheduleStopTask(ChargingSchedule schedule) {
+        long stopId = schedule.getEndTimestamp();
+        Date stopTime = new Date(stopId);
+        ScheduledFuture<?> existingTask = scheduledTasks.get(stopId);
+
+        if (existingTask == null || !chargingUtils.isTaskUpToDate(existingTask, schedule)) {
+            if (existingTask != null) chargingUtils.cancelTask(stopId, scheduledTasks);
+            ScheduledFuture<?> task = taskScheduler.schedule(() -> {
+                LogFilter.logInfo(ChargingManagementService.class, "Window end: {}", DATE_FORMAT.format(stopTime));
+                cancelHoldForSchedule(schedule.getId());
+
+                boolean atNight = ChargingUtils.isNight(stopTime.getTime());
+                boolean manualIdle = batteryManagementService.isManualIdleActive();
+                if ((chargingUtils.isNightChargingIdle() && atNight) || manualIdle) {
+                    batteryManagementService.setChargeWatts(nightPauseWatts()); // e.g. hold ~1W
+                    LogFilter.logInfo(ChargingManagementService.class, "Idle/hold active -> set {} W minimal setpoint.", nightPauseWatts());
+                } else {
+                    boolean ok = batteryManagementService.resetToAutomaticMode(true);
+                    LogFilter.log(ChargingManagementService.class,
+                            ok ? LogFilter.LOG_LEVEL_INFO : LogFilter.LOG_LEVEL_WARN,
+                            ok ? "Returned to automatic mode at end of window."
+                                    : "Failed to return to automatic mode at end of window.");
+                }
+            }, stopTime);
+            scheduledTasks.put(stopId, task);
+            LogFilter.logInfo(ChargingManagementService.class, "Scheduled stop task for: {}", DATE_FORMAT.format(stopTime));
+        }
+    }
+
+    private void cancelHoldForSchedule(Long scheduleId) {
+        ScheduledFuture<?> hold = holdTasks.remove(scheduleId);
+        if (hold != null) {
+            hold.cancel(false);
+            LogFilter.logDebug(ChargingManagementService.class, "Cancelled HOLD for schedule {}", scheduleId);
+        }
+    }
+
+    private void ensureManualHoldHeartbeat() {
+        if (manualHoldHeartbeat != null && !manualHoldHeartbeat.isCancelled()) return;
+
+        long periodMs = Math.max(5_000L, setpointRefreshMs());
+        manualHoldHeartbeat = taskScheduler.scheduleAtFixedRate(() -> {
+            try {
+                boolean keep = batteryManagementService.manualHoldTick();
+                if (!keep) {
+                    batteryManagementService.setForcedChargingActive(false);
+                    cancelManualHoldHeartbeat();
+                }
+            } catch (Exception ex) {
+                LogFilter.logWarn(ChargingManagementService.class, "Manual hold heartbeat failed: {}", ex.getMessage());
+            }
+        }, periodMs);
+    }
+
+    private void cancelManualHoldHeartbeat() {
+        if (manualHoldHeartbeat != null) {
+            manualHoldHeartbeat.cancel(false);
+            manualHoldHeartbeat = null;
+        }
+    }
+
+    // -------- nightly cleanup
+
     public void scheduleEndOfNightResetTask() {
+        // Only relevant when Night-Idle is explicitly active; otherwise stop and clear stale tasks.
+        if (!chargingUtils.isNightChargingIdle()) {
+            ScheduledFuture<?> old = scheduledTasks.remove(END_OF_NIGHT_RESET_ID);
+            if (old != null) old.cancel(false);
+            return;
+        }
+
         ScheduledFuture<?> existingTask = scheduledTasks.get(END_OF_NIGHT_RESET_ID);
         if (existingTask != null) existingTask.cancel(false);
 
@@ -271,459 +661,114 @@ public class ChargingManagementService {
                 .minusMinutes(15);
         Date resetDate = Date.from(resetTime.atZone(ZoneId.systemDefault()).toInstant());
 
-        LogFilter.logInfo(ChargingManagementService.class, "Scheduling end-of-night reset for: {}", resetDate);
         scheduledTasks.put(END_OF_NIGHT_RESET_ID, taskScheduler.schedule(() -> {
-            LogFilter.logInfo(ChargingManagementService.class, "Executing end-of-night reset...");
             batteryManagementService.setManualIdleActive(false);
-            logResetResult(batteryManagementService.resetToAutomaticMode());
+            boolean success = batteryManagementService.resetToAutomaticMode();
+            LogFilter.log(ChargingManagementService.class, success ? LogFilter.LOG_LEVEL_INFO : LogFilter.LOG_LEVEL_ERROR,
+                    success ? "Successfully reset to automatic mode." : "Reset to automatic mode failed.");
         }, resetDate));
     }
 
-    /**
-     * Checks if optimization is needed based on RSOC and future schedules.
-     *
-     * @return True if optimization is required, false otherwise.
-     */
-    private boolean shouldOptimize() {
-        int currentRsoc = batteryManagementService.getRelativeStateOfCharge();
-        long currentTime = System.currentTimeMillis();
-        boolean hasFutureSchedules = chargingScheduleRepository.findAll().stream().anyMatch(s -> s.getEndTimestamp() > currentTime);
+    // -------- sync
 
-        LogFilter.logInfo(ChargingManagementService.class, "Optimization check: RSOC={}%, FutureSchedules={}", currentRsoc, hasFutureSchedules);
-        return !hasFutureSchedules || currentRsoc < targetStateOfCharge;
-    }
-
-    /**
-     * Removes all planned charging periods that are still in the future.
-     */
-    private void removeAllPlannedChargingPeriods() {
-        chargingScheduleRepository.findAll().stream()
-                .filter(s -> s.getEndTimestamp() > System.currentTimeMillis())
-                .forEach(s -> {
-                    chargingUtils.cancelTask(s.getId(), scheduledTasks);
-                    chargingScheduleRepository.delete(s);
-                    LogFilter.logInfo(ChargingManagementService.class, "Removed planned charging period: {} - {}.",
-                            DATE_FORMAT.format(new Date(s.getStartTimestamp())),
-                            DATE_FORMAT.format(new Date(s.getEndTimestamp())));
-                });
-    }
-
-    /**
-     * Schedules all planned charging tasks.
-     */
-    public void schedulePlannedCharging() {
-        chargingScheduleRepository.findAll().stream()
-                .filter(s -> s.getStartTimestamp() > System.currentTimeMillis())
-                .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp))
-                .forEach(this::scheduleChargingTask);
-    }
-
-    /**
-     * Schedules stop tasks for all planned charging periods.
-     */
-    public void scheduleStopPlannedCharging() {
-        if(!ChargingUtils.isNight(System.currentTimeMillis())) {
-            return;
-        }
-        chargingScheduleRepository.findAll().stream()
-                .filter(s -> s.getStartTimestamp() > System.currentTimeMillis())
-                .sorted(Comparator.comparingLong(ChargingSchedule::getEndTimestamp))
-                .forEach(this::scheduleStopTask);
-    }
-
-    /**
-     * Optimizes daytime charging schedules based on market prices.
-     *
-     * @return A list of optimized daytime charging schedules.
-     */
-    private List<ChargingSchedule> optimizeDaytimeCharging() {
-        LogFilter.logInfo(ChargingManagementService.class, "Optimizing daytime charging dynamically based on price analysis.");
-        List<MarketPrice> daytimePeriods = chargingUtils.filterFuturePeriods(marketPriceRepository.findAll()).stream()
-                .filter(p -> !ChargingUtils.isNight(p.getStartTimestamp()))
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .collect(Collectors.toList());
-
-        if (daytimePeriods.isEmpty()) {
-            LogFilter.logWarn(ChargingManagementService.class, "No future daytime periods available for optimization.");
-            return Collections.emptyList();
-        }
-
-        double threshold = chargingUtils.calculateDynamicThreshold(daytimePeriods, priceFlexibilityThreshold);
-        double maxAcceptablePrice = chargingUtils.calculateMaxAcceptablePrice(batteryManagementService.getRelativeStateOfCharge(), maxAcceptableMarketPriceInCent);
-        logThresholds(threshold, maxAcceptablePrice);
-
-        int dynamicMaxPeriods = chargingUtils.calculateDynamicMaxChargingPeriods(daytimePeriods.size(),
-                chargingUtils.calculatePriceRange(daytimePeriods), batteryManagementService.getRelativeStateOfCharge());
-
-        long currentTime = System.currentTimeMillis();
-        long toleranceWindow = currentTime + (TIME_TOLERANCE_HOURS * 60 * 60 * 1000);
-
-        List<ChargingSchedule> optimizedSchedules = daytimePeriods.stream()
-                .filter(p -> p.getPriceInCentPerKWh() <= threshold && p.getPriceInCentPerKWh() <= maxAcceptablePrice)
-                .filter(p -> p.getStartTimestamp() <= toleranceWindow)
-                .filter(p -> chargingUtils.findCheaperFuturePeriod(p, daytimePeriods).isEmpty())
-                .limit(dynamicMaxPeriods)
-                .map(chargingUtils::convertToChargingSchedule)
-                .collect(Collectors.toList());
-
-        LogFilter.logInfo(ChargingManagementService.class, "Optimized {} daytime charging schedules.", optimizedSchedules.size());
-        return optimizedSchedules;
-    }
-
-    /**
-     * Optimizes nighttime charging schedules based on market prices and RSOC needs with a dynamic price threshold.
-     *
-     * @return A list of optimized nighttime charging schedules.
-     */
-    private List<ChargingSchedule> optimizeNighttimeCharging() {
-        LogFilter.logInfo(ChargingManagementService.class, "Optimizing nighttime charging dynamically for the current night.");
-        int currentRsoc = batteryManagementService.getRelativeStateOfCharge();
-        if (currentRsoc >= targetStateOfCharge) {
-            LogFilter.logInfo(ChargingManagementService.class, "RSOC ({}) is at or above target ({}). Skipping nighttime charging.", currentRsoc, targetStateOfCharge);
-            return Collections.emptyList();
-        }
-
-        long currentTime = System.currentTimeMillis();
-        LocalDateTime nightStartTime = LocalDateTime.now(ZoneId.systemDefault())
-                .with(LocalTime.of(22, 0))
-                .plusDays(LocalDateTime.now().getHour() < 22 ? 0 : 1);
-        LocalDateTime nightEndTime = LocalDateTime.now(ZoneId.systemDefault())
-                .with(LocalTime.of(NightConfig.getNightEndHour(), 0))
-                .plusDays(LocalDateTime.now().getHour() >= NightConfig.getNightEndHour() ? 1 : 0);
-        long nightStartTimestamp = nightStartTime.atZone(ZoneId.systemDefault()).toEpochSecond() * 1000;
-        long nightEndTimestamp = nightEndTime.atZone(ZoneId.systemDefault()).toEpochSecond() * 1000;
-
-        List<MarketPrice> allPrices = marketPriceRepository.findAll();
-        List<MarketPrice> nighttimePeriods = allPrices.stream()
-                .filter(p -> p.getStartTimestamp() >= nightStartTimestamp && p.getStartTimestamp() <= nightEndTimestamp)
-                .collect(Collectors.toList());
-
-        if (nighttimePeriods.isEmpty()) {
-            LogFilter.logWarn(ChargingManagementService.class, "No nighttime periods available for optimization between {} and {}.",
-                    DATE_FORMAT.format(new Date(nightStartTimestamp)),
-                    DATE_FORMAT.format(new Date(nightEndTimestamp)));
-            return Collections.emptyList();
-        }
-
-        LogFilter.logInfo(ChargingManagementService.class, "Available nighttime periods:");
-        nighttimePeriods.forEach(p -> LogFilter.logInfo(ChargingManagementService.class, " - {} - {} at {} cent/kWh",
-                DATE_FORMAT.format(new Date(p.getStartTimestamp())),
-                DATE_FORMAT.format(new Date(p.getEndTimestamp())),
-                p.getPriceInCentPerKWh()));
-
-        double dynamicMaxPrice = calculateDynamicMaxPrice(allPrices);
-        int requiredPeriods = chargingUtils.calculateRequiredPeriods(chargingUtils.calculateRequiredCapacity(currentRsoc), allPrices.size());
-        int periodsToPlan = Math.min(Math.max(requiredPeriods, 1), maxNighttimePeriods); // Mindestens 1, maximal 2
-        LogFilter.logInfo(ChargingManagementService.class, "Required periods based on RSOC ({}%) and market conditions: {}, planning: {}", currentRsoc, requiredPeriods, periodsToPlan);
-
-        List<MarketPrice> selectedPeriods = nighttimePeriods.stream()
-                .filter(p -> p.getPriceInCentPerKWh() <= dynamicMaxPrice)
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .limit(periodsToPlan)
-                .collect(Collectors.toList());
-
-        if (selectedPeriods.isEmpty()) {
-            LogFilter.logWarn(ChargingManagementService.class, "No nighttime periods below dynamic max price ({} cent/kWh) until end of night.", dynamicMaxPrice);
-            return Collections.emptyList();
-        }
-
-        LogFilter.logInfo(ChargingManagementService.class, "Selected nighttime periods:");
-        selectedPeriods.forEach(p -> LogFilter.logInfo(ChargingManagementService.class, " - {} - {} at {} cent/kWh",
-                DATE_FORMAT.format(new Date(p.getStartTimestamp())),
-                DATE_FORMAT.format(new Date(p.getEndTimestamp())),
-                p.getPriceInCentPerKWh()));
-
-        List<ChargingSchedule> optimizedSchedules = selectedPeriods.stream()
-                .map(chargingUtils::convertToChargingSchedule)
-                .collect(Collectors.toList());
-
-        LogFilter.logInfo(ChargingManagementService.class, "Optimized {} nighttime charging schedules.", optimizedSchedules.size());
-        return optimizedSchedules;
-    }
-
-    /**
-     * Dynamically adjusts charging periods based on current RSOC, market conditions, and dynamic max price.
-     *
-     * @param currentRsoc The current relative state of charge.
-     * @param totalPeriods The total number of available market periods.
-     * @param marketPrices The list of market prices to consider.
-     * @param dynamicMaxPrice The dynamically calculated maximum acceptable price.
-     */
-    private void adjustChargingPeriodsDynamically(int currentRsoc, int totalPeriods, List<MarketPrice> marketPrices, double dynamicMaxPrice) {
-        double requiredCapacity = chargingUtils.calculateRequiredCapacity(currentRsoc);
-        if (requiredCapacity <= 0) {
-            LogFilter.logInfo(ChargingManagementService.class, "RSOC has already reached or exceeded the target. Removing all planned periods.");
-            removeAllPlannedChargingPeriods();
-            return;
-        }
-
-        int requiredPeriods = chargingUtils.calculateRequiredPeriods(requiredCapacity, totalPeriods);
-        LogFilter.logInfo(ChargingManagementService.class, "Calculated {} required periods based on current RSOC ({}%) and market conditions.", requiredPeriods, currentRsoc);
-
-        List<ChargingSchedule> existingSchedules = chargingUtils.getFutureChargingSchedules(chargingScheduleRepository.findAll(), System.currentTimeMillis());
-        int excessPeriods = existingSchedules.size() - requiredPeriods;
-        if (excessPeriods > 0) {
-            LogFilter.logInfo(ChargingManagementService.class, "Removing {} excess charging periods as RSOC has increased.", excessPeriods);
-            chargingUtils.removeExcessChargingPeriods(existingSchedules, excessPeriods, chargingScheduleRepository, scheduledTasks);
-        }
-
-        int missingPeriods = requiredPeriods - existingSchedules.size();
-        if (missingPeriods > 0) {
-            LogFilter.logInfo(ChargingManagementService.class, "Adding {} new charging periods to meet the energy requirement, excluding nighttime periods, below dynamic max price {}.", missingPeriods, dynamicMaxPrice);
-            addAdditionalChargingPeriodsExcludingNighttime(marketPrices, missingPeriods, existingSchedules, dynamicMaxPrice);
-        }
-    }
-
-    /**
-     * Adds additional charging periods excluding nighttime based on market prices and dynamic max price.
-     *
-     * @param marketPrices The list of available market prices.
-     * @param periodsToAdd The number of periods to add.
-     * @param existingSchedules The list of current schedules to avoid duplicates.
-     * @param dynamicMaxPrice The dynamically calculated maximum acceptable price.
-     */
-    private void addAdditionalChargingPeriodsExcludingNighttime(List<MarketPrice> marketPrices, int periodsToAdd, List<ChargingSchedule> existingSchedules, double dynamicMaxPrice) {
-        long currentTime = System.currentTimeMillis();
-        long toleranceWindow = currentTime + (TIME_TOLERANCE_HOURS * 60 * 60 * 1000);
-        List<MarketPrice> availablePeriods = marketPrices.stream()
-                .filter(p -> p.getStartTimestamp() > currentTime && p.getStartTimestamp() <= toleranceWindow)
-                .filter(p -> !ChargingUtils.isNight(p.getStartTimestamp())) // Strenger Nachtfilter
-                .filter(p -> p.getPriceInCentPerKWh() <= dynamicMaxPrice)
-                .filter(p -> existingSchedules.stream().noneMatch(s -> Objects.equals(s.getStartTimestamp(), p.getStartTimestamp())))
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .limit(periodsToAdd)
-                .collect(Collectors.toList());
-
-        if (availablePeriods.isEmpty()) {
-            LogFilter.logInfo(ChargingManagementService.class, "No valid daytime periods found to add within tolerance window below dynamic max price {}.", dynamicMaxPrice);
-            return;
-        }
-
-        availablePeriods.forEach(p -> chargingUtils.createAndLogChargingSchedule(p, chargingScheduleRepository, DATE_FORMAT));
-        LogFilter.logInfo(ChargingManagementService.class, "Added {} additional daytime charging periods below dynamic max price {}.", availablePeriods.size(), dynamicMaxPrice);
-    }
-
-    /**
-     * Executes a scheduled charging task.
-     *
-     * @param startTime The start time of the charging period.
-     * @param endTime The end time of the charging period.
-     */
-    private void executeChargingTask(Date startTime, Date endTime) {
-        LogFilter.logInfo(ChargingManagementService.class, "Scheduled charging task started for period: {} - {}.", DATE_FORMAT.format(startTime), DATE_FORMAT.format(endTime));
-        batteryManagementService.initCharging(false);
-    }
-
-    /**
-     * Synchronizes new schedules with existing ones, ensuring cheapest options are retained.
-     *
-     * @param newSchedules The set of new schedules to synchronize.
-     */
     private void synchronizeSchedules(Set<ChargingSchedule> newSchedules) {
         long currentTime = System.currentTimeMillis();
-        LogFilter.logInfo(ChargingManagementService.class, "Starting synchronization of charging schedules...");
-        LogFilter.logDebug(ChargingManagementService.class, "Current time for synchronization: {}", DATE_FORMAT.format(new Date(currentTime)));
 
         List<ChargingSchedule> existingSchedules = chargingScheduleRepository.findAll().stream()
                 .filter(s -> s.getEndTimestamp() > currentTime)
                 .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp))
                 .collect(Collectors.toList());
 
-        Set<ChargingSchedule> validatedNewSchedules = chargingUtils.validateSchedulesForCheaperOptions(newSchedules);
+        Set<ChargingSchedule> validatedNew = chargingUtils.validateSchedulesForCheaperOptions(newSchedules);
         List<MarketPrice> marketPrices = marketPriceRepository.findAll();
 
-        removeOutdatedSchedules(existingSchedules, validatedNewSchedules);
-        saveChargingSchedule(validatedNewSchedules, marketPrices);
+        Set<String> newKeys = validatedNew.stream()
+                .map(s -> s.getStartTimestamp() + "-" + s.getEndTimestamp())
+                .collect(Collectors.toSet());
+
+        existingSchedules.stream()
+                .filter(s -> s.getStartTimestamp() > currentTime)
+                .filter(s -> !newKeys.contains(s.getStartTimestamp() + "-" + s.getEndTimestamp()))
+                .forEach(s -> {
+                    cancelHoldForSchedule(s.getId());
+                    chargingUtils.cancelTask(s.getId(), scheduledTasks);
+                    chargingScheduleRepository.delete(s);
+                    LogFilter.logInfo(ChargingManagementService.class,
+                            "Removed outdated schedule: {} - {} ({} ct/kWh)",
+                            DATE_FORMAT.format(new Date(s.getStartTimestamp())),
+                            DATE_FORMAT.format(new Date(s.getEndTimestamp())), s.getPrice());
+                });
+
+        removeOutdatedSchedules(existingSchedules, validatedNew);
+        saveChargingSchedule(validatedNew, marketPrices);
 
         schedulePlannedCharging();
         scheduleStopPlannedCharging();
-        LogFilter.logInfo(ChargingManagementService.class, "Synchronization of charging schedules completed successfully.");
     }
 
-    /**
-     * Saves validated charging schedules to the repository.
-     *
-     * @param schedules The set of schedules to save.
-     * @param marketPrices The list of market prices for validation.
-     */
+    private void removeOutdatedSchedules(List<ChargingSchedule> existing, Set<ChargingSchedule> news) {
+        existing.forEach(e -> {
+            boolean cheaper = news.stream().anyMatch(n -> n.getStartTimestamp().equals(e.getStartTimestamp()) &&
+                    n.getEndTimestamp().equals(e.getEndTimestamp()) && n.getPrice() < e.getPrice());
+            if (cheaper) {
+                cancelHoldForSchedule(e.getId());
+                chargingUtils.cancelTask(e.getId(), scheduledTasks);
+                chargingScheduleRepository.delete(e);
+            }
+        });
+    }
+
     private void saveChargingSchedule(Set<ChargingSchedule> schedules, List<MarketPrice> marketPrices) {
         long currentTime = System.currentTimeMillis();
-        LogFilter.logInfo(ChargingManagementService.class, "Attempting to save {} charging schedules to the database.", schedules.size());
-
-        Set<ChargingSchedule> validatedSchedules = new HashSet<>();
+        Set<ChargingSchedule> validated = new HashSet<>();
         schedules.stream()
                 .filter(s -> s.getStartTimestamp() > currentTime)
-                .filter(s -> chargingUtils.isValidSchedule(s, currentTime, validatedSchedules, marketPrices))
+                .filter(s -> chargingUtils.isValidSchedule(s, currentTime, validated, marketPrices))
                 .filter(s -> !chargingScheduleRepository.existsByStartEndAndPrice(s.getStartTimestamp(), s.getEndTimestamp(), s.getPrice()))
-                .forEach(s -> saveSchedule(s, validatedSchedules));
-
-        LogFilter.logInfo(ChargingManagementService.class, "Completed saving all valid future schedules to the database.");
+                .forEach(s -> {
+                    try {
+                        chargingScheduleRepository.save(s);
+                        validated.add(s);
+                        LogFilter.logInfo(ChargingManagementService.class, "Saved schedule: {} - {} ({} ct/kWh).",
+                                DATE_FORMAT.format(new Date(s.getStartTimestamp())),
+                                DATE_FORMAT.format(new Date(s.getEndTimestamp())), s.getPrice());
+                    } catch (Exception e) {
+                        LogFilter.logError(ChargingManagementService.class, "Save failed: {} - {} at {} ct/kWh. {}",
+                                DATE_FORMAT.format(new Date(s.getStartTimestamp())),
+                                DATE_FORMAT.format(new Date(s.getEndTimestamp())), s.getPrice(), e.getMessage());
+                    }
+                });
     }
 
-    /**
-     * Retrieves all charging schedules sorted by start timestamp.
-     *
-     * @return A sorted list of charging schedules.
-     */
     public List<ChargingSchedule> getSortedChargingSchedules() {
         return chargingScheduleRepository.findAll().stream()
                 .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp))
                 .collect(Collectors.toList());
     }
 
-    // Helper Methods
+    private long calculateLatestNightStart(long referenceTimestamp) {
+        ZoneId zone = ZoneId.systemDefault();
+        LocalDateTime ref = LocalDateTime.ofInstant(Instant.ofEpochMilli(referenceTimestamp), zone);
+        int nightStartHour = NightConfig.getNightStartHour();
+        int nightEndHour = NightConfig.getNightEndHour();
 
-    /**
-     * Logs the current RSOC and number of market periods.
-     *
-     * @param rsoc The current relative state of charge.
-     * @param periods The total number of market periods.
-     */
-    private void logRsocAndPeriods(int rsoc, int periods) {
-        LogFilter.logInfo(ChargingManagementService.class, "Current RSOC: {}%, Total market periods: {}", rsoc, periods);
-    }
+        LocalDateTime nightStart = ref.with(LocalTime.of(nightStartHour, 0));
+        LocalDateTime nightEnd = ref.with(LocalTime.of(nightEndHour, 0));
 
-    /**
-     * Logs the dynamic threshold and maximum acceptable price for daytime charging.
-     *
-     * @param threshold The calculated dynamic threshold.
-     * @param maxPrice The maximum acceptable price.
-     */
-    private void logThresholds(double threshold, double maxPrice) {
-        LogFilter.logInfo(ChargingManagementService.class, "Dynamic daytime threshold: {:.2f} cents/kWh, Max acceptable price: {:.2f} cents/kWh", threshold, maxPrice);
-    }
-
-    /**
-     * Logs the result of the reset operation.
-     *
-     * @param success True if the reset was successful, false otherwise.
-     */
-    private void logResetResult(boolean success) {
-        LogFilter.log(ChargingManagementService.class, success ? LogFilter.LOG_LEVEL_INFO : LogFilter.LOG_LEVEL_ERROR,
-                success ? "Successfully reset to automatic mode." : "Reset to automatic mode failed.");
-    }
-
-    /**
-     * Retrieves future daytime schedules from the buffer.
-     *
-     * @param currentTime The current timestamp in milliseconds.
-     * @return A list of future daytime schedules.
-     */
-    private List<ChargingSchedule> getFutureDaytimeSchedules(long currentTime) {
-        List<ChargingSchedule> futureSchedules = daytimeBuffer.stream()
-                .filter(s -> s.getStartTimestamp() > currentTime && !ChargingUtils.isNight(s.getStartTimestamp()))
-                .collect(Collectors.toList());
-        LogFilter.logInfo(ChargingManagementService.class, "Added {} future schedules from the daytime buffer for additional charging.", futureSchedules.size());
-        return futureSchedules;
-    }
-
-    /**
-     * Schedules a charging task for a given schedule.
-     *
-     * @param schedule The charging schedule to schedule.
-     */
-    private void scheduleChargingTask(ChargingSchedule schedule) {
-        long id = schedule.getId();
-        Date startTime = new Date(schedule.getStartTimestamp());
-        Date endTime = new Date(schedule.getEndTimestamp());
-        ScheduledFuture<?> existingTask = scheduledTasks.get(id);
-
-        if (existingTask == null || !chargingUtils.isTaskUpToDate(existingTask, schedule)) {
-            if (existingTask != null) chargingUtils.cancelTask(id, scheduledTasks);
-            ScheduledFuture<?> task = taskScheduler.schedule(() -> executeChargingTask(startTime, endTime), startTime);
-            scheduledTasks.put(id, task);
-            LogFilter.logInfo(ChargingManagementService.class, "Scheduled charging task for: {} - {}.", DATE_FORMAT.format(startTime), DATE_FORMAT.format(endTime));
-        }
-    }
-
-    /**
-     * Schedules a stop task for a given schedule.
-     *
-     * @param schedule The charging schedule to stop.
-     */
-    private void scheduleStopTask(ChargingSchedule schedule) {
-        long stopId = schedule.getEndTimestamp();
-        Date stopTime = new Date(stopId);
-        ScheduledFuture<?> existingTask = scheduledTasks.get(stopId);
-
-        if (existingTask == null || !chargingUtils.isTaskUpToDate(existingTask, schedule)) {
-            if (existingTask != null) chargingUtils.cancelTask(stopId, scheduledTasks);
-            ScheduledFuture<?> task = taskScheduler.schedule(() -> {
-                LogFilter.logInfo(ChargingManagementService.class, "Stopping charging as per schedule for period ending at: {}.", DATE_FORMAT.format(stopTime));
-                batteryManagementService.setDynamicChargingPoint(0);
-            }, stopTime);
-            scheduledTasks.put(stopId, task);
-            LogFilter.logInfo(ChargingManagementService.class, "Scheduled stop charging task for: {}.", DATE_FORMAT.format(stopTime));
-        }
-    }
-
-    /**
-     * Ensures the cheapest nighttime period is included in the schedules if RSOC requires charging.
-     *
-     * @param schedules The set of schedules to update.
-     * @param marketPrices The list of market prices to check.
-     */
-    private void ensureCheapestNighttimePeriod(Set<ChargingSchedule> schedules, List<MarketPrice> marketPrices) {
-        int currentRsoc = batteryManagementService.getRelativeStateOfCharge();
-        if (currentRsoc >= targetStateOfCharge) {
-            LogFilter.logInfo(ChargingManagementService.class, "RSOC ({}) is at or above target ({}). No need to ensure cheapest nighttime period.", currentRsoc, targetStateOfCharge);
-            return;
-        }
-
-        MarketPrice cheapestNight = marketPrices.stream()
-                .filter(p -> ChargingUtils.isNight(p.getStartTimestamp()))
-                .min(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .orElse(null);
-        if (cheapestNight != null && schedules.stream().noneMatch(s -> Objects.equals(s.getStartTimestamp(), cheapestNight.getStartTimestamp()))) {
-            schedules.add(chargingUtils.convertToChargingSchedule(cheapestNight));
-            LogFilter.logInfo(ChargingManagementService.class, "Cheapest nighttime period for the full night found: {} - {} at {}.",
-                    DATE_FORMAT.format(new Date(cheapestNight.getStartTimestamp())),
-                    DATE_FORMAT.format(new Date(cheapestNight.getEndTimestamp())), cheapestNight.getPriceInCentPerKWh());
-        } else if (cheapestNight == null) {
-            LogFilter.logWarn(ChargingManagementService.class, "No nighttime periods found for the full night in the market prices.");
-        }
-    }
-
-    /**
-     * Removes outdated schedules if cheaper alternatives exist.
-     *
-     * @param existing The list of existing schedules.
-     * @param newSchedules The set of new schedules to compare against.
-     */
-    private void removeOutdatedSchedules(List<ChargingSchedule> existing, Set<ChargingSchedule> newSchedules) {
-        existing.forEach(e -> {
-            if (newSchedules.stream().anyMatch(n -> n.getStartTimestamp().equals(e.getStartTimestamp()) &&
-                    n.getEndTimestamp().equals(e.getEndTimestamp()) && n.getPrice() < e.getPrice())) {
-                chargingUtils.cancelTask(e.getId(), scheduledTasks);
-                chargingScheduleRepository.delete(e);
-                LogFilter.logInfo(ChargingManagementService.class, "Removed outdated schedule in favor of a cheaper alternative: {} - {} ({} cents/kWh).",
-                        DATE_FORMAT.format(new Date(e.getStartTimestamp())),
-                        DATE_FORMAT.format(new Date(e.getEndTimestamp())), e.getPrice());
+        if (nightStartHour > nightEndHour) {
+            if (ref.getHour() < nightEndHour) {
+                nightStart = nightStart.minusDays(1);
             } else {
-                LogFilter.logDebug(ChargingManagementService.class, "No cheaper alternative found for schedule: {} - {} at {} cents/kWh.",
-                        DATE_FORMAT.format(new Date(e.getStartTimestamp())),
-                        DATE_FORMAT.format(new Date(e.getEndTimestamp())), e.getPrice());
+                nightEnd = nightEnd.plusDays(1);
             }
-        });
-    }
-
-    /**
-     * Saves a single schedule to the repository and adds it to validated schedules.
-     *
-     * @param schedule The schedule to save.
-     * @param validated The set of validated schedules to update.
-     */
-    private void saveSchedule(ChargingSchedule schedule, Set<ChargingSchedule> validated) {
-        try {
-            chargingScheduleRepository.save(schedule);
-            validated.add(schedule);
-            LogFilter.logInfo(ChargingManagementService.class, "Successfully saved schedule: {} - {} at {:.2f} cents/kWh.",
-                    DATE_FORMAT.format(new Date(schedule.getStartTimestamp())),
-                    DATE_FORMAT.format(new Date(schedule.getEndTimestamp())), schedule.getPrice());
-        } catch (Exception e) {
-            LogFilter.logError(ChargingManagementService.class, "Failed to save schedule: {} - {} at {} cents/kWh. Error: {}",
-                    DATE_FORMAT.format(new Date(schedule.getStartTimestamp())),
-                    DATE_FORMAT.format(new Date(schedule.getEndTimestamp())), schedule.getPrice(), e.getMessage());
+        } else if (nightStartHour == nightEndHour) {
+            nightEnd = nightEnd.plusDays(1);
+        } else if (!ref.isBefore(nightEnd)) {
+            nightStart = nightStart.plusDays(1);
+            nightEnd = nightEnd.plusDays(1);
         }
+
+        long nightEndTs = nightEnd.atZone(zone).toInstant().toEpochMilli();
+        return nightEndTs - Math.max(0, nightLatestStartOffsetMinutes) * 60_000L;
     }
 }
