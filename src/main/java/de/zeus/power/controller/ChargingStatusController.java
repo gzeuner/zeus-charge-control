@@ -4,7 +4,6 @@ import de.zeus.power.entity.ChargingSchedule;
 import de.zeus.power.entity.MarketPrice;
 import de.zeus.power.model.ApiResponse;
 import de.zeus.power.model.BatteryStatusResponse;
-import de.zeus.power.repository.ChargingScheduleRepository;
 import de.zeus.power.service.BatteryManagementService;
 import de.zeus.power.service.ChargingManagementService;
 import de.zeus.power.service.MarketPriceService;
