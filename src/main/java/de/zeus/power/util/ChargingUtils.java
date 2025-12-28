@@ -88,10 +88,14 @@ public class ChargingUtils {
     // ---- validation & calculations (existing) ----
 
     public boolean isValidSchedule(ChargingSchedule schedule, long currentTime, Set<ChargingSchedule> validatedSchedules, List<MarketPrice> marketPrices) {
-        return !isScheduleExpired(schedule, currentTime) &&
-                !isScheduleOverpriced(schedule) &&
-                !isScheduleOverlapping(schedule, validatedSchedules) &&
-                !exceedsDynamicThreshold(schedule, marketPrices);
+        if (isScheduleExpired(schedule, currentTime)) return false;
+        if (isScheduleOverpriced(schedule)) return false;
+        if (isScheduleOverlapping(schedule, validatedSchedules)) return false;
+
+        // Allow night windows to pass even if they exceed the dynamic threshold slightly (we already filtered by dynamic max price)
+        boolean night = isNight(schedule.getStartTimestamp());
+        if (!night && exceedsDynamicThreshold(schedule, marketPrices)) return false;
+        return true;
     }
 
     public double calculateRequiredCapacity(int currentRsoc) {
