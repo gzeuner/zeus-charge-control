@@ -67,6 +67,9 @@ public class ChargingManagementService {
     @Value("${weather.wait.max.minutes:120}")
     private int weatherWaitMaxMinutes;
 
+    @Value("${weather.wait.min.rsoc:45}")
+    private int weatherWaitMinRsoc;
+
     @Value("${scheduling.wait.max.defer.hours:6}")
     private int waitMaxDeferHours;
 
@@ -501,42 +504,24 @@ public class ChargingManagementService {
                 try {
                     now = System.currentTimeMillis();
                     long latestStart = now + Math.max(0, weatherWaitMaxMinutes) * 60_000L;
-                    // Extend horizon to tonight when PV-first is enabled (avoid early morning grid charging)
-                    if (pvOnlyEnabled && !ChargingUtils.isNight(startTime.getTime())) {
-                        java.time.ZoneId zone = java.time.ZoneId.systemDefault();
-                        java.time.LocalDateTime nowLdt = java.time.LocalDateTime.now(zone);
-                        java.time.LocalDateTime tonight = nowLdt.with(java.time.LocalTime.of(22, 0));
-                        if (!nowLdt.isBefore(tonight)) {
-                            tonight = tonight.plusDays(1);
-                        }
-                        long nightStartMillis = tonight.atZone(zone).toInstant().toEpochMilli();
-                        if (nightStartMillis > latestStart) {
-                            latestStart = nightStartMillis;
-                        }
-                    }
-
-
-                    // Daytime & PV-only: wait for today's night start to use solar if possible
-                    if (pvOnlyEnabled && !ChargingUtils.isNight(startTime.getTime())) {
-                        ZoneId zone = ZoneId.systemDefault();
-                        LocalDateTime nowLdt = LocalDateTime.now(zone);
-                        LocalDateTime tonight = nowLdt.with(LocalTime.of(22, 0));
-                        if (!nowLdt.isBefore(tonight)) {
-                            tonight = tonight.plusDays(1);
-                        }
-                        long nightStartMillis = tonight.atZone(zone).toInstant().toEpochMilli();
-                        latestStart = Math.max(latestStart, nightStartMillis); // extend horizon to the night window
-                    }
 
                     // Only consider weather if the current start lies outside night hours
                     if (!ChargingUtils.isNight(startTime.getTime()) && weatherForecastService.isEnabled()) {
-                        java.util.Optional<Long> sunny = weatherForecastService.findSunnySlot(now, latestStart);
-                        if (sunny.isPresent()) {
-                            LogFilter.logInfo(ChargingManagementService.class,
-                                    "Will NOT start charging at {} ({} ct/kWh). Weather suggests sunshine around {} — waiting for PV.",
-                                    DATE_FORMAT.format(startTime), schedule.getPrice(),
-                                    DATE_FORMAT.format(new java.util.Date(sunny.get())));
-                            return; // do nothing, keep control with EM (0 W)
+                        int rsoc = batteryManagementService.getRelativeStateOfCharge();
+                        boolean rsocHighEnough = rsoc >= Math.max(0, weatherWaitMinRsoc);
+                        if (rsocHighEnough) {
+                            java.util.Optional<Long> sunny = weatherForecastService.findSunnySlot(now, latestStart);
+                            if (sunny.isPresent()) {
+                                long sunnySlot = sunny.get();
+                                boolean withinShortWindow = sunnySlot <= latestStart;
+                                if (withinShortWindow) {
+                                    LogFilter.logInfo(ChargingManagementService.class,
+                                            "Will NOT start charging at {} ({} ct/kWh). Weather suggests sunshine around {} — waiting for PV.",
+                                            DATE_FORMAT.format(startTime), schedule.getPrice(),
+                                            DATE_FORMAT.format(new java.util.Date(sunnySlot)));
+                                    return; // do nothing, keep control with EM (0 W)
+                                }
+                            }
                         }
                     }
 
