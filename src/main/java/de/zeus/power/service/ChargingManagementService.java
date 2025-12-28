@@ -70,6 +70,17 @@ public class ChargingManagementService {
     @Value("${weather.wait.min.rsoc:45}")
     private int weatherWaitMinRsoc;
 
+    @Value("${scheduling.catchup.enabled:true}")
+    private boolean catchupEnabled;
+
+    /** Percent points below target at which a mid-window catch-up start is allowed. */
+    @Value("${scheduling.catchup.rsoc.drop.pct:5}")
+    private int catchupRsocDropPct;
+
+    /** Allow catch-up starts only within this many minutes after window start. */
+    @Value("${scheduling.catchup.max.minutes.from.start:90}")
+    private int catchupMaxMinutesFromStart;
+
     @Value("${scheduling.wait.max.defer.hours:6}")
     private int waitMaxDeferHours;
 
@@ -114,6 +125,7 @@ public class ChargingManagementService {
     private final List<ChargingSchedule> daytimeBuffer = new CopyOnWriteArrayList<>();
     private final Map<Long, ScheduledFuture<?>> scheduledTasks = new ConcurrentHashMap<>();
     private final Map<Long, ScheduledFuture<?>> holdTasks = new ConcurrentHashMap<>();
+    private final Set<Long> catchupAttempts = ConcurrentHashMap.newKeySet();
 
     // -------- events & schedulers
 
@@ -165,6 +177,41 @@ public class ChargingManagementService {
 
         chargingUtils.handleAutomaticModeTransition(now);
         batteryManagementService.updateRsocHistory(now, rsoc);
+        tryCatchupStart(now, rsoc);
+    }
+
+    /** Allow mid-window start when RSOC falls below a hysteresis threshold while price window is still active. */
+    private void tryCatchupStart(long now, int rsoc) {
+        if (!catchupEnabled) return;
+        if (batteryManagementService.isOwnerProtected()) return; // respect manual/other holds
+
+        int threshold = Math.max(0, targetStateOfCharge - Math.max(0, catchupRsocDropPct));
+        if (rsoc >= threshold) return;
+
+        Optional<ChargingSchedule> active = chargingScheduleRepository.findAll().stream()
+                .filter(s -> now >= s.getStartTimestamp() && now < s.getEndTimestamp())
+                .findFirst();
+        if (active.isEmpty()) return;
+
+        ChargingSchedule schedule = active.get();
+        long catchupHorizon = schedule.getStartTimestamp() + Math.max(1, catchupMaxMinutesFromStart) * 60_000L;
+        if (now > catchupHorizon) return; // outside allowed catch-up window
+        if (catchupAttempts.contains(schedule.getId())) return; // already tried for this window
+
+        catchupAttempts.add(schedule.getId());
+        boolean started = false;
+        try {
+            started = batteryManagementService.initCharging(false);
+        } catch (Exception ex) {
+            LogFilter.logWarn(ChargingManagementService.class, "Catch-up start failed: {}", ex.getMessage());
+        }
+
+        LogFilter.logInfo(ChargingManagementService.class,
+                "{} catch-up start inside window {} - {} (RSOC {}%, threshold {}%, horizon +{} min).",
+                started ? "Triggered" : "Skipped/failed",
+                DATE_FORMAT.format(new Date(schedule.getStartTimestamp())),
+                DATE_FORMAT.format(new Date(schedule.getEndTimestamp())),
+                rsoc, threshold, catchupMaxMinutesFromStart);
     }
 
     // -------- optimize flow
@@ -271,6 +318,7 @@ public class ChargingManagementService {
                 .forEach(s -> {
                     cancelHoldForSchedule(s.getId());
                     chargingUtils.cancelTask(s.getId(), scheduledTasks);
+                    catchupAttempts.remove(s.getId());
                     chargingScheduleRepository.delete(s);
                 });
     }
@@ -576,6 +624,7 @@ public class ChargingManagementService {
             ScheduledFuture<?> task = taskScheduler.schedule(() -> {
                 LogFilter.logInfo(ChargingManagementService.class, "Window end: {}", DATE_FORMAT.format(stopTime));
                 cancelHoldForSchedule(schedule.getId());
+                catchupAttempts.remove(schedule.getId());
 
                 boolean atNight = ChargingUtils.isNight(stopTime.getTime());
                 boolean manualIdle = batteryManagementService.isManualIdleActive();
@@ -677,6 +726,7 @@ public class ChargingManagementService {
                 .forEach(s -> {
                     cancelHoldForSchedule(s.getId());
                     chargingUtils.cancelTask(s.getId(), scheduledTasks);
+                    catchupAttempts.remove(s.getId());
                     chargingScheduleRepository.delete(s);
                     LogFilter.logInfo(ChargingManagementService.class,
                             "Removed outdated schedule: {} - {} ({} ct/kWh)",
@@ -698,6 +748,7 @@ public class ChargingManagementService {
             if (cheaper) {
                 cancelHoldForSchedule(e.getId());
                 chargingUtils.cancelTask(e.getId(), scheduledTasks);
+                catchupAttempts.remove(e.getId());
                 chargingScheduleRepository.delete(e);
             }
         });
