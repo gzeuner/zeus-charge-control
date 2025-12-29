@@ -42,7 +42,6 @@ public class ChargingManagementService {
     private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
     private static final String EVERY_HOUR_CRON = "0 0 * * * ?";
     private static final long END_OF_NIGHT_RESET_ID = -1L;
-    private static final int TIME_TOLERANCE_HOURS = 5;
 
     @Autowired private ChargingScheduleRepository chargingScheduleRepository;
     @Autowired private MarketPriceRepository marketPriceRepository;
@@ -92,6 +91,9 @@ public class ChargingManagementService {
 
     @Value("${scheduling.night.latestStart.offset.minutes:60}")
     private int nightLatestStartOffsetMinutes;
+
+    @Value("${scheduling.daytime.lookahead.hours:12}")
+    private int daytimeLookaheadHours;
 
     @Value("${battery.pv.only.enabled:true}")
     private boolean pvOnlyEnabled;
@@ -284,7 +286,7 @@ public class ChargingManagementService {
     }
 
     private List<MarketPrice> getDaytimePeriods(long currentTime) {
-        long toleranceWindow = currentTime + (TIME_TOLERANCE_HOURS * 60L * 60L * 1000L);
+        long toleranceWindow = currentTime + (daytimeLookaheadHours * 60L * 60L * 1000L);
         return marketPriceRepository.findAll().stream()
                 .filter(p -> !ChargingUtils.isNight(p.getStartTimestamp())
                         && p.getStartTimestamp() > currentTime
@@ -352,7 +354,7 @@ public class ChargingManagementService {
                 chargingUtils.calculatePriceRange(day), batteryManagementService.getRelativeStateOfCharge());
 
         long now = System.currentTimeMillis();
-        long toleranceWindow = now + (TIME_TOLERANCE_HOURS * 60L * 60L * 1000L);
+        long toleranceWindow = now + (daytimeLookaheadHours * 60L * 60L * 1000L);
 
         return day.stream()
                 .filter(p -> p.getPriceInCentPerKWh() <= threshold && p.getPriceInCentPerKWh() <= maxAcceptablePrice)
@@ -460,7 +462,7 @@ public class ChargingManagementService {
     private void addAdditionalChargingPeriodsExcludingNighttime(List<MarketPrice> marketPrices, int periodsToAdd,
                                                                 List<ChargingSchedule> existingSchedules, double dynamicMaxPrice) {
         long currentTime = System.currentTimeMillis();
-        long toleranceWindow = currentTime + (TIME_TOLERANCE_HOURS * 60L * 60L * 1000L);
+        long toleranceWindow = currentTime + (daytimeLookaheadHours * 60L * 60L * 1000L);
 
         List<MarketPrice> available = marketPrices.stream()
                 .filter(p -> p.getStartTimestamp() > currentTime && p.getStartTimestamp() <= toleranceWindow)
