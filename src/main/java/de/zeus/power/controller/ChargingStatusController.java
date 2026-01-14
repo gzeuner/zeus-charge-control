@@ -188,13 +188,15 @@ public class ChargingStatusController {
             }
 
             chargingUtils.setNightChargingIdle(nightChargingIdle);
+            batteryManagementService.setNightChargingIdle(nightChargingIdle);
+            chargingManagementService.scheduleNightIdleWindowTasks();
 
             if (nightChargingIdle) {
-                // User override: immediately enter manual idle (1W) regardless of default config/times
-                batteryManagementService.setManualIdleActive(true);
-                batteryManagementService.pauseWithTinySetpoint();
-                batteryManagementService.startManualIdleHold();
-                log.info("Night idle activated by user: manual idle set to 1W and hold started.");
+                if (ChargingUtils.isNight(System.currentTimeMillis())) {
+                    chargingManagementService.activateNightIdleIfInWindow();
+                } else {
+                    log.info("Night idle activated by user; waiting for configured night window.");
+                }
             } else {
                 // Disable idle and hand back control
                 batteryManagementService.setManualIdleActive(false);
@@ -223,6 +225,10 @@ public class ChargingStatusController {
 
             NightConfig.updateNightHours(startHour, endHour);
             log.info("Night hours updated at runtime: {} -> {}", startHour, endHour);
+            chargingManagementService.scheduleNightIdleWindowTasks();
+            if (chargingUtils.isNightChargingIdle()) {
+                chargingManagementService.activateNightIdleIfInWindow();
+            }
 
             Map<String, Integer> data = new HashMap<>();
             data.put("startHour", startHour);

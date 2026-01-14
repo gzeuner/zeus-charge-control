@@ -42,6 +42,7 @@ public class ChargingManagementService {
     private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
     private static final String EVERY_HOUR_CRON = "0 0 * * * ?";
     private static final long END_OF_NIGHT_RESET_ID = -1L;
+    private static final long START_OF_NIGHT_IDLE_ID = -2L;
 
     @Autowired private ChargingScheduleRepository chargingScheduleRepository;
     @Autowired private MarketPriceRepository marketPriceRepository;
@@ -703,6 +704,61 @@ public class ChargingManagementService {
             LogFilter.log(ChargingManagementService.class, success ? LogFilter.LOG_LEVEL_INFO : LogFilter.LOG_LEVEL_ERROR,
                     success ? "Successfully reset to automatic mode." : "Reset to automatic mode failed.");
         }, resetDate));
+    }
+
+    public void scheduleNightIdleWindowTasks() {
+        scheduleNightIdleStartTask();
+        scheduleEndOfNightResetTask();
+    }
+
+    public void activateNightIdleIfInWindow() {
+        long now = System.currentTimeMillis();
+        if (!ChargingUtils.isNight(now)) return;
+
+        batteryManagementService.setManualIdleActive(true);
+        if (batteryManagementService.pauseWithTinySetpoint()) {
+            batteryManagementService.startManualIdleHold();
+            LogFilter.logInfo(ChargingManagementService.class, "Night idle active in window -> set 1W and hold started.");
+        } else {
+            batteryManagementService.setManualIdleActive(false);
+            LogFilter.logWarn(ChargingManagementService.class, "Night idle activation failed: 1W setpoint could not be applied.");
+        }
+    }
+
+    private void scheduleNightIdleStartTask() {
+        if (!chargingUtils.isNightChargingIdle()) {
+            ScheduledFuture<?> old = scheduledTasks.remove(START_OF_NIGHT_IDLE_ID);
+            if (old != null) old.cancel(false);
+            return;
+        }
+
+        ScheduledFuture<?> existing = scheduledTasks.get(START_OF_NIGHT_IDLE_ID);
+        if (existing != null) existing.cancel(false);
+
+        ZoneId zone = ZoneId.systemDefault();
+        LocalDateTime now = LocalDateTime.now(zone);
+        LocalDateTime nextStart = resolveNextNightStart(now);
+        Date startDate = Date.from(nextStart.atZone(zone).toInstant());
+
+        scheduledTasks.put(START_OF_NIGHT_IDLE_ID, taskScheduler.schedule(() -> {
+            if (chargingUtils.isNightChargingIdle()) {
+                activateNightIdleIfInWindow();
+            }
+            scheduleNightIdleStartTask();
+        }, startDate));
+
+        LogFilter.logInfo(ChargingManagementService.class, "Scheduled night-idle start task for: {}", DATE_FORMAT.format(startDate));
+    }
+
+    private LocalDateTime resolveNextNightStart(LocalDateTime reference) {
+        int nightStartHour = NightConfig.getNightStartHour();
+        int nightEndHour = NightConfig.getNightEndHour();
+
+        LocalDateTime start = reference.with(LocalTime.of(nightStartHour, 0)).withSecond(0).withNano(0);
+        if (nightStartHour == nightEndHour) {
+            return start.isAfter(reference) ? start : start.plusDays(1);
+        }
+        return reference.isBefore(start) ? start : start.plusDays(1);
     }
 
     // -------- sync
