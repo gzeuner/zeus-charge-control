@@ -336,6 +336,8 @@ public class BatteryManagementService {
     public void setForcedChargingActive(boolean v) { this.forcedChargingActive = v; }
     public int getLastSetpointW() { return lastSetpointW; }
     public void setLastSetpointW(int watts) { this.lastSetpointW = watts; }
+    public boolean isNightChargingIdle() { return nightChargingIdle; }
+    public void setNightChargingIdle(boolean nightChargingIdle) { this.nightChargingIdle = nightChargingIdle; }
 
     private boolean isCacheValid() {
         return cachedBatteryStatus != null && cacheTimestamp != null &&

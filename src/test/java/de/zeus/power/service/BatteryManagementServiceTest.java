@@ -17,7 +17,7 @@ import static org.mockito.Mockito.*;
 
 /**
  * Verifies manual start behavior (user forced charging) including override of idle state.
- * Author: User
+ * Author: Guido Zeuner
  */
 class BatteryManagementServiceTest {
 

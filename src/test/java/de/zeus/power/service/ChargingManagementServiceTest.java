@@ -3,11 +3,13 @@ package de.zeus.power.service;
 import de.zeus.power.entity.ChargingSchedule;
 import de.zeus.power.repository.ChargingScheduleRepository;
 import de.zeus.power.util.ChargingUtils;
+import de.zeus.power.util.NightConfig;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.scheduling.TaskScheduler;
 
+import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.Date;
 import java.util.concurrent.ScheduledFuture;
@@ -18,6 +20,7 @@ import static org.mockito.Mockito.*;
 
 /**
  * Ensures stop tasks are scheduled also for daytime windows and hand back to EMS when not in night idle.
+ * Author: Guido Zeuner
  */
 class ChargingManagementServiceTest {
 
@@ -68,6 +71,52 @@ class ChargingManagementServiceTest {
 
         stopTask.run();
         verify(bms, times(1)).resetToAutomaticMode(true);
+    }
+
+    @Test
+    void scheduleNightIdleWindowTasks_enabledSchedulesStartAndEndTasks() {
+        when(utils.isNightChargingIdle()).thenReturn(true);
+        when(taskScheduler.schedule(any(Runnable.class), any(Date.class))).thenReturn(mock(ScheduledFuture.class));
+
+        int hour = LocalDateTime.now().getHour();
+        NightConfig.updateNightHours(hour, (hour + 1) % 24);
+
+        service.scheduleNightIdleWindowTasks();
+
+        verify(taskScheduler, times(2)).schedule(any(Runnable.class), any(Date.class));
+    }
+
+    @Test
+    void scheduleNightIdleWindowTasks_disabledDoesNotSchedule() {
+        when(utils.isNightChargingIdle()).thenReturn(false);
+
+        service.scheduleNightIdleWindowTasks();
+
+        verify(taskScheduler, never()).schedule(any(Runnable.class), any(Date.class));
+    }
+
+    @Test
+    void activateNightIdleIfInWindow_setsManualIdleAndHold() {
+        when(bms.pauseWithTinySetpoint()).thenReturn(true);
+
+        int hour = LocalDateTime.now().getHour();
+        NightConfig.updateNightHours(hour, (hour + 1) % 24);
+
+        service.activateNightIdleIfInWindow();
+
+        verify(bms).setManualIdleActive(true);
+        verify(bms).pauseWithTinySetpoint();
+        verify(bms).startManualIdleHold();
+    }
+
+    @Test
+    void activateNightIdleIfOutsideWindow_doesNothing() {
+        int hour = LocalDateTime.now().getHour();
+        NightConfig.updateNightHours((hour + 2) % 24, (hour + 3) % 24);
+
+        service.activateNightIdleIfInWindow();
+
+        verifyNoInteractions(bms);
     }
 
     private static void inject(Object target, String field, Object value) {

@@ -18,7 +18,7 @@ import static org.mockito.Mockito.when;
 /**
  * Tests the wait-for-cheaper-window heuristic to ensure it selects valid cheaper slots
  * and respects RSOC floor constraints.
- * Author: User
+ * Author: Guido Zeuner
  */
 class ChargingUtilsTest {
 
