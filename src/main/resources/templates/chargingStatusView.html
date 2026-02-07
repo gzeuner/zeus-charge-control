@@ -50,6 +50,8 @@
           cheapestPeriods: JSON.parse(/*[[${cheapestPeriodsJson}]]*/ "[]"),
           marketPrices: JSON.parse(/*[[${marketPricesJson}]]*/ "[]"),
           scheduledChargingPeriods: JSON.parse(/*[[${scheduledChargingPeriodsJson}]]*/ "[]"),
+          nightChargingIdle: /*[[${nightChargingIdle}]]*/ false,
+          nightIdleActive: /*[[${nightIdleActive}]]*/ false,
           nightStartHour: /*[[${nightStartHour}]]*/ 22,
           nightEndHour: /*[[${nightEndHour}]]*/ 6
         };
@@ -161,7 +163,7 @@
                                           th:classappend="${currentMode == 'idle' ? 'active' : 'inactive'}"></span>
                                 </button>
                                 <button class="on-off-btn" id="nightChargingBtn"
-                                        th:classappend="${nightChargingIdle ? 'on' : 'off'}"
+                                        th:classappend="${nightIdleActive ? 'on' : 'off'}"
                                         onclick="debouncedToggleNightCharging()" data-bs-toggle="tooltip"
                                         data-bs-html="true"
                                         th:attr="data-bs-title=#{nightIdleTooltip}">
@@ -200,10 +202,6 @@
                                         <label for="nightEndInput" th:text="#{nightWindowEndLabel}">End</label>
                                         <input type="number" id="nightEndInput" min="0" max="23" step="1" th:value="${nightEndHour}">
                                     </div>
-                                    <button class="cool-btn night-window-save" type="button" id="saveNightWindow">
-                                        <i class="fas fa-save"></i>
-                                        <span th:text="#{nightWindowSave}">Save</span>
-                                    </button>
                                 </div>
                                 <div class="night-window-status" id="nightWindowStatus">
                                     <span th:text="#{nightWindowStatusDefault}">Default values apply until saved.</span>

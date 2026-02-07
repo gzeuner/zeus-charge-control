@@ -177,6 +177,25 @@ public class ChargingManagementService {
             }
         }
 
+        if (batteryManagementService.isNightIdleActive()) {
+            boolean atNight = ChargingUtils.isNight(now);
+            if (!atNight || !chargingUtils.isNightChargingIdle()) {
+                batteryManagementService.setNightIdleActive(false);
+            } else if (!batteryManagementService.isScheduleOwnerActive()
+                    && !batteryManagementService.isForcedChargingActive()) {
+                boolean okTiny = batteryManagementService.startNightIdleHold();
+                if (okTiny) {
+                    LogFilter.logDebug(ChargingManagementService.class,
+                            "Night idle hold active (1W setpoint confirmed).");
+                } else {
+                    LogFilter.logInfo(ChargingManagementService.class,
+                            "Night idle hold failed to set 1W -> return control to EM.");
+                    batteryManagementService.setNightIdleActive(false);
+                    batteryManagementService.resetToAutomaticMode(true);
+                }
+            }
+        }
+
 
         chargingUtils.handleAutomaticModeTransition(now);
         batteryManagementService.updateRsocHistory(now, rsoc);
@@ -631,9 +650,21 @@ public class ChargingManagementService {
 
                 boolean atNight = ChargingUtils.isNight(stopTime.getTime());
                 boolean manualIdle = batteryManagementService.isManualIdleActive();
-                if ((chargingUtils.isNightChargingIdle() && atNight) || manualIdle) {
-                    batteryManagementService.setChargeWatts(nightPauseWatts()); // e.g. hold ~1W
-                    LogFilter.logInfo(ChargingManagementService.class, "Idle/hold active -> set {} W minimal setpoint.", nightPauseWatts());
+                if (manualIdle) {
+                    batteryManagementService.pauseWithTinySetpoint();
+                    batteryManagementService.startManualIdleHold();
+                    LogFilter.logInfo(ChargingManagementService.class, "Manual idle active -> set {} W minimal setpoint.", nightPauseWatts());
+                } else if (chargingUtils.isNightChargingIdle() && atNight) {
+                    boolean ok = batteryManagementService.activateNightIdleHold();
+                    if (ok) {
+                        LogFilter.logInfo(ChargingManagementService.class, "Night idle active -> set {} W minimal setpoint.", nightPauseWatts());
+                    } else {
+                        boolean resetOk = batteryManagementService.resetToAutomaticMode(true);
+                        LogFilter.log(ChargingManagementService.class,
+                                resetOk ? LogFilter.LOG_LEVEL_INFO : LogFilter.LOG_LEVEL_WARN,
+                                resetOk ? "Returned to automatic mode at end of window."
+                                        : "Failed to return to automatic mode at end of window.");
+                    }
                 } else {
                     boolean ok = batteryManagementService.resetToAutomaticMode(true);
                     LogFilter.log(ChargingManagementService.class,
@@ -699,7 +730,7 @@ public class ChargingManagementService {
         Date resetDate = Date.from(resetTime.atZone(ZoneId.systemDefault()).toInstant());
 
         scheduledTasks.put(END_OF_NIGHT_RESET_ID, taskScheduler.schedule(() -> {
-            batteryManagementService.setManualIdleActive(false);
+            batteryManagementService.setNightIdleActive(false);
             boolean success = batteryManagementService.resetToAutomaticMode();
             LogFilter.log(ChargingManagementService.class, success ? LogFilter.LOG_LEVEL_INFO : LogFilter.LOG_LEVEL_ERROR,
                     success ? "Successfully reset to automatic mode." : "Reset to automatic mode failed.");
@@ -714,13 +745,11 @@ public class ChargingManagementService {
     public void activateNightIdleIfInWindow() {
         long now = System.currentTimeMillis();
         if (!ChargingUtils.isNight(now)) return;
+        if (batteryManagementService.isManualIdleActive()) return;
 
-        batteryManagementService.setManualIdleActive(true);
-        if (batteryManagementService.pauseWithTinySetpoint()) {
-            batteryManagementService.startManualIdleHold();
+        if (batteryManagementService.activateNightIdleHold()) {
             LogFilter.logInfo(ChargingManagementService.class, "Night idle active in window -> set 1W and hold started.");
         } else {
-            batteryManagementService.setManualIdleActive(false);
             LogFilter.logWarn(ChargingManagementService.class, "Night idle activation failed: 1W setpoint could not be applied.");
         }
     }

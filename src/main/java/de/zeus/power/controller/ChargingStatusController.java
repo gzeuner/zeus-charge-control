@@ -98,6 +98,7 @@ public class ChargingStatusController {
         model.addAttribute("nightIdleTooltip", messageSource.getMessage("nightIdleTooltip", null, LocaleContextHolder.getLocale()));
         model.addAttribute("batteryNotConfigured", batteryManagementService.isBatteryNotConfigured());
         model.addAttribute("nightChargingIdle", chargingUtils.isNightChargingIdle());
+        model.addAttribute("nightIdleActive", batteryManagementService.isNightIdleActive());
 
         Double dropRate = calculateDropRate();
         Double currentPrice = marketPriceService.getCurrentlyValidPrice();
@@ -199,7 +200,7 @@ public class ChargingStatusController {
                 }
             } else {
                 // Disable idle and hand back control
-                batteryManagementService.setManualIdleActive(false);
+                batteryManagementService.setNightIdleActive(false);
                 boolean ok = batteryManagementService.resetToAutomaticMode(true);
                 log.info("Night idle deactivated by user. Handback to EM success={}", ok);
             }
@@ -262,6 +263,7 @@ public class ChargingStatusController {
         status.put("currentMode", manualIdle ? "idle" : "standard"); // mirror mode for UI
         status.put("manualIdleActive", manualIdle);                   // explicit flag for UI polling
         status.put("nightChargingIdle", chargingUtils.isNightChargingIdle());
+        status.put("nightIdleActive", batteryManagementService.isNightIdleActive());
         status.put("isCharging", batteryManagementService.isForcedChargingActive());
         status.put("currentPrice", marketPriceService.getCurrentlyValidPrice());
         status.put("dropRate", calculateDropRate());
