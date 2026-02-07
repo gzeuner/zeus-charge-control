@@ -96,17 +96,15 @@ class ChargingManagementServiceTest {
     }
 
     @Test
-    void activateNightIdleIfInWindow_setsManualIdleAndHold() {
-        when(bms.pauseWithTinySetpoint()).thenReturn(true);
+    void activateNightIdleIfInWindow_activatesNightIdleHold() {
+        when(bms.activateNightIdleHold()).thenReturn(true);
 
         int hour = LocalDateTime.now().getHour();
         NightConfig.updateNightHours(hour, (hour + 1) % 24);
 
         service.activateNightIdleIfInWindow();
 
-        verify(bms).setManualIdleActive(true);
-        verify(bms).pauseWithTinySetpoint();
-        verify(bms).startManualIdleHold();
+        verify(bms).activateNightIdleHold();
     }
 
     @Test

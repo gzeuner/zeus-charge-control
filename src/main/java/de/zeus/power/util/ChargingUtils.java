@@ -117,7 +117,7 @@ public class ChargingUtils {
     }
 
     public void handleAutomaticModeTransition(long currentTimeMillis) {
-        if (batteryManagementService.isManualIdleActive()) return;
+        if (batteryManagementService.isManualIdleActive() || batteryManagementService.isNightIdleActive()) return;
 
         boolean isNight = isNight(currentTimeMillis);
         int currentRsoc = batteryManagementService.getRelativeStateOfCharge();

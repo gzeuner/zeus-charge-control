@@ -54,10 +54,6 @@ function setExclusiveModeUI(mode) {
     if (chargingBtn && chargingBtn.classList.contains('on')) {
       safeUpdateButtonState('chargingBtn', false, 'fa-stop', 'fa-bolt', translations.charging, translations.stopped);
     }
-  } else if (mode === 'nightIdle') {
-    if (nightBtn && !nightBtn.classList.contains('on')) {
-      safeUpdateButtonState('nightChargingBtn', true, 'fa-moon', 'fa-moon', translations.nightIdle, translations.nightIdle);
-    }
   }
 }
 
@@ -71,6 +67,8 @@ const translations = window.AppData.translations || {};
 const cheapestPeriods = window.AppData.cheapestPeriods || [];
 const marketPrices = window.AppData.marketPrices || [];
 const scheduledChargingPeriods = window.AppData.scheduledChargingPeriods || [];
+let nightIdleEnabled = window.AppData.nightChargingIdle ?? false;
+let nightIdleActive = window.AppData.nightIdleActive ?? false;
 let nightStartHour = window.AppData.nightStartHour ?? 22;
 let nightEndHour = window.AppData.nightEndHour ?? 6;
 const createdCharts = {};
@@ -139,31 +137,16 @@ function getNightWindowFromInputs() {
   };
 }
 
-function saveNightWindow(startHour, endHour) {
-  showLoader();
-  return fetch('/night-charging-window', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ startHour, endHour })
-  })
-    .then(response => response.json())
-    .then(data => {
-      hideLoader();
-      if (data.success) {
-        nightStartHour = startHour;
-        nightEndHour = endHour;
-        updateNightWindowStatus(`${translations.nightWindowStatusSaved || 'Saved'}: ${String(startHour).padStart(2, '0')}:00 - ${String(endHour).padStart(2, '0')}:00`);
-      } else {
-        updateNightWindowStatus(data.message || 'Saving night window failed', true);
-      }
-      return data.success;
-    })
-    .catch(error => {
-      hideLoader();
-      console.error('Error saving night window:', error);
-      updateNightWindowStatus(translations.nightWindowSaveError || 'Saving night window failed', true);
-      return false;
-    });
+function getValidatedNightWindow() {
+  const nightStartInput = document.getElementById('nightStartInput');
+  const nightEndInput = document.getElementById('nightEndInput');
+  const rawStart = parseInt((nightStartInput?.value || '').trim(), 10);
+  const rawEnd = parseInt((nightEndInput?.value || '').trim(), 10);
+  if (!isHourValid(rawStart) || !isHourValid(rawEnd)) {
+    updateNightWindowStatus(translations.nightWindowInvalidHours || 'Please enter hours between 0 and 23.', true);
+    return null;
+  }
+  return getNightWindowFromInputs();
 }
 
 // Document ready
@@ -268,20 +251,6 @@ document.addEventListener("DOMContentLoaded", function () {
     nightEndInput.value = nightEndHour;
   }
 
-  const saveNightWindowBtn = document.getElementById('saveNightWindow');
-  if (saveNightWindowBtn) {
-    saveNightWindowBtn.addEventListener('click', () => {
-      const { startHour, endHour } = getNightWindowFromInputs();
-      const rawStart = parseInt((nightStartInput?.value || '').trim(), 10);
-      const rawEnd = parseInt((nightEndInput?.value || '').trim(), 10);
-      if (!isHourValid(rawStart) || !isHourValid(rawEnd)) {
-        updateNightWindowStatus(translations.nightWindowInvalidHours || 'Please enter hours between 0 and 23.', true);
-        return;
-      }
-      saveNightWindow(startHour, endHour);
-    });
-  }
-
   // Fetch and refresh status
   fetchCurrentStatus();
   setInterval(fetchCurrentStatus, 10000);
@@ -294,7 +263,9 @@ function fetchCurrentStatus() {
     .then(response => response.json())
     .then(data => {
       safeUpdateButtonState('modeBtn', data.currentMode === 'idle', 'fa-pause', 'fa-play', translations.idle, translations.automatic);
-      safeUpdateButtonState('nightChargingBtn', data.nightChargingIdle, 'fa-moon', 'fa-moon', translations.nightIdle, translations.nightIdle);
+      if (typeof data.nightChargingIdle === 'boolean') nightIdleEnabled = data.nightChargingIdle;
+      if (typeof data.nightIdleActive === 'boolean') nightIdleActive = data.nightIdleActive;
+      safeUpdateButtonState('nightChargingBtn', nightIdleActive, 'fa-moon', 'fa-moon', translations.nightIdle, translations.nightIdle);
       safeUpdateButtonState('chargingBtn', data.isCharging, 'fa-stop', 'fa-bolt', translations.charging, translations.stopped);
 
       if (typeof data.nightStartHour === 'number') {
@@ -350,7 +321,7 @@ function updateButtonState(btnId, isActive, activeIcon, inactiveIcon, activeText
 }
 
 // Execute action
-function handleAction(url, method, body = null) {
+function handleAction(url, method, body = null, onSuccess = null, onFailure = null) {
   showLoader();
   fetch(url, {
     method,
@@ -360,17 +331,20 @@ function handleAction(url, method, body = null) {
     .then(response => response.json())
     .then(data => {
       if (data.success) {
+        if (typeof onSuccess === 'function') onSuccess(data);
         setTimeout(() => {
           window.location.reload();
           hideLoader();
         }, 6000);
       } else {
+        if (typeof onFailure === 'function') onFailure(data);
         alert(`Aktion fehlgeschlagen: ${data.message}`);
         hideLoader();
       }
     })
     .catch(error => {
       console.error('Fehler bei der Aktion:', error);
+      if (typeof onFailure === 'function') onFailure({ success: false, message: error?.message });
       alert('Fehler bei der Ausführung der Aktion');
       hideLoader();
     });
@@ -416,13 +390,21 @@ const debouncedToggleMode = debounce(() => {
 
 const debouncedToggleNightCharging = debounce(() => {
   const btn = document.getElementById('nightChargingBtn');
-  const next = !btn.classList.contains('on');
+  const next = !nightIdleEnabled;
   setLastAction(next ? 'nightIdle' : 'standard');
   setExclusiveModeUI(next ? 'nightIdle' : 'standard');
+  if (!next) {
+    updateButtonState('nightChargingBtn', false, 'fa-moon', 'fa-moon', translations.nightIdle, translations.nightIdle);
+  }
 
-  const { startHour, endHour } = getNightWindowFromInputs();
+  const windowValues = getValidatedNightWindow();
+  if (!windowValues) return;
 
-  handleAction('/toggle-night-charging', 'POST', { nightChargingIdle: next, startHour, endHour });
+  handleAction('/toggle-night-charging', 'POST', { nightChargingIdle: next, ...windowValues }, () => {
+    nightIdleEnabled = next;
+    const { startHour, endHour } = windowValues;
+    updateNightWindowStatus(`${translations.nightWindowStatusSaved || 'Saved'}: ${String(startHour).padStart(2, '0')}:00 - ${String(endHour).padStart(2, '0')}:00`);
+  });
 }, 300);
 
 const debouncedToggleCharging = debounce(() => {

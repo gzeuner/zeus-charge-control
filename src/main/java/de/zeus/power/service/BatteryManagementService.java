@@ -122,6 +122,7 @@ public class BatteryManagementService {
     private java.time.Instant cacheTimestamp;
     private volatile boolean forcedChargingActive = false;
     private volatile boolean isReducedChargingActive = false;
+    private volatile boolean nightIdleActive = false;
     private int lastSetpointW;
     private final Queue<Map.Entry<Long, Integer>> rsocHistory = new ConcurrentLinkedQueue<>();
 
@@ -338,6 +339,27 @@ public class BatteryManagementService {
     public void setLastSetpointW(int watts) { this.lastSetpointW = watts; }
     public boolean isNightChargingIdle() { return nightChargingIdle; }
     public void setNightChargingIdle(boolean nightChargingIdle) { this.nightChargingIdle = nightChargingIdle; }
+    public boolean isNightIdleActive() { return nightIdleActive; }
+    public void setNightIdleActive(boolean active) { this.nightIdleActive = active; }
+    public boolean isScheduleOwnerActive() {
+        return controlOwner == ControlOwner.SCHEDULE && System.currentTimeMillis() < ownerValidUntil.get();
+    }
+
+    public boolean activateNightIdleHold() {
+        nightIdleActive = true;
+        boolean ok = startNightIdleHold();
+        if (!ok) nightIdleActive = false;
+        return ok;
+    }
+
+    public boolean startNightIdleHold() {
+        if (!ChargingUtils.isNight(System.currentTimeMillis())) return false;
+        boolean okTiny = pauseWithTinySetpoint();
+        if (!okTiny) return false;
+        long nightEnd = getNightEndMillis(System.currentTimeMillis());
+        acquireOwnerUntil(ControlOwner.MANUAL, nightEnd);
+        return true;
+    }
 
     private boolean isCacheValid() {
         return cachedBatteryStatus != null && cacheTimestamp != null &&
@@ -416,6 +438,7 @@ public class BatteryManagementService {
             boolean night = ChargingUtils.isNight(now); // static util call
             if (night && this.nightChargingIdle) {
                 // Night-idle exception: hold ~1W until night end (keep control)
+                nightIdleActive = true;
                 pauseWithTinySetpoint();
                 long nightEnd = getNightEndMillis(now);
                 acquireOwnerUntil(scheduledWindow ? ControlOwner.SCHEDULE : ControlOwner.MANUAL, nightEnd);
