@@ -33,7 +33,7 @@ public class BatteryProperties {
      * Interval (seconds) to refresh setpoint during active windows.
      * Matches the behavior we validated with the HOLD test.
      */
-    private int holdIntervalSeconds = 30;
+    private int holdIntervalSeconds = 15;
 
     public int getGridImportLimitWatts() {
         return gridImportLimitWatts;

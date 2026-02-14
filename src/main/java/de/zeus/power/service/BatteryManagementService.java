@@ -285,12 +285,16 @@ public class BatteryManagementService {
         if (isBatteryNotConfigured()) return 0;
         for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
             try {
-                BatteryStatusResponse status = getCurrentBatteryStatus();
+                ApiResponse<BatteryStatusResponse> response = getBatteryStatusResponse();
+                BatteryStatusResponse status = response != null ? response.data() : null;
                 if (status != null) return status.getRsoc();
+                logStatusFailure(attempt, response);
             } catch (Exception e) {
-                LogFilter.logWarn(BatteryManagementService.class, "Status read failed (attempt {}/{}). Retrying...", attempt, MAX_RETRIES);
-                sleepWithRetry();
+                LogFilter.logWarn(BatteryManagementService.class,
+                        "Status read failed (attempt {}/{}). Cause: {}. Retrying...",
+                        attempt, MAX_RETRIES, e.getMessage());
             }
+            sleepWithRetry();
         }
         LogFilter.logError(BatteryManagementService.class, "Failed to retrieve RSOC after {} attempts. Using default {}%.", MAX_RETRIES, DEFAULT_RSOC);
         return DEFAULT_RSOC;
@@ -320,13 +324,35 @@ public class BatteryManagementService {
         if (isBatteryNotConfigured()) return null;
         if (isCacheValid()) return cachedBatteryStatus;
 
+        ApiResponse<BatteryStatusResponse> response = getBatteryStatusResponse();
+        return response != null ? response.data() : null;
+    }
+
+    private ApiResponse<BatteryStatusResponse> getBatteryStatusResponse() {
+        if (isBatteryNotConfigured()) return null;
+        if (isCacheValid()) {
+            return new ApiResponse<>(true, org.springframework.http.HttpStatus.OK, "cached", cachedBatteryStatus);
+        }
         ApiResponse<BatteryStatusResponse> response = commandService.getStatus();
         if (response != null && response.data() != null) {
             cachedBatteryStatus = response.data();
             cacheTimestamp = java.time.Instant.now();
-            return cachedBatteryStatus;
         }
-        return null;
+        return response;
+    }
+
+    private void logStatusFailure(int attempt, ApiResponse<BatteryStatusResponse> response) {
+        if (response == null) {
+            LogFilter.logWarn(BatteryManagementService.class,
+                    "Status read failed (attempt {}/{}). Cause: no response. Retrying...",
+                    attempt, MAX_RETRIES);
+            return;
+        }
+        String status = response.statusCode() != null ? response.statusCode().toString() : "unknown";
+        String message = response.message() != null ? response.message() : "n/a";
+        LogFilter.logWarn(BatteryManagementService.class,
+                "Status read failed (attempt {}/{}). Status: {}. Message: {}. Retrying...",
+                attempt, MAX_RETRIES, status, message);
     }
 
     public boolean isBatteryNotConfigured() { return batteryNotConfigured; }
@@ -418,6 +444,12 @@ public class BatteryManagementService {
         long now = System.currentTimeMillis();
         int rsoc = getRelativeStateOfCharge();
 
+        // If a scheduled window starts at night, temporarily disable night-idle so charging can proceed
+        if (scheduledWindow && nightIdleActive && ChargingUtils.isNight(now) && nightChargingIdle) {
+            nightIdleActive = false;
+            LogFilter.logInfo(BatteryManagementService.class, "Scheduled window started @night -> night idle disabled for charging.");
+        }
+
         // Manual idle hold: prioritize by setting ~1W and extending the lease
         if (manualIdleActive) {
             boolean okTiny = pauseWithTinySetpoint();
@@ -478,7 +510,7 @@ public class BatteryManagementService {
         return true;
     }
 
-    private long getNightEndMillis(long referenceEpochMs) {
+    public long getNightEndMillis(long referenceEpochMs) {
         int nightStartHour = getNightStartHour();
         int nightEndHour   = getNightEndHour();
         validateNightHours(nightStartHour, nightEndHour);

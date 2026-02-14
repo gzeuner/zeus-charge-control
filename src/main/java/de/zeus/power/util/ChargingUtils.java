@@ -275,10 +275,16 @@ public class ChargingUtils {
 
     public void removeExcessChargingPeriods(List<ChargingSchedule> existingSchedules, int periodsToRemove,
                                             ChargingScheduleRepository repository, Map<Long, ScheduledFuture<?>> scheduledTasks) {
-        for (int i = 0; i < Math.min(periodsToRemove, existingSchedules.size()); i++) {
+        int removeCount = Math.min(periodsToRemove, existingSchedules.size());
+        LogFilter.logInfo(ChargingUtils.class, "Removing {} excess charging period(s). Existing={}", removeCount, existingSchedules.size());
+        for (int i = 0; i < removeCount; i++) {
             ChargingSchedule s = existingSchedules.get(existingSchedules.size() - 1 - i);
             cancelTask(s.getId(), scheduledTasks);
             repository.delete(s);
+            LogFilter.logInfo(ChargingUtils.class, "Removed excess schedule: {} - {} ({} ct/kWh).",
+                    DATE_FORMAT.format(new Date(s.getStartTimestamp())),
+                    DATE_FORMAT.format(new Date(s.getEndTimestamp())),
+                    String.format(Locale.ROOT, "%.2f", s.getPrice()));
         }
     }
 

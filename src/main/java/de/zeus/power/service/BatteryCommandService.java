@@ -10,6 +10,7 @@ import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
 
 import javax.annotation.PostConstruct;
@@ -111,6 +112,15 @@ public class BatteryCommandService {
                     data != null ? "Battery status retrieved successfully" : "No Status available",
                     data
             );
+        } catch (HttpStatusCodeException e) {
+            HttpStatus status = e.getStatusCode();
+            String body = e.getResponseBodyAsString();
+            LOG.warn("Battery status error at {}: {} {}", endpoint, status.value(), status.getReasonPhrase());
+            if (body != null && !body.isBlank()) {
+                LOG.warn("Battery status error body: {}", body);
+            }
+            LOG.debug("Battery status error exception detail", e);
+            return errorResponse(status, "Battery status error: " + status);
         } catch (org.springframework.web.client.ResourceAccessException e) {
             // Battery API temporarily unreachable (connection refused/timeout)
             LOG.warn("Battery status unreachable at {}: {}", endpoint, e.getMessage());
@@ -206,6 +216,17 @@ public class BatteryCommandService {
      */
     private ApiResponse<BatteryStatusResponse> errorResponse(String message) {
         return new ApiResponse<>(false, HttpStatus.INTERNAL_SERVER_ERROR, message, null);
+    }
+
+    /**
+     * Creates an error response for BatteryStatusResponse with explicit status.
+     *
+     * @param status The HTTP status to include.
+     * @param message The error message to include.
+     * @return An ApiResponse with failure status and the specified message.
+     */
+    private ApiResponse<BatteryStatusResponse> errorResponse(HttpStatus status, String message) {
+        return new ApiResponse<>(false, status != null ? status : HttpStatus.INTERNAL_SERVER_ERROR, message, null);
     }
 
     /**

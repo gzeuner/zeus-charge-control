@@ -96,6 +96,18 @@ public class ChargingManagementService {
     @Value("${scheduling.daytime.lookahead.hours:12}")
     private int daytimeLookaheadHours;
 
+    /** Score weight for delay in minutes when selecting additional periods (ct per minute). */
+    @Value("${scheduling.addition.score.alpha.ct.per.min:0.02}")
+    private double additionAlphaCtPerMin;
+
+    /** If remaining required energy is small, prefer earlier slots within this price margin (ct/kWh). */
+    @Value("${scheduling.addition.small.max.extra.ct:0.5}")
+    private double additionSmallMaxExtraCt;
+
+    /** Threshold (kWh) to treat remaining need as "small". */
+    @Value("${scheduling.addition.small.need.kwh:0.5}")
+    private double additionSmallNeedKwh;
+
     @Value("${battery.pv.only.enabled:true}")
     private boolean pvOnlyEnabled;
 
@@ -335,14 +347,26 @@ public class ChargingManagementService {
     }
 
     private void removeAllPlannedChargingPeriods() {
-        chargingScheduleRepository.findAll().stream()
+        List<ChargingSchedule> toRemove = chargingScheduleRepository.findAll().stream()
                 .filter(s -> s.getEndTimestamp() > System.currentTimeMillis())
-                .forEach(s -> {
-                    cancelHoldForSchedule(s.getId());
-                    chargingUtils.cancelTask(s.getId(), scheduledTasks);
-                    catchupAttempts.remove(s.getId());
-                    chargingScheduleRepository.delete(s);
-                });
+                .collect(Collectors.toList());
+        if (toRemove.isEmpty()) return;
+
+        int rsoc = batteryManagementService.getRelativeStateOfCharge();
+        LogFilter.logInfo(ChargingManagementService.class,
+                "Removing all planned charging periods (count={}, RSOC={}%, target={}%).",
+                toRemove.size(), rsoc, targetStateOfCharge);
+
+        toRemove.forEach(s -> {
+            cancelHoldForSchedule(s.getId());
+            chargingUtils.cancelTask(s.getId(), scheduledTasks);
+            catchupAttempts.remove(s.getId());
+            chargingScheduleRepository.delete(s);
+            LogFilter.logInfo(ChargingManagementService.class,
+                    "Removed schedule: {} - {} ({} ct/kWh).",
+                    DATE_FORMAT.format(new Date(s.getStartTimestamp())),
+                    DATE_FORMAT.format(new Date(s.getEndTimestamp())), s.getPrice());
+        });
     }
 
     public void schedulePlannedCharging() {
@@ -476,23 +500,67 @@ public class ChargingManagementService {
         }
 
         int missing = requiredPeriods - existing.size();
-        if (missing > 0) addAdditionalChargingPeriodsExcludingNighttime(marketPrices, missing, existing, dynamicMaxPrice);
+        if (missing > 0) {
+            LogFilter.logInfo(ChargingManagementService.class,
+                    "Missing {} charging period(s). RSOC={}%, target={}%, requiredPeriods={}, existing={}, totalPeriods={}.",
+                    missing, currentRsoc, targetStateOfCharge, requiredPeriods, existing.size(), totalPeriods);
+            addAdditionalChargingPeriods(marketPrices, missing, existing, dynamicMaxPrice, requiredCapacity);
+        }
     }
 
-    private void addAdditionalChargingPeriodsExcludingNighttime(List<MarketPrice> marketPrices, int periodsToAdd,
-                                                                List<ChargingSchedule> existingSchedules, double dynamicMaxPrice) {
+    private void addAdditionalChargingPeriods(List<MarketPrice> marketPrices, int periodsToAdd,
+                                              List<ChargingSchedule> existingSchedules, double dynamicMaxPrice,
+                                              double requiredCapacityWh) {
         long currentTime = System.currentTimeMillis();
         long toleranceWindow = currentTime + (daytimeLookaheadHours * 60L * 60L * 1000L);
 
-        List<MarketPrice> available = marketPrices.stream()
+        List<MarketPrice> candidates = marketPrices.stream()
                 .filter(p -> p.getStartTimestamp() > currentTime && p.getStartTimestamp() <= toleranceWindow)
-                .filter(p -> !ChargingUtils.isNight(p.getStartTimestamp()))
                 .filter(p -> p.getPriceInCentPerKWh() <= dynamicMaxPrice)
                 .filter(p -> existingSchedules.stream().noneMatch(s -> Objects.equals(s.getStartTimestamp(), p.getStartTimestamp())))
                 .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .limit(periodsToAdd)
                 .collect(Collectors.toList());
 
+        List<MarketPrice> available = new ArrayList<>();
+        if (!candidates.isEmpty()) {
+            double bestPrice = candidates.get(0).getPriceInCentPerKWh();
+            boolean smallNeed = (requiredCapacityWh / 1000.0) <= additionSmallNeedKwh;
+
+            if (smallNeed) {
+                // Prefer earliest slot within a small price premium
+                available = candidates.stream()
+                        .filter(p -> p.getPriceInCentPerKWh() <= bestPrice + additionSmallMaxExtraCt)
+                        .sorted(Comparator.comparingLong(MarketPrice::getStartTimestamp))
+                        .limit(periodsToAdd)
+                        .collect(Collectors.toList());
+            } else {
+                // Score by price + alpha * delay minutes
+                Comparator<MarketPrice> scoreComparator = Comparator
+                        .<MarketPrice>comparingDouble(p -> p.getPriceInCentPerKWh()
+                                + additionAlphaCtPerMin * Math.max(0.0, (p.getStartTimestamp() - currentTime) / 60000.0))
+                        .thenComparingDouble(MarketPrice::getPriceInCentPerKWh)
+                        .thenComparingLong(MarketPrice::getStartTimestamp);
+                available = candidates.stream()
+                        .sorted(scoreComparator)
+                        .limit(periodsToAdd)
+                        .collect(Collectors.toList());
+            }
+        }
+
+        LogFilter.logInfo(ChargingManagementService.class,
+                "Add additional periods: requested={}, selected={}, horizonHours={}, dynamicMaxPrice={} ct/kWh, smallNeedKwh={}, alphaCtPerMin={}.",
+                periodsToAdd, available.size(), daytimeLookaheadHours,
+                String.format(Locale.ROOT, "%.2f", dynamicMaxPrice),
+                String.format(Locale.ROOT, "%.2f", additionSmallNeedKwh),
+                String.format(Locale.ROOT, "%.3f", additionAlphaCtPerMin));
+        if (!available.isEmpty()) {
+            String summary = available.stream()
+                    .map(p -> DATE_FORMAT.format(new Date(p.getStartTimestamp())) + " -> "
+                            + DATE_FORMAT.format(new Date(p.getEndTimestamp()))
+                            + " (" + String.format(Locale.ROOT, "%.2f", p.getPriceInCentPerKWh()) + " ct/kWh)")
+                    .collect(Collectors.joining(", "));
+            LogFilter.logInfo(ChargingManagementService.class, "Additional periods selected: {}", summary);
+        }
         available.forEach(p -> chargingUtils.createAndLogChargingSchedule(p, chargingScheduleRepository, DATE_FORMAT));
     }
 
@@ -658,6 +726,10 @@ public class ChargingManagementService {
                     boolean ok = batteryManagementService.activateNightIdleHold();
                     if (ok) {
                         LogFilter.logInfo(ChargingManagementService.class, "Night idle active -> set {} W minimal setpoint.", nightPauseWatts());
+                        long nightEndMs = batteryManagementService.getNightEndMillis(System.currentTimeMillis());
+                        LogFilter.logInfo(ChargingManagementService.class,
+                                "Night-idle reactivated until night end: {}.",
+                                DATE_FORMAT.format(new Date(nightEndMs)));
                     } else {
                         boolean resetOk = batteryManagementService.resetToAutomaticMode(true);
                         LogFilter.log(ChargingManagementService.class,
@@ -837,6 +909,10 @@ public class ChargingManagementService {
                 chargingUtils.cancelTask(e.getId(), scheduledTasks);
                 catchupAttempts.remove(e.getId());
                 chargingScheduleRepository.delete(e);
+                LogFilter.logInfo(ChargingManagementService.class,
+                        "Removed outdated schedule (cheaper duplicate exists): {} - {} ({} ct/kWh).",
+                        DATE_FORMAT.format(new Date(e.getStartTimestamp())),
+                        DATE_FORMAT.format(new Date(e.getEndTimestamp())), e.getPrice());
             }
         });
     }
