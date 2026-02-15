@@ -4,9 +4,11 @@ import de.zeus.power.entity.ChargingSchedule;
 import de.zeus.power.entity.MarketPrice;
 import de.zeus.power.model.ApiResponse;
 import de.zeus.power.model.BatteryStatusResponse;
+import de.zeus.power.model.PriceBreakdown;
 import de.zeus.power.service.BatteryManagementService;
 import de.zeus.power.service.ChargingManagementService;
 import de.zeus.power.service.MarketPriceService;
+import de.zeus.power.service.PriceDisplayService;
 import de.zeus.power.util.ChargingUtils;
 import de.zeus.power.util.NightConfig;
 import org.slf4j.Logger;
@@ -21,6 +23,7 @@ import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.*;
 
 import javax.servlet.http.HttpServletRequest;
+import java.math.BigDecimal;
 import java.util.*;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -44,6 +47,7 @@ public class ChargingStatusController {
     @Autowired private ChargingManagementService chargingManagementService;
     @Autowired private ChargingUtils chargingUtils;
     @Autowired private MessageSource messageSource;
+    @Autowired private PriceDisplayService priceDisplayService;
 
     @Value("${battery.target.stateOfCharge}")
     private int targetStateOfCharge;
@@ -78,9 +82,9 @@ public class ChargingStatusController {
 
         ObjectMapper mapper = new ObjectMapper();
         try {
-            model.addAttribute("marketPricesJson", mapper.writeValueAsString(marketPrices));
-            model.addAttribute("cheapestPeriodsJson", mapper.writeValueAsString(cheapestPeriods));
-            model.addAttribute("scheduledChargingPeriodsJson", mapper.writeValueAsString(scheduledChargingPeriods));
+            model.addAttribute("marketPricesJson", mapper.writeValueAsString(toDisplayMarketPriceList(marketPrices)));
+            model.addAttribute("cheapestPeriodsJson", mapper.writeValueAsString(toDisplayMarketPriceList(cheapestPeriods)));
+            model.addAttribute("scheduledChargingPeriodsJson", mapper.writeValueAsString(toDisplayChargingScheduleList(scheduledChargingPeriods)));
         } catch (JsonProcessingException e) {
             log.error("Fehler bei der JSON-Serialisierung", e);
             model.addAttribute("marketPricesJson", "[]");
@@ -270,6 +274,7 @@ public class ChargingStatusController {
         status.put("lastSetpointW", batteryManagementService.getLastSetpointW());
         status.put("nightStartHour", NightConfig.getNightStartHour());
         status.put("nightEndHour", NightConfig.getNightEndHour());
+        addDisplayPrices(status, marketPriceService.getCurrentlyValidPrice());
         return status;
     }
 
@@ -415,5 +420,59 @@ public class ChargingStatusController {
                 messageSource.getMessage("estimatedTimeToTargetLabel", null, locale),
                 estimatedTimeToTarget != null ? String.format("%.2f h", estimatedTimeToTarget) : "N/A"
         );
+    }
+
+    private List<Map<String, Object>> toDisplayMarketPriceList(List<MarketPrice> prices) {
+        if (prices == null) return Collections.emptyList();
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (MarketPrice price : prices) {
+            result.add(toDisplayMarketPrice(price));
+        }
+        return result;
+    }
+
+    private Map<String, Object> toDisplayMarketPrice(MarketPrice price) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        if (price == null) return map;
+        map.put("id", price.getId());
+        map.put("startTimestamp", price.getStartTimestamp());
+        map.put("endTimestamp", price.getEndTimestamp());
+        map.put("marketPrice", price.getMarketPrice());
+        map.put("unit", price.getUnit());
+
+        addDisplayPrices(map, price.getMarketPrice());
+        return map;
+    }
+
+    private List<Map<String, Object>> toDisplayChargingScheduleList(List<ChargingSchedule> schedules) {
+        if (schedules == null) return Collections.emptyList();
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (ChargingSchedule schedule : schedules) {
+            result.add(toDisplayChargingSchedule(schedule));
+        }
+        return result;
+    }
+
+    private Map<String, Object> toDisplayChargingSchedule(ChargingSchedule schedule) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        if (schedule == null) return map;
+        map.put("id", schedule.getId());
+        map.put("startTimestamp", schedule.getStartTimestamp());
+        map.put("endTimestamp", schedule.getEndTimestamp());
+        map.put("price", schedule.getPrice());
+        addDisplayPrices(map, schedule.getPrice());
+        return map;
+    }
+
+    private void addDisplayPrices(Map<String, Object> target, Double boerseNettoCt) {
+        target.put("displayPriceNettoCt", boerseNettoCt);
+        if (boerseNettoCt == null) {
+            target.put("displayPriceBruttoCt", null);
+            return;
+        }
+        PriceBreakdown breakdown = priceDisplayService.calculate(BigDecimal.valueOf(boerseNettoCt));
+        target.put("displayPriceBruttoCt", breakdown != null && breakdown.getTotalBruttoCt() != null
+                ? breakdown.getTotalBruttoCt().doubleValue()
+                : null);
     }
 }
