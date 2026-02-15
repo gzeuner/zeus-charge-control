@@ -1,0 +1,11 @@
+price:
+  display:
+    vatRate: 0.19
+    surcharges:
+      procurement: 1.81
+      grid: 7.58
+      concession: 1.59
+      electricityTax: 2.05
+      offshore: 0.941
+      kwk: 0.446
+      stromnev19: 1.56

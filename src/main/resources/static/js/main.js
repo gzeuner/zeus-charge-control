@@ -4,6 +4,12 @@
 const LAST_ACTION_KEY = 'tt_last_action_ts';
 const LAST_MODE_KEY   = 'tt_last_mode'; // 'idle' | 'standard' | 'forced' | 'nightIdle'
 
+// ===== Price mode toggle =====
+const PRICE_MODE_KEY = 'priceMode';
+const PRICE_MODE_NETTO = 'NETTO';
+const PRICE_MODE_BRUTTO = 'BRUTTO';
+let priceMode = PRICE_MODE_NETTO;
+
 function nowMs() { return Date.now(); }
 
 function setLastAction(mode) {
@@ -67,17 +73,124 @@ const translations = window.AppData.translations || {};
 const cheapestPeriods = window.AppData.cheapestPeriods || [];
 const marketPrices = window.AppData.marketPrices || [];
 const scheduledChargingPeriods = window.AppData.scheduledChargingPeriods || [];
+const appCurrentTime = window.AppData.currentTime || Date.now();
 let nightIdleEnabled = window.AppData.nightChargingIdle ?? false;
 let nightIdleActive = window.AppData.nightIdleActive ?? false;
 let nightStartHour = window.AppData.nightStartHour ?? 22;
 let nightEndHour = window.AppData.nightEndHour ?? 6;
 const createdCharts = {};
+let lastStatusData = null;
+
+function normalizeNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function getStoredPriceMode() {
+  try {
+    const stored = (localStorage.getItem(PRICE_MODE_KEY) || '').toUpperCase();
+    return stored === PRICE_MODE_BRUTTO ? PRICE_MODE_BRUTTO : PRICE_MODE_NETTO;
+  } catch (e) {
+    return PRICE_MODE_NETTO;
+  }
+}
+
+function setPriceMode(mode, persist = true) {
+  priceMode = mode === PRICE_MODE_BRUTTO ? PRICE_MODE_BRUTTO : PRICE_MODE_NETTO;
+  if (persist) {
+    try { localStorage.setItem(PRICE_MODE_KEY, priceMode); } catch (e) { /* ignore */ }
+  }
+  const toggle = document.getElementById('priceModeToggle');
+  if (toggle) toggle.checked = priceMode === PRICE_MODE_BRUTTO;
+  renderAllPrices();
+}
+
+function getDisplayedPrice(item) {
+  if (!item) return null;
+  const brutto = normalizeNumber(item.displayPriceBruttoCt);
+  const netto = normalizeNumber(item.displayPriceNettoCt);
+  const fallback = normalizeNumber(item.marketPrice ?? item.price);
+  if (priceMode === PRICE_MODE_BRUTTO) {
+    return brutto ?? fallback ?? netto;
+  }
+  return netto ?? fallback ?? brutto;
+}
+
+function formatPrice(value) {
+  return value != null ? value.toFixed(2) : 'N/A';
+}
+
+function formatDateTime(timestamp) {
+  if (!timestamp) return 'N/A';
+  try {
+    if (window.luxon?.DateTime) {
+      const dt = luxon.DateTime.fromMillis(timestamp);
+      return dt.isValid ? dt.toFormat('dd.MM.yyyy HH:mm:ss') : 'N/A';
+    }
+  } catch (e) { /* ignore */ }
+  return new Date(timestamp).toLocaleString();
+}
+
+function getCheapestMarketPrice() {
+  let cheapest = null;
+  let cheapestValue = null;
+  marketPrices.forEach(p => {
+    const val = normalizeNumber(p.marketPrice);
+    if (val == null) return;
+    if (cheapestValue == null || val < cheapestValue) {
+      cheapestValue = val;
+      cheapest = p;
+    }
+  });
+  return cheapest;
+}
+
+function renderCheapestPriceCard() {
+  const cheapest = getCheapestMarketPrice();
+  if (!cheapest) return;
+  const startEl = document.getElementById('cheapestStartTime');
+  const endEl = document.getElementById('cheapestEndTime');
+  const priceEl = document.getElementById('cheapestPriceValue');
+  const unitEl = document.getElementById('cheapestPriceUnit');
+
+  if (startEl) startEl.textContent = formatDateTime(cheapest.startTimestamp);
+  if (endEl) endEl.textContent = formatDateTime(cheapest.endTimestamp);
+  if (priceEl) priceEl.textContent = formatPrice(getDisplayedPrice(cheapest));
+  if (unitEl) unitEl.textContent = translations.centPerKwh || 'cent/kWh';
+}
+
+function renderTable(tbodyId, data, highlightCurrent = false) {
+  const tbody = document.getElementById(tbodyId);
+  if (!tbody) return;
+  const now = appCurrentTime || Date.now();
+  const rows = (data || []).map(item => {
+    const highlight = highlightCurrent
+      && item.startTimestamp != null
+      && item.endTimestamp != null
+      && item.startTimestamp <= now
+      && item.endTimestamp >= now;
+    return `<tr${highlight ? ' class="highlight"' : ''}>
+      <td>${formatDateTime(item.startTimestamp)}</td>
+      <td>${formatDateTime(item.endTimestamp)}</td>
+      <td>${formatPrice(getDisplayedPrice(item))}</td>
+    </tr>`;
+  }).join('');
+  tbody.innerHTML = rows;
+}
+
+function getYAxisTitle() {
+  const base = translations.price || 'Price';
+  const modeLabel = priceMode === PRICE_MODE_BRUTTO
+    ? (translations.priceModeBruttoLabel || 'Total (gross)')
+    : (translations.priceModeNettoLabel || 'Market (net)');
+  return `${base} - ${modeLabel}`;
+}
 
 // Create a chart once (idempotent)
 function createChartOnce(id, type, labels, data, options) {
   if (createdCharts[id]) {
     console.log(`Chart "${id}" wurde bereits erstellt`);
-    return;
+    return createdCharts[id];
   }
 
   const canvas = document.getElementById(id);
@@ -87,12 +200,12 @@ function createChartOnce(id, type, labels, data, options) {
   }
 
   try {
-    new Chart(canvas.getContext('2d'), {
+    const chart = new Chart(canvas.getContext('2d'), {
       type,
       data: {
         labels,
         datasets: [{
-          label: 'cent/kWh',
+          label: translations.centPerKwh || 'cent/kWh',
           data,
           backgroundColor: type === 'line' ? 'rgba(102, 217, 232, 0.2)' : 'rgba(102, 217, 232, 0.6)',
           borderColor: '#66d9e8',
@@ -102,8 +215,9 @@ function createChartOnce(id, type, labels, data, options) {
       },
       options
     });
-    createdCharts[id] = true;
+    createdCharts[id] = chart;
     console.log(`Chart "${id}" erfolgreich erstellt mit ${labels.length} Datenpunkten`);
+    return chart;
   } catch (error) {
     console.error(`Fehler beim Erstellen des Charts "${id}":`, error);
   }
@@ -153,6 +267,15 @@ function getValidatedNightWindow() {
 document.addEventListener("DOMContentLoaded", function () {
   console.log("AppData geladen:", window.AppData);
 
+  priceMode = getStoredPriceMode();
+  const priceModeToggle = document.getElementById('priceModeToggle');
+  if (priceModeToggle) {
+    priceModeToggle.checked = priceMode === PRICE_MODE_BRUTTO;
+    priceModeToggle.addEventListener('change', () => {
+      setPriceMode(priceModeToggle.checked ? PRICE_MODE_BRUTTO : PRICE_MODE_NETTO);
+    });
+  }
+
   // Initialize tooltips
   const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
   tooltipTriggerList.forEach(el => new bootstrap.Tooltip(el));
@@ -185,7 +308,7 @@ document.addEventListener("DOMContentLoaded", function () {
       },
       y: {
         beginAtZero: true,
-        title: { display: true, text: translations.price || 'Price (cent/kWh)', color: '#f0f0f0' },
+        title: { display: true, text: getYAxisTitle(), color: '#f0f0f0' },
         ticks: { color: '#f0f0f0' },
         grid: { color: 'rgba(255, 255, 255, 0.1)' }
       }
@@ -230,8 +353,9 @@ document.addEventListener("DOMContentLoaded", function () {
         }
         try {
           const labels = dataSet.map(p => new Date(p.startTimestamp));
-          const data = chartType === 'bar' ? dataSet.map(p => p.price || p.marketPrice) : dataSet.map(p => p.marketPrice);
+          const data = dataSet.map(p => getDisplayedPrice(p));
           createChartOnce(chartId, chartType, labels, data, chartOptions);
+          chartOptions.scales.y.title.text = getYAxisTitle();
         } catch (error) {
           console.error(`Fehler beim Verarbeiten der Daten für "${chartId}":`, error);
         }
@@ -255,6 +379,8 @@ document.addEventListener("DOMContentLoaded", function () {
   fetchCurrentStatus();
   setInterval(fetchCurrentStatus, 10000);
   setInterval(() => window.location.reload(), 65000);
+
+  renderAllPrices();
 });
 
 // Fetch status
@@ -262,6 +388,7 @@ function fetchCurrentStatus() {
   fetch('/current-status', { method: 'GET' })
     .then(response => response.json())
     .then(data => {
+      lastStatusData = data;
       safeUpdateButtonState('modeBtn', data.currentMode === 'idle', 'fa-pause', 'fa-play', translations.idle, translations.automatic);
       if (typeof data.nightChargingIdle === 'boolean') nightIdleEnabled = data.nightChargingIdle;
       if (typeof data.nightIdleActive === 'boolean') nightIdleActive = data.nightIdleActive;
@@ -280,7 +407,8 @@ function fetchCurrentStatus() {
       }
 
       const chargingBtn = document.getElementById('chargingBtn');
-      const currentPrice = data.currentPrice != null ? data.currentPrice.toFixed(2) + ' cent/kWh' : translations.noCurrentPriceInfo;
+      const currentPriceValue = getDisplayedStatusPrice(data);
+      const currentPrice = currentPriceValue != null ? currentPriceValue.toFixed(2) + ' ' + (translations.centPerKwh || 'cent/kWh') : translations.noCurrentPriceInfo;
       const dropRate = data.dropRate != null ? data.dropRate.toFixed(2) + ' %/h' : 'N/A';
       const tooltipText = `${translations.chargingButtonTooltip}<br><strong>${translations.currentPriceLabel}:</strong> ${currentPrice}<br><strong>${translations.dropRateLabel}:</strong> ${dropRate}`;
       chargingBtn.setAttribute('data-bs-title', tooltipText);
@@ -290,6 +418,51 @@ function fetchCurrentStatus() {
       new bootstrap.Tooltip(chargingBtn);
     })
     .catch(error => console.error('Fehler beim Abrufen des Status:', error));
+}
+
+function getDisplayedStatusPrice(status) {
+  if (!status) return null;
+  const brutto = normalizeNumber(status.displayPriceBruttoCt);
+  const netto = normalizeNumber(status.displayPriceNettoCt);
+  const fallback = normalizeNumber(status.currentPrice);
+  if (priceMode === PRICE_MODE_BRUTTO) {
+    return brutto ?? fallback ?? netto;
+  }
+  return netto ?? fallback ?? brutto;
+}
+
+function updateCurrentPriceTooltip() {
+  const chargingBtn = document.getElementById('chargingBtn');
+  if (!chargingBtn || !lastStatusData) return;
+  const currentPriceValue = getDisplayedStatusPrice(lastStatusData);
+  const currentPrice = currentPriceValue != null ? currentPriceValue.toFixed(2) + ' ' + (translations.centPerKwh || 'cent/kWh') : translations.noCurrentPriceInfo;
+  const dropRate = lastStatusData.dropRate != null ? lastStatusData.dropRate.toFixed(2) + ' %/h' : 'N/A';
+  const tooltipText = `${translations.chargingButtonTooltip}<br><strong>${translations.currentPriceLabel}:</strong> ${currentPrice}<br><strong>${translations.dropRateLabel}:</strong> ${dropRate}`;
+  chargingBtn.setAttribute('data-bs-title', tooltipText);
+  const tooltip = bootstrap.Tooltip.getInstance(chargingBtn);
+  if (tooltip) tooltip.dispose();
+  new bootstrap.Tooltip(chargingBtn);
+}
+
+function updateChart(chartId, dataSet) {
+  const chart = createdCharts[chartId];
+  if (!chart || !Array.isArray(dataSet)) return;
+  chart.data.labels = dataSet.map(p => new Date(p.startTimestamp));
+  chart.data.datasets[0].data = dataSet.map(p => getDisplayedPrice(p));
+  chart.data.datasets[0].label = translations.centPerKwh || 'cent/kWh';
+  chart.options.scales.y.title.text = getYAxisTitle();
+  chart.update();
+}
+
+function renderAllPrices() {
+  renderCheapestPriceCard();
+  renderTable('cheapestPeriodsTbody', cheapestPeriods, true);
+  renderTable('marketPricesTbody', marketPrices, false);
+  renderTable('chargingScheduleTbody', scheduledChargingPeriods, false);
+  updateChart('cheapestPeriodsChart', cheapestPeriods);
+  updateChart('marketPricesChart', marketPrices);
+  updateChart('chargingScheduleChart', scheduledChargingPeriods);
+  updateCurrentPriceTooltip();
 }
 
 // Update button state

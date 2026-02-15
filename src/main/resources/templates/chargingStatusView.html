@@ -45,7 +45,10 @@
             chart: /*[[#{chart}]]*/ 'Chart',
             table: /*[[#{table}]]*/ 'Table',
             startTime: /*[[#{startTime}]]*/ 'Start Time',
-            price: /*[[#{price}]]*/ 'Price'
+            price: /*[[#{price}]]*/ 'Price',
+            priceModeNettoLabel: /*[[#{priceModeNettoLabel}]]*/ 'Börse (netto)',
+            priceModeBruttoLabel: /*[[#{priceModeBruttoLabel}]]*/ 'Gesamt (brutto)',
+            centPerKwh: /*[[#{centPerKwh}]]*/ 'cent/kWh'
           },
           cheapestPeriods: JSON.parse(/*[[${cheapestPeriodsJson}]]*/ "[]"),
           marketPrices: JSON.parse(/*[[${marketPricesJson}]]*/ "[]"),
@@ -53,7 +56,8 @@
           nightChargingIdle: /*[[${nightChargingIdle}]]*/ false,
           nightIdleActive: /*[[${nightIdleActive}]]*/ false,
           nightStartHour: /*[[${nightStartHour}]]*/ 22,
-          nightEndHour: /*[[${nightEndHour}]]*/ 6
+          nightEndHour: /*[[${nightEndHour}]]*/ 6,
+          currentTime: /*[[${currentTime}]]*/ 0
         };
         /*]]>*/
     </script>
@@ -207,6 +211,15 @@
                                     <span th:text="#{nightWindowStatusDefault}">Default values apply until saved.</span>
                                 </div>
                             </div>
+                            <div class="price-mode-panel">
+                                <div class="price-mode-toggle">
+                                    <span class="me-2" th:text="#{priceModeNettoLabel}">Börse (netto)</span>
+                                    <div class="form-check form-switch m-0">
+                                        <input class="form-check-input" type="checkbox" id="priceModeToggle">
+                                    </div>
+                                    <span class="ms-2" th:text="#{priceModeBruttoLabel}">Gesamt (brutto)</span>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -228,19 +241,19 @@
                     <div class="status-item">
                         <i class="fas fa-clock fa-4x"></i>
                         <p th:text="#{startTime}">Start Time:</p>
-                        <span th:text="${#dates.format(cheapestPrice.startTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</span>
+                        <span id="cheapestStartTime" th:text="${#dates.format(cheapestPrice.startTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</span>
                     </div>
                     <div class="status-item">
                         <i class="fas fa-clock fa-4x"></i>
                         <p th:text="#{endTime}">End Time:</p>
-                        <span th:text="${#dates.format(cheapestPrice.endTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</span>
+                        <span id="cheapestEndTime" th:text="${#dates.format(cheapestPrice.endTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</span>
                     </div>
                     <div class="status-item">
                         <i class="fas fa-euro-sign fa-4x"></i>
                         <p th:text="#{price}">Price:</p>
-                        <span class="cheapest-price"
+                        <span id="cheapestPriceValue" class="cheapest-price"
                               th:text="${#numbers.formatDecimal(cheapestPrice.marketPrice, 1, 2)}">N/A</span>
-                        <span th:text="#{centPerKwh}">cent/kWh</span>
+                        <span id="cheapestPriceUnit" th:text="#{centPerKwh}">cent/kWh</span>
                     </div>
                 </div>
             </div>
@@ -292,7 +305,7 @@
                                     <th th:text="#{price}">Price (cent/kWh)</th>
                                 </tr>
                                 </thead>
-                                <tbody>
+                                <tbody id="cheapestPeriodsTbody">
                                 <tr th:each="period : ${cheapestPeriods}"
                                     th:with="formattedPrice=${#numbers.formatDecimal(period.marketPrice, 1, 2)}"
                                     th:classappend="${period.startTimestamp <= currentTime && period.endTimestamp >= currentTime} ? 'highlight' : ''">
@@ -327,7 +340,7 @@
                                     <th th:text="#{price}">Price (cent/kWh)</th>
                                 </tr>
                                 </thead>
-                                <tbody>
+                                <tbody id="marketPricesTbody">
                                 <tr th:each="period : ${marketPrices}"
                                     th:with="formattedPrice=${#numbers.formatDecimal(period.marketPrice, 1, 2)}">
                                     <td th:text="${#dates.format(period.startTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</td>
@@ -362,7 +375,7 @@
                                     <th th:text="#{price}">Price (cent/kWh)</th>
                                 </tr>
                                 </thead>
-                                <tbody>
+                                <tbody id="chargingScheduleTbody">
                                 <tr th:each="schedule : ${scheduledChargingPeriods}"
                                     th:with="formattedPrice=${#numbers.formatDecimal(schedule.price, 1, 2)}">
                                     <td th:text="${#dates.format(schedule.startTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</td>
