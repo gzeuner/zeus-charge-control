@@ -245,6 +245,11 @@ h2, h3 {
   box-shadow: 0 0 5px #00ff7f;
 }
 
+.status-indicator.enabled {
+  background-color: #3b82f6;
+  box-shadow: 0 0 5px #3b82f6;
+}
+
 .status-indicator.inactive {
   background-color: #b0b0b0;
 }

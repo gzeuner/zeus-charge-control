@@ -374,6 +374,7 @@ document.addEventListener("DOMContentLoaded", function () {
     nightStartInput.value = nightStartHour;
     nightEndInput.value = nightEndHour;
   }
+  updateNightIdleState(nightIdleEnabled, nightIdleActive);
 
   // Fetch and refresh status
   fetchCurrentStatus();
@@ -392,7 +393,7 @@ function fetchCurrentStatus() {
       safeUpdateButtonState('modeBtn', data.currentMode === 'idle', 'fa-pause', 'fa-play', translations.idle, translations.automatic);
       if (typeof data.nightChargingIdle === 'boolean') nightIdleEnabled = data.nightChargingIdle;
       if (typeof data.nightIdleActive === 'boolean') nightIdleActive = data.nightIdleActive;
-      safeUpdateButtonState('nightChargingBtn', nightIdleActive, 'fa-moon', 'fa-moon', translations.nightIdle, translations.nightIdle);
+      updateNightIdleState(nightIdleEnabled, nightIdleActive);
       safeUpdateButtonState('chargingBtn', data.isCharging, 'fa-stop', 'fa-bolt', translations.charging, translations.stopped);
 
       if (typeof data.nightStartHour === 'number') {
@@ -493,6 +494,29 @@ function updateButtonState(btnId, isActive, activeIcon, inactiveIcon, activeText
   }
 }
 
+function updateNightIdleState(enabled, active) {
+  const btn = document.getElementById('nightChargingBtn');
+  if (!btn) return;
+
+  const indicator = btn.querySelector('.status-indicator');
+  const text = btn.querySelector('span:not(.status-indicator)');
+
+  if (active) {
+    btn.classList.remove('off');
+    btn.classList.add('on');
+  } else {
+    btn.classList.remove('on');
+    btn.classList.add('off');
+  }
+
+  if (text) text.textContent = translations.nightIdle || 'Night Idle';
+
+  if (indicator) {
+    indicator.classList.remove('active', 'enabled', 'inactive');
+    indicator.classList.add(active ? 'active' : (enabled ? 'enabled' : 'inactive'));
+  }
+}
+
 // Execute action
 function handleAction(url, method, body = null, onSuccess = null, onFailure = null) {
   showLoader();
@@ -566,9 +590,8 @@ const debouncedToggleNightCharging = debounce(() => {
   const next = !nightIdleEnabled;
   setLastAction(next ? 'nightIdle' : 'standard');
   setExclusiveModeUI(next ? 'nightIdle' : 'standard');
-  if (!next) {
-    updateButtonState('nightChargingBtn', false, 'fa-moon', 'fa-moon', translations.nightIdle, translations.nightIdle);
-  }
+  if (!next) nightIdleActive = false;
+  updateNightIdleState(next, nightIdleActive);
 
   const windowValues = getValidatedNightWindow();
   if (!windowValues) return;
