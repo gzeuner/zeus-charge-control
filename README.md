@@ -1,97 +1,251 @@
 # Zeus Charge Control / Zeus Ladeoptimierung
 
-Zeus Charge Control ist eine Java/Spring-Boot-Anwendung zur Optimierung von Ladeplänen für PV-Batteriespeicher auf Basis dynamischer Marktpreise. Die App integriert Wetter- und Preisdaten, steuert die Batterie über die **Sonnen API v2** und läuft weiter, auch wenn die Batterie zeitweise nicht erreichbar ist (Fehler werden geloggt).
+Zeus Charge Control ist eine **Java / Spring Boot** Anwendung zur preis-, zustands- und optional wetterbasierten Steuerung eines PV-Batteriespeichers über die **Sonnen API v2**.
 
-**Systemvoraussetzungen:** Java 17, Spring Boot 2.7.x (aktuell 2.7.18), Battery API erreichbar (Sonnen API v2).
+Die Anwendung:
+
+- lädt Marktpreise (aWATTar oder Tibber mit bidirektionaler Fallback-Logik)
+- plant Ladefenster dynamisch anhand RSOC, Preisparametern und optionaler Wetterprognose
+- optimiert Ladepläne kontinuierlich (Event-basiert + zeitgesteuert)
+- bietet eine Web-UI zur manuellen Steuerung
+- bleibt bei API-Ausfällen robust und protokolliert Fehler
 
 ---
 
-## ⚠️ Hinweis: Experimental / Private Use
+## ⚠️ Status: Experimental / Private Use
 
-Dieses Projekt befindet sich in einem **experimentellen Entwicklungsstadium** und ist primär für **private Nutzung, Tests und Lernzwecke** gedacht.
+Dieses Projekt befindet sich in einem **experimentellen Entwicklungsstadium** und ist primär für:
 
-Die Software ist **nicht für den produktiven Dauerbetrieb in sicherheitskritischen oder kommerziellen Umgebungen** vorgesehen.  
-Automatisierte Ladeentscheidungen erfolgen konfigurations- und datenbasiert und sollten vor einem produktiven Einsatz sorgfältig geprüft werden.
+- private Nutzung
+- Tests
+- Lern- und Evaluationszwecke
 
-### 📦 Distribution & Build-Hinweis
+gedacht.
 
-Dieses Projekt wird **bewusst ohne vorkompilierte Binaries oder Releases** bereitgestellt.  
-Die Anwendung ist **ausschließlich als Quellcode** verfügbar und muss **lokal mit Maven gebaut** werden.
+Es ist **nicht für den produktiven Dauerbetrieb in sicherheitskritischen oder kommerziellen Umgebungen vorgesehen**.
+
+Automatisierte Ladeentscheidungen erfolgen daten- und konfigurationsbasiert und sollten vor produktivem Einsatz sorgfältig geprüft werden.
+
+---
+
+## 📦 Distribution & Build
+
+Dieses Projekt wird **bewusst ohne vorkompilierte Binaries oder Releases** bereitgestellt.
+
+Die Anwendung ist ausschließlich als **Quellcode** verfügbar und muss lokal gebaut werden:
 
 ```bash
 mvn clean package
-````
+mvn test
+mvn spring-boot:run
+```
+
+Alternativ nach dem Build:
+
+```bash
+java -jar target/zeus-power-control-3.0-RELEASE.jar
+```
 
 Die Verantwortung für Build, Konfiguration und Betrieb liegt vollständig beim Nutzer.
 
 ---
 
-## Hauptfunktionen
+## Technologie-Stack
 
-* Batteriestatus-Monitoring: Echtzeit-RSOC mit Visualisierung.
-* Marktpreismanagement: Ladefenster nach Preis/Schwellenwerten planen.
-* Optimierte Ladezeiten: Günstigste Perioden unter Berücksichtigung des RSOC-Bedarfs.
-* Preis- und Ladevisualisierung: Tabellen und Charts.
-* Wetterintegration: Forecast (Open-Meteo) beeinflusst Ladeentscheidungen.
-* Nachtmodus-Steuerung: Nacht-Leerlauf oder Automatik konfigurierbar.
-* Fehlertoleranz: Batteriezugriff-Ausfälle werden protokolliert, App bleibt stabil.
+### Backend
+
+- Java 17
+- Spring Boot 2.7.18
+- Spring Web
+- Spring Scheduling
+- Spring Retry
+- Spring Data JPA
+- H2 (In-Memory, Standard)
+
+### Frontend
+
+- Bootstrap 5
+- Chart.js
+- jQuery
+- Luxon
+- Thymeleaf
+
+### Projektkoordinaten
+
+```
+groupId:    de.zeus.power
+artifactId: zeus-power-control
+version:    3.0-RELEASE
+```
 
 ---
 
-## Dynamische Ladeplanung
+## Kernfunktionen
 
-1. **RSOC-Logik:** Keine Ladung, wenn RSOC ≥ Ziel (z. B. 90 %); bestehende Pläne werden entfernt.
-2. **Preisoptimierung:** Auswahl der günstigsten Perioden im Toleranzfenster (z. B. 22:00–06:00).
-3. **Nachtfenster:** Bis zu zwei Perioden, dynamisch angepasst an Bedarf.
-4. **Tagpufferung:** Optional zusätzliche Tagesfenster, wenn nötig.
-5. **Flexibilität:** Toleranz für leicht höhere Preise konfigurierbar.
-6. **Konfigurierbarkeit:** Alle Parameter über `application.properties`.
+### Dynamische Ladeplanung
+
+- Nacht- und Tagesfenster
+- Auswahl günstigster Perioden im konfigurierbaren Toleranzbereich
+- Maximalperioden im Nachtfenster
+- Catch-up-Start innerhalb aktiver Fenster bei RSOC-Abfall
+- Automatische Entfernung von Ladeplänen bei Ziel-RSOC-Erreichung
+
+### Laufende Re-Optimierung
+
+- Bei `MarketPricesUpdatedEvent`
+- Stündlich per Scheduler
+- Bei RSOC-/Modusänderungen
+
+### Modi
+
+- Standard (automatisch)
+- Idle
+- Night-Idle
+- Manuelles Start/Stop
+- Rückgabe an Energy Manager
+
+### Preislogik
+
+- Netto- und Bruttoanzeige
+- Konfigurierbare Zuschläge (YAML)
+- Flexibilitätsschwelle (`marketdata.price.flexibility.threshold`)
+- Maximal akzeptabler Preis
+
+### Wetter-Integration (optional)
+
+- Open-Meteo API
+- Wolkendeckungs-Schwellenwert (`weather.sunny-threshold`)
+- Optionales Deferring bei hoher Sonnenerwartung
+
+### Fehlertoleranz
+
+- Retry-Mechanismen
+- Logging bei Batterie-/API-Ausfällen
+- App bleibt lauffähig bei temporärer Nichterreichbarkeit
 
 ---
 
-## API-Integration
+## Scheduler-Verhalten
 
-* Marktpreise: aWATTar, Tibber
-* Wetter: Open-Meteo (kostenlos für nicht-kommerzielle Nutzung)
-* Batterie: Sonnen API v2
+### Preisupdate + Persistenz
+
+- Beim Start (`ApplicationReadyEvent`)
+- Per Cron (`scheduled.job.cron`, Default: `0 15 14,22,2 * * *`)
+
+### Optimierung
+
+- Bei Preisupdate-Event
+- Stündlich (`0 0 * * * ?`)
+
+### RSOC-/Modusüberwachung
+
+- Fixed Rate (`battery.automatic.mode.check.interval`, Default 15000 ms)
+
+---
+
+## API-Integrationen
+
+### Batterie
+- Sonnen API v2 (`/status`, `/setpoint/...`)
+
+### Marktpreise
+- aWATTar
+- Tibber
+- Bidirektionale Fallback-Logik
+
+### Wetter
+- Open-Meteo (optional)
+
+---
+
+## Verfügbare HTTP-Endpunkte
+
+### UI
+
+- `GET /charging-status`
+- `GET /license?lang=de|en`
+
+### Status
+
+- `GET /current-status`
+
+### Steuerung
+
+- `POST /toggle-mode` (`idle|standard`)
+- `POST /toggle-charging` (`start|stop`)
+- `POST /start-charging`
+- `POST /reset-automatic?force=true|false`
+- `POST /reset-idle`
+- `POST /toggle-night-charging`
+- `POST /night-charging-window`
 
 ---
 
 ## Beispielkonfiguration
 
+### Minimal Batterie
+
 ```properties
-battery.target.stateOfCharge=90
+battery.url=http://<sonnen-ip>/api/v2
+battery.authToken=<token>
+```
+
+Ohne diese Werte startet die App, Batteriesteuerung ist jedoch deaktiviert.
+
+---
+
+### Wichtige Properties (Auszug)
+
+```properties
+server.port=8080
+
 marketdata.source=awattar
 marketdata.acceptable.price.cents=15
-marketdata.price.flexibility.threshold=10
-night.start=22
+marketdata.max.acceptable.price.cents=15
+marketdata.price.flexibility.threshold=2
+
+battery.target.stateOfCharge=90
+battery.inverter.max.watts=4600
+battery.grid.import.limit.watts=4600
+battery.pv.only.enabled=true
+
+night.start=19
 night.end=6
-nighttime.max.periods=2
+battery.nightChargingIdle=false
+
+weather.api.enabled=true
+weather.api.latitude=52.52
+weather.api.longitude=13.405
+weather.sunny-threshold=40
+
+battery.max.capacity.wh=10000
+BATTERY_MAX_CAPACITY=10000
 ```
 
 ---
 
-## Visualisierungen
+## Lokale Datenhaltung
 
-* Batteriestatus (RSOC)
-* Steuerungspanel (Mode/Charging/Night Idle)
-* Marktpreise & Ladepläne (Tabellen/Charts)
+Standard:
 
-![Battery status](images/battery_status.jpg)
-![Control panel](images/control_panel.jpg)
-![Best price in scope](images/best_price_in_scope.jpg)
-![Price chart](images/price_chart.jpg)
-![Price table](images/price_table.jpg)
+```properties
+spring.datasource.url=jdbc:h2:mem:testdb
+```
+
+Optional mit H2-Konsole (`/h2-console`).
 
 ---
 
-## Verwendete Bibliotheken (Auszug)
+## Tests
 
-* Spring Boot 2.7.x
-* Bootstrap 5.3
-* Font Awesome 6 (Free)
-* jQuery Slim 3.5
-* Chart.js + chartjs-adapter-luxon + Luxon
+Vorhandene Unit-Tests u. a.:
+
+- `ChargingUtilsTest`
+- `ChargingManagementServiceTest`
+- `BatteryManagementServiceTest`
+- `PriceDisplayServiceTest`
+
+`mvn test` läuft erfolgreich (Stand aktueller Code).
 
 ---
 
@@ -99,141 +253,20 @@ nighttime.max.periods=2
 
 ### Keine Verbindung zur Sonnen GmbH
 
-Dieses Projekt steht **in keiner Verbindung zur Sonnen GmbH**.
-Die Software wurde **nicht von der Sonnen GmbH entwickelt, bereitgestellt oder unterstützt**.
-
-Die Nutzung der **Sonnen API v2** erfolgt ausschließlich auf Basis öffentlich zugänglicher Schnittstellen und Dokumentationen. Alle Marken-, Produkt- und Firmennamen sind Eigentum der jeweiligen Rechteinhaber.
+Dieses Projekt steht in keiner Verbindung zur Sonnen GmbH.  
+Die Software wurde nicht von der Sonnen GmbH entwickelt, bereitgestellt oder unterstützt.
 
 ### Haftungsausschluss
 
-Die Inhalte und der Quellcode dieses Projekts dienen **ausschließlich der allgemeinen Information** und stellen **keine fachliche Beratung** dar – insbesondere **keine rechtliche, steuerliche, finanzielle oder energetische Beratung**.
+Die Nutzung erfolgt auf eigenes Risiko.  
+Die Software wird ohne jegliche Gewährleistung bereitgestellt.  
 
-Insbesondere übernimmt der Autor **keine Haftung für Schäden**, die durch **Fehlkonfiguration**, **Fehlinterpretation von Marktdaten** oder **automatisierte Ladeentscheidungen** entstehen.
-
-Die Nutzung der Software erfolgt **auf eigene Verantwortung**.
-Eine Haftung für **materielle oder immaterielle Schäden** ist ausgeschlossen, sofern kein **vorsätzliches oder grob fahrlässiges Verschulden** vorliegt.
-
-Es wird keine Gewähr für:
-
-* die Aktualität, Richtigkeit oder Vollständigkeit der Inhalte,
-* die dauerhafte Verfügbarkeit externer APIs (z. B. Markt-, Wetter- oder Batterie-Schnittstellen),
-* die Eignung für einen bestimmten Zweck
-
-übernommen.
-
-### Open-Source-Hinweis
-
-Dieses Projekt wird als **Open-Source-Software** bereitgestellt. Änderungen, Erweiterungen oder der produktive Einsatz erfolgen auf eigenes Risiko.
+Eine Haftung für Schäden, die aus der Nutzung der Software entstehen, ist – soweit gesetzlich zulässig – ausgeschlossen.  
+Insbesondere wird keine Gewähr für die Richtigkeit von Marktdaten, die Verfügbarkeit externer APIs oder die Eignung für einen bestimmten Zweck übernommen.
 
 ---
 
 ## Lizenz
 
-Apache License 2.0 (siehe [LICENSE](LICENSE)).
-
----
-
-# Zeus Charge Control (English)
-
-Zeus Charge Control is a Java/Spring Boot app that optimizes charging schedules for PV batteries based on dynamic market prices. It integrates weather and price data, controls the battery via **Sonnen API v2**, and stays up even if the battery is temporarily unreachable (errors are logged).
-
-**Requirements:** Java 17, Spring Boot 2.7.x (currently 2.7.18), Battery API reachable (Sonnen API v2).
-
----
-
-## ⚠️ Notice: Experimental / Private Use
-
-This project is in an **experimental stage** and is primarily intended for **private use, testing, and educational purposes**.
-
-The software is **not designed for production use in safety-critical or commercial environments**.
-Automated charging decisions are configuration- and data-driven and should be carefully reviewed before any productive deployment.
-
-### 📦 Distribution & Build Notice
-
-This project is **intentionally distributed as source code only**.
-No pre-built binaries or releases are provided.
-
-The application must be **built locally using Maven**:
-
-```bash
-mvn clean package
-```
-
-The user is fully responsible for build, configuration, and operation.
-
----
-
-## Main Features
-
-* Battery monitoring: real-time RSOC with visualization.
-* Market price management: schedule by price/thresholds.
-* Optimized timing: cheapest periods considering RSOC need.
-* Price and charging visuals: tables and charts.
-* Weather-aware decisions via Open-Meteo.
-* Night mode control: configurable night idle/automatic.
-* Fault tolerance: battery outages are logged; app continues running.
-
-## Dynamic Charging Logic
-
-1. **RSOC logic:** Skip charging if RSOC ≥ target; remove existing plans.
-2. **Cheapest selection:** Pick cheapest windows in the tolerance horizon (e.g., 22:00–06:00).
-3. **Night windows:** Up to two periods dynamically chosen.
-4. **Day buffering:** Optional daytime slots when needed.
-5. **Flex thresholds:** Allow slightly higher prices (configurable).
-6. **Configurable:** Tune everything via `application.properties`.
-
-## APIs
-
-* Market prices: aWATTar, Tibber
-* Weather: Open-Meteo (non-commercial free tier)
-* Battery: Sonnen API v2
-
-## Libraries (selection)
-
-* Spring Boot 2.7.x
-* Bootstrap 5.3
-* Font Awesome 6 (Free)
-* jQuery Slim 3.5
-* Chart.js + chartjs-adapter-luxon + Luxon
-
-![Battery status](images/battery_status.jpg)
-![Control panel](images/control_panel.jpg)
-![Best price in scope](images/best_price_in_scope.jpg)
-![Price chart](images/price_chart.jpg)
-![Price table](images/price_table.jpg)
-
----
-
-## Disclaimer & Limitation of Liability
-
-### No affiliation with Sonnen GmbH
-
-This project is **not affiliated with Sonnen GmbH**.
-The software is **not developed, provided, or endorsed by Sonnen GmbH**.
-
-The use of the **Sonnen API v2** is based solely on publicly available interfaces and documentation. All trademarks, product names, and company names remain the property of their respective owners.
-
-### Limitation of Liability
-
-The contents and source code of this project are provided **for general informational purposes only** and do **not constitute professional advice**, including but not limited to **legal, tax, financial, or energy-related advice**.
-
-Use of this software is **entirely at your own risk**.
-Liability for **material or immaterial damages** is excluded unless caused by **intent or gross negligence**.
-
-No warranty is given regarding:
-
-* accuracy, completeness, or timeliness of the information,
-* availability or reliability of external APIs (e.g. market, weather, battery),
-* fitness for a particular purpose
-
-In particular, the author assumes **no liability for damages** resulting from **misconfiguration**, **misinterpretation of market data**, or **automated charging decisions**.
-
-### Open-Source Notice
-
-This project is provided as **open-source software**. Any modifications, extensions, or productive use are carried out at the user's own risk.
-
----
-
-## License
-
-Apache License 2.0 (see [LICENSE](LICENSE)).
+Apache License 2.0  
+(siehe `LICENSE`)

@@ -64,6 +64,12 @@ public class BatteryCommandService {
     // REST client for making HTTP requests to the battery API
     private RestTemplate restTemplate;
 
+    private final RestTemplateBuilder restTemplateBuilder;
+
+    public BatteryCommandService(RestTemplateBuilder restTemplateBuilder) {
+        this.restTemplateBuilder = restTemplateBuilder;
+    }
+
     /**
      * Initializes the service after construction.
      * Checks if the configuration (authToken and url) is valid and sets up the RestTemplate.
@@ -79,7 +85,7 @@ public class BatteryCommandService {
         }
         authToken = token;
         url = baseUrl;
-        restTemplate = new RestTemplateBuilder()
+        restTemplate = restTemplateBuilder
                 .defaultHeader(AUTH_HEADER, authToken)
                 .build();
     }
