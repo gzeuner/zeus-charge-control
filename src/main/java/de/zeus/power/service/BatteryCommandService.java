@@ -13,7 +13,7 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
 
-import javax.annotation.PostConstruct;
+import jakarta.annotation.PostConstruct;
 
 /**
  * Copyright 2024 Guido Zeuner - https://tiny-tool.de
@@ -119,9 +119,11 @@ public class BatteryCommandService {
                     data
             );
         } catch (HttpStatusCodeException e) {
-            HttpStatus status = e.getStatusCode();
+            HttpStatusCode status = e.getStatusCode();
             String body = e.getResponseBodyAsString();
-            LOG.warn("Battery status error at {}: {} {}", endpoint, status.value(), status.getReasonPhrase());
+            HttpStatus resolvedStatus = HttpStatus.resolve(status.value());
+            LOG.warn("Battery status error at {}: {} {}", endpoint, status.value(),
+                    resolvedStatus != null ? resolvedStatus.getReasonPhrase() : "Unknown");
             if (body != null && !body.isBlank()) {
                 LOG.warn("Battery status error body: {}", body);
             }
@@ -135,6 +137,50 @@ public class BatteryCommandService {
         } catch (Exception e) {
             LOG.error("Error occurred while retrieving battery status", e);
             return errorResponse("Internal Server Error");
+        }
+    }
+
+    /**
+     * Retrieves a single configuration value from the battery API.
+     *
+     * @param key Configuration name.
+     * @return The raw value returned by the API or an error response.
+     */
+    public ApiResponse<String> getConfiguration(String key) {
+        if (batteryNotConfigured || restTemplate == null) {
+            LOG.warn("Battery configuration requested but configuration is incomplete.");
+            return errorResponse("Battery not configured", null);
+        }
+        if (key == null || key.trim().isEmpty()) {
+            return errorResponse("Configuration key is required", null);
+        }
+
+        String endpoint = buildUrl(CONFIGURATIONS_PATH + "/" + key.trim());
+        try {
+            ResponseEntity<String> response = restTemplate.getForEntity(endpoint, String.class);
+            String data = response.getBody();
+            return new ApiResponse<>(
+                    data != null,
+                    response.getStatusCode(),
+                    data != null ? "Battery configuration retrieved successfully" : "No configuration value available",
+                    data
+            );
+        } catch (HttpStatusCodeException e) {
+            HttpStatusCode status = e.getStatusCode();
+            String body = e.getResponseBodyAsString();
+            HttpStatus resolvedStatus = HttpStatus.resolve(status.value());
+            LOG.warn("Battery configuration error at {}: {} {}", endpoint, status.value(),
+                    resolvedStatus != null ? resolvedStatus.getReasonPhrase() : "Unknown");
+            if (body != null && !body.isBlank()) {
+                LOG.warn("Battery configuration error body: {}", body);
+            }
+            return new ApiResponse<>(false, status, "Battery configuration error: " + status, null);
+        } catch (org.springframework.web.client.ResourceAccessException e) {
+            LOG.warn("Battery configuration unreachable at {}: {}", endpoint, e.getMessage());
+            return errorResponse("Battery API unreachable", e.getMessage());
+        } catch (Exception e) {
+            LOG.error("Error occurred while retrieving battery configuration {}", key, e);
+            return errorResponse("Internal Server Error", e.getMessage());
         }
     }
 
@@ -231,7 +277,7 @@ public class BatteryCommandService {
      * @param message The error message to include.
      * @return An ApiResponse with failure status and the specified message.
      */
-    private ApiResponse<BatteryStatusResponse> errorResponse(HttpStatus status, String message) {
+    private ApiResponse<BatteryStatusResponse> errorResponse(HttpStatusCode status, String message) {
         return new ApiResponse<>(false, status != null ? status : HttpStatus.INTERNAL_SERVER_ERROR, message, null);
     }
 
@@ -254,13 +300,13 @@ public class BatteryCommandService {
      * @param successStatus The expected HTTP status for a successful response.
      * @return An ApiResponse indicating the result of the POST request.
      */
-    private ApiResponse<String> executePostRequest(String endpoint, String action, HttpStatus successStatus) {
+    private ApiResponse<String> executePostRequest(String endpoint, String action, HttpStatusCode successStatus) {
         try {
             ResponseEntity<String> response = restTemplate.postForEntity(endpoint, null, String.class);
             LOG.info("Request to {} sent. URL: {}", action, endpoint);
             LOG.debug("Response status: {}, Body: {}", response.getStatusCode(), response.getBody());
 
-            boolean success = response.getStatusCode() == successStatus;
+            boolean success = response.getStatusCode().isSameCodeAs(successStatus);
             String message = getStatusMessage(response.getStatusCode(), action);
             return new ApiResponse<>(success, response.getStatusCode(), message, response.getBody());
         } catch (Exception e) {
@@ -276,8 +322,9 @@ public class BatteryCommandService {
      * @param action The action description (e.g., "set charge point").
      * @return A string message describing the outcome.
      */
-    private String getStatusMessage(HttpStatus status, String action) {
-        return switch (status) {
+    private String getStatusMessage(HttpStatusCode status, String action) {
+        HttpStatus resolvedStatus = HttpStatus.resolve(status.value());
+        return switch (resolvedStatus != null ? resolvedStatus : HttpStatus.INTERNAL_SERVER_ERROR) {
             case CREATED -> "Successfully " + action;
             case UNAUTHORIZED -> "Unauthorized";
             case FORBIDDEN -> "Forbidden - VPP has priority";
@@ -293,8 +340,9 @@ public class BatteryCommandService {
      * @param value The configuration value set.
      * @return A string message describing the outcome of the configuration update.
      */
-    private String getConfigurationMessage(HttpStatus status, String key, String value) {
-        return switch (status) {
+    private String getConfigurationMessage(HttpStatusCode status, String key, String value) {
+        HttpStatus resolvedStatus = HttpStatus.resolve(status.value());
+        return switch (resolvedStatus != null ? resolvedStatus : HttpStatus.INTERNAL_SERVER_ERROR) {
             case OK -> "Configuration updated: " + key + " = " + value;
             case UNAUTHORIZED -> "Unauthorized";
             case FORBIDDEN -> "Forbidden";

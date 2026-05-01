@@ -1,7 +1,9 @@
 package de.zeus.power.util;
 
 import de.zeus.power.entity.ChargingSchedule;
+import de.zeus.power.service.BatteryCapacityService;
 import de.zeus.power.service.BatteryManagementService;
+import de.zeus.power.service.SeasonalTargetStateOfChargeService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -24,20 +26,26 @@ class ChargingUtilsTest {
 
     private ChargingUtils utils;
     private BatteryManagementService bms;
+    private BatteryCapacityService batteryCapacityService;
+    private SeasonalTargetStateOfChargeService seasonalTargetStateOfChargeService;
 
     @BeforeEach
     void setUp() {
         bms = mock(BatteryManagementService.class);
+        batteryCapacityService = mock(BatteryCapacityService.class);
+        seasonalTargetStateOfChargeService = mock(SeasonalTargetStateOfChargeService.class);
         utils = new ChargingUtils();
         inject(utils, "batteryManagementService", bms);
-        inject(utils, "maxCapacityInWatt", 10_000);
-        inject(utils, "targetStateOfCharge", 90);
+        inject(utils, "batteryCapacityService", batteryCapacityService);
+        inject(utils, "seasonalTargetStateOfChargeService", seasonalTargetStateOfChargeService);
         inject(utils, "chargingPointInWatt", 4600);
         inject(utils, "waitMinSavingsCt", 1.0);
         inject(utils, "waitMinSavingsPct", 0.05);
         inject(utils, "waitMaxDelayMinutes", 120);
         inject(utils, "rsocMinFloor", 15);
         inject(utils, "defaultRsocDropPerHour", 3.0);
+        when(batteryCapacityService.resolveTotalCapacityWh()).thenReturn(10_000);
+        when(seasonalTargetStateOfChargeService.getCurrentTargetStateOfCharge()).thenReturn(90);
     }
 
     @Test

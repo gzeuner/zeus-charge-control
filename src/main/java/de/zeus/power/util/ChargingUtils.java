@@ -4,8 +4,10 @@ import de.zeus.power.config.LogFilter;
 import de.zeus.power.entity.ChargingSchedule;
 import de.zeus.power.entity.MarketPrice;
 import de.zeus.power.repository.ChargingScheduleRepository;
+import de.zeus.power.service.BatteryCapacityService;
 import de.zeus.power.service.BatteryManagementService;
 import de.zeus.power.service.ChargingManagementService;
+import de.zeus.power.service.SeasonalTargetStateOfChargeService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -37,12 +39,6 @@ public class ChargingUtils {
     private static final double SECONDS_PER_HOUR = 3600.0;
     private static final double MINIMUM_THRESHOLD_OFFSET = 0.05;
     private static final int MINIMUM_CHARGING_PERIODS = 2;
-
-    @Value("${BATTERY_MAX_CAPACITY:10000}")
-    private int maxCapacityInWatt; // Wh
-
-    @Value("${battery.target.stateOfCharge:90}")
-    private int targetStateOfCharge;
 
     @Value("${battery.inverter.max.watts:4600}")
     private int chargingPointInWatt;
@@ -84,6 +80,10 @@ public class ChargingUtils {
 
     @Autowired
     private BatteryManagementService batteryManagementService;
+    @Autowired
+    private SeasonalTargetStateOfChargeService seasonalTargetStateOfChargeService;
+    @Autowired
+    private BatteryCapacityService batteryCapacityService;
 
     // ---- validation & calculations (existing) ----
 
@@ -99,8 +99,10 @@ public class ChargingUtils {
     }
 
     public double calculateRequiredCapacity(int currentRsoc) {
-        double currentCapacity = currentRsoc * maxCapacityInWatt / 100.0;
-        double targetCapacity = targetStateOfCharge * maxCapacityInWatt / 100.0;
+        int targetRsoc = currentTargetStateOfCharge();
+        double totalCapacityWh = batteryCapacityService.resolveTotalCapacityWh();
+        double currentCapacity = currentRsoc * totalCapacityWh / 100.0;
+        double targetCapacity = targetRsoc * totalCapacityWh / 100.0;
         return targetCapacity - currentCapacity; // Wh
     }
 
@@ -122,7 +124,8 @@ public class ChargingUtils {
         boolean isNight = isNight(currentTimeMillis);
         int currentRsoc = batteryManagementService.getRelativeStateOfCharge();
 
-        if (currentRsoc >= targetStateOfCharge) {
+        int targetRsoc = currentTargetStateOfCharge();
+        if (currentRsoc >= targetRsoc) {
             long last = lastHandBackTs.get();
             long now = System.currentTimeMillis();
             if (now - last < handBackDebounceMs) return;
@@ -222,14 +225,15 @@ public class ChargingUtils {
     }
 
     public double calculateMaxAcceptablePrice(double currentRsoc, double basePrice) {
-        double rsocThreshold = targetStateOfCharge * 0.8;
+        double rsocThreshold = currentTargetStateOfCharge() * 0.8;
         double priceMultiplier = 1.2;
         return currentRsoc < rsocThreshold ? basePrice * priceMultiplier : basePrice;
     }
 
     public int calculateDynamicDaytimeThreshold() {
         List<Map.Entry<Long, Integer>> history = batteryManagementService.getRsocHistory();
-        int fallback = targetStateOfCharge - 20;
+        int targetRsoc = currentTargetStateOfCharge();
+        int fallback = targetRsoc - 20;
         if (history.size() < 2) return fallback;
 
         Map.Entry<Long, Integer> oldest = history.get(0);
@@ -238,8 +242,8 @@ public class ChargingUtils {
         if (diffMin <= 0) return fallback;
 
         double dropPerHour = (oldest.getValue() - latest.getValue()) / (diffMin / 60.0);
-        int threshold = (int) Math.max(targetStateOfCharge - (dropPerHour * 2), targetStateOfCharge - 30);
-        return Math.min(threshold, targetStateOfCharge);
+        int threshold = (int) Math.max(targetRsoc - (dropPerHour * 2), targetRsoc - 30);
+        return Math.min(threshold, targetRsoc);
     }
 
     public boolean adjustForCheaperFutureSchedule(ChargingSchedule currentSchedule, List<ChargingSchedule> schedulesToEvaluate,
@@ -402,7 +406,8 @@ public class ChargingUtils {
             }
 
             // (3) Check if time/power from the candidate window can reach target SoC
-            double deficitWh = Math.max(0.0, (targetStateOfCharge - projectedRsocAtStart) * (maxCapacityInWatt / 100.0));
+            double deficitWh = Math.max(0.0, (currentTargetStateOfCharge() - projectedRsocAtStart)
+                    * (batteryCapacityService.resolveTotalCapacityWh() / 100.0));
             double deliverableWh = computeDeliverableEnergyFrom(cand, futureWindows);
             boolean timeSufficient = deliverableWh >= deficitWh;
 
@@ -543,5 +548,9 @@ public class ChargingUtils {
         copy.setEndTimestamp(source.getEndTimestamp());
         copy.setPrice(source.getPrice());
         return copy;
+    }
+
+    private int currentTargetStateOfCharge() {
+        return seasonalTargetStateOfChargeService.getCurrentTargetStateOfCharge();
     }
 }

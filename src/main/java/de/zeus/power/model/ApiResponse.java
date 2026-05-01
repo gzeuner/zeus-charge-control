@@ -1,6 +1,6 @@
 package de.zeus.power.model;
 
-import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 
 /**
  * Copyright 2024 Guido Zeuner - https://tiny-tool.de
@@ -19,7 +19,7 @@ import org.springframework.http.HttpStatus;
  */
 
 public record ApiResponse<T>(boolean success,
-                             HttpStatus statusCode,
+                             HttpStatusCode statusCode,
                              String message,
                              T data) {
 }

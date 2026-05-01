@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<body>
+<th:block th:fragment="topbar">
+    <header class="app-topbar" aria-label="Page toolbar">
+        <div class="topbar-brand">
+            <div class="brand-mark" aria-hidden="true">
+                <i class="fas fa-bolt"></i>
+            </div>
+            <div>
+                <p class="eyebrow" th:text="#{overviewKicker}">Energy orchestration</p>
+                <h1 th:text="#{title}">ChargeControl V3.0</h1>
+            </div>
+        </div>
+        <div class="topbar-actions">
+            <div class="dropdown theme-dropdown">
+                <button class="toolbar-link theme-dropdown-toggle dropdown-toggle" id="themeDropdown" type="button"
+                        data-bs-toggle="dropdown" aria-expanded="false">
+                    <span class="toolbar-label" th:text="#{themeLabel}">Theme</span>
+                    <span class="theme-dropdown-current">
+                        <i class="fas fa-palette" aria-hidden="true"></i>
+                        <span id="themeDropdownLabel" th:text="#{themeDefault}">Default</span>
+                    </span>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end theme-dropdown-menu" aria-labelledby="themeDropdown">
+                    <li>
+                        <button class="dropdown-item theme-dropdown-item" type="button" data-theme-option="default">
+                            <span class="theme-option-swatch theme-option-default" aria-hidden="true"></span>
+                            <span th:text="#{themeDefault}">Default</span>
+                        </button>
+                    </li>
+                    <li>
+                        <button class="dropdown-item theme-dropdown-item" type="button" data-theme-option="dark">
+                            <span class="theme-option-swatch theme-option-dark" aria-hidden="true"></span>
+                            <span th:text="#{themeDark}">Dark</span>
+                        </button>
+                    </li>
+                    <li>
+                        <button class="dropdown-item theme-dropdown-item" type="button" data-theme-option="energy">
+                            <span class="theme-option-swatch theme-option-energy" aria-hidden="true"></span>
+                            <span th:text="#{themeEnergy}">Energy</span>
+                        </button>
+                    </li>
+                    <li>
+                        <button class="dropdown-item theme-dropdown-item" type="button" data-theme-option="solar">
+                            <span class="theme-option-swatch theme-option-solar" aria-hidden="true"></span>
+                            <span th:text="#{themeSolar}">Solar</span>
+                        </button>
+                    </li>
+                    <li>
+                        <button class="dropdown-item theme-dropdown-item" type="button" data-theme-option="ember">
+                            <span class="theme-option-swatch theme-option-ember" aria-hidden="true"></span>
+                            <span th:text="#{themeEmber}">Ember</span>
+                        </button>
+                    </li>
+                </ul>
+                <select id="themeSelector" class="visually-hidden theme-select-native" aria-hidden="true" tabindex="-1">
+                    <option value="default" th:text="#{themeDefault}">Default</option>
+                    <option value="dark" th:text="#{themeDark}">Dark</option>
+                    <option value="energy" th:text="#{themeEnergy}">Energy</option>
+                    <option value="solar" th:text="#{themeSolar}">Solar</option>
+                    <option value="ember" th:text="#{themeEmber}">Ember</option>
+                </select>
+            </div>
+            <a th:href="@{/license(lang=${#locale.language})}" class="toolbar-link">
+                <i class="fas fa-file-alt"></i>
+                <span th:text="#{licenseTerms}">License</span>
+            </a>
+            <div class="dropdown">
+                <button class="toolbar-link dropdown-toggle" id="languageDropdown" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                    <i class="fas fa-globe"></i>
+                    <span th:text="${#locale.language == 'de' ? 'Deutsch' : 'English'}">Deutsch</span>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="languageDropdown">
+                    <li><a class="dropdown-item" href="#" onclick="toggleLanguage('de'); return false;">Deutsch</a></li>
+                    <li><a class="dropdown-item" href="#" onclick="toggleLanguage('en'); return false;">English</a></li>
+                </ul>
+            </div>
+        </div>
+    </header>
+</th:block>
+
+<th:block th:fragment="controlSidebar">
+    <aside class="sidebar-stack">
+        <section class="panel control-panel" aria-labelledby="controlPanelTitle">
+            <div class="panel-header">
+                <div>
+                    <p class="eyebrow" th:text="#{controlSectionKicker}">Actions</p>
+                    <h2 class="panel-title" id="controlPanelTitle" th:text="#{controlPanel}">Control Panel</h2>
+                </div>
+                <p class="panel-subtitle" th:text="#{controlPanelText}">
+                    Central charging actions.
+                </p>
+            </div>
+            <div class="action-grid">
+                <button class="on-off-btn action-button" id="modeBtn" type="button"
+                        th:classappend="${currentMode == 'idle' ? ' on' : ' off'}"
+                        onclick="debouncedToggleMode()"
+                        data-ui-action="true"
+                        data-bs-toggle="tooltip"
+                        data-bs-html="true"
+                        th:attr="data-bs-title=#{modeTooltip},aria-pressed=${currentMode == 'idle'}">
+                    <span class="status-indicator" th:classappend="${currentMode == 'idle' ? ' active' : ' inactive'}"></span>
+                    <i class="fas" th:classappend="${currentMode == 'idle' ? ' fa-pause' : ' fa-play'}" aria-hidden="true"></i>
+                    <span class="action-button-label" data-role="label"
+                          th:text="${currentMode == 'idle'} ? #{idle} : #{automatic}">Automatic</span>
+                    <span class="action-button-note" th:text="#{modeButtonNote}">Switch between automatic and idle.</span>
+                </button>
+
+                <button class="on-off-btn action-button" id="chargingBtn" type="button"
+                        th:classappend="${isCharging ? ' on' : ' off'}"
+                        onclick="debouncedToggleCharging()"
+                        data-ui-action="true"
+                        data-bs-toggle="tooltip"
+                        data-bs-html="true"
+                        th:attr="data-bs-title=${gridChargingTooltip},aria-pressed=${isCharging}">
+                    <span class="status-indicator" th:classappend="${isCharging ? ' active' : ' inactive'}"></span>
+                    <i class="fas" th:classappend="${isCharging ? ' fa-stop' : ' fa-bolt'}" aria-hidden="true"></i>
+                    <span class="action-button-label" data-role="label"
+                          th:text="${isCharging} ? #{charging} : #{stopped}">Stopped</span>
+                    <span class="action-button-note" th:text="#{chargingButtonNote}">Start or stop grid charging.</span>
+                </button>
+            </div>
+        </section>
+
+        <section class="panel settings-panel" aria-labelledby="settingsPanelTitle">
+            <div class="panel-header">
+                <div>
+                    <p class="eyebrow" th:text="#{settingsKicker}">Options</p>
+                    <h2 class="panel-title" id="settingsPanelTitle" th:text="#{settingsTitle}">Settings</h2>
+                </div>
+                <p class="panel-subtitle" th:text="#{settingsPanelText}">
+                    Night Idle and prices in one compact area.
+                </p>
+            </div>
+
+            <div class="settings-stack">
+                <article class="settings-card">
+                    <div class="settings-card-head">
+                        <div>
+                            <p class="eyebrow" th:text="#{nightWindowKicker}">Night window</p>
+                            <h3 class="settings-card-title" th:text="#{nightIdle}">Night Idle</h3>
+                            <p class="settings-card-text" th:text="#{quietHoursText}">
+                                Time window for Night Idle.
+                            </p>
+                        </div>
+                        <button class="on-off-btn setting-toggle" id="nightChargingBtn" type="button"
+                                th:classappend="${nightIdleActive ? ' on' : ' off'}"
+                                onclick="debouncedToggleNightCharging()"
+                                data-ui-action="true"
+                                data-bs-toggle="tooltip"
+                                data-bs-html="true"
+                                th:attr="data-bs-title=#{nightIdleTooltip},aria-pressed=${nightIdleActive}">
+                            <span class="status-indicator"
+                                  th:classappend="${nightIdleActive ? ' active' : (nightChargingIdle ? ' enabled' : ' inactive')}"></span>
+                            <i class="fas fa-moon" aria-hidden="true"></i>
+                            <span data-role="label" th:text="#{nightIdle}">Night Idle</span>
+                        </button>
+                    </div>
+                    <div class="night-window-body">
+                        <div class="night-input">
+                            <label for="nightStartInput" th:text="#{nightWindowStartLabel}">Start</label>
+                            <input type="number" id="nightStartInput" min="0" max="23" step="1" inputmode="numeric"
+                                   th:value="${nightStartHour}">
+                        </div>
+                        <div class="night-input">
+                            <label for="nightEndInput" th:text="#{nightWindowEndLabel}">End</label>
+                            <input type="number" id="nightEndInput" min="0" max="23" step="1" inputmode="numeric"
+                                   th:value="${nightEndHour}">
+                        </div>
+                    </div>
+                    <div class="settings-actions">
+                        <button class="cool-btn secondary-btn night-window-save" id="saveNightWindowBtn" type="button" data-ui-action="true">
+                            <i class="fas fa-save" aria-hidden="true"></i>
+                            <span th:text="#{nightWindowSave}">Save</span>
+                        </button>
+                    </div>
+                    <div class="night-window-status" id="nightWindowStatus" aria-live="polite">
+                        <span th:text="#{nightWindowStatusDefault}">Values are saved when enabling Night Idle.</span>
+                    </div>
+                </article>
+
+                <article class="settings-card">
+                    <div class="settings-card-head">
+                        <div>
+                            <p class="eyebrow" th:text="#{priceDisplayKicker}">Price</p>
+                            <h3 class="settings-card-title" th:text="#{priceDisplayTitle}">Price view</h3>
+                            <p class="settings-card-text" th:text="#{priceDisplayText}">
+                                Price basis for cards, tables and charts.
+                            </p>
+                        </div>
+                    </div>
+                    <div class="price-mode-panel">
+                        <div class="price-mode-toggle">
+                            <span th:text="#{priceModeNettoLabel}">Market</span>
+                            <label class="theme-switch" for="priceModeToggle">
+                                <input class="form-check-input" type="checkbox" id="priceModeToggle">
+                                <span class="theme-switch-track" aria-hidden="true"></span>
+                            </label>
+                            <span th:text="#{priceModeBruttoLabel}">Total</span>
+                        </div>
+                    </div>
+                </article>
+            </div>
+        </section>
+    </aside>
+</th:block>
+
+<th:block th:fragment="dataSection">
+    <section class="panel data-section" aria-labelledby="dataSectionTitle">
+            <div class="panel-header">
+                <div>
+                    <p class="eyebrow" th:text="#{dataSectionKicker}">Price data</p>
+                    <h2 class="panel-title" id="dataSectionTitle" th:text="#{dataSectionTitle}">Prices &amp; schedules</h2>
+                </div>
+                <p class="panel-subtitle" th:text="#{dataSectionText}">
+                    Compare price history, cheap periods and charging plans.
+                </p>
+            </div>
+
+        <div class="tabs-toolbar">
+            <label class="visually-hidden" for="dataTabSelect" th:text="#{dataSectionTitle}">Price and schedule data</label>
+            <select class="tab-select" id="dataTabSelect" onchange="showTab(this.value)">
+                <option value="scheduled-charging-periods" th:text="#{scheduledChargingPeriods}" selected>Scheduled Charging Periods</option>
+                <option value="cheapest-periods" th:text="#{cheapestPeriods}">Cheapest Periods</option>
+                <option value="market-prices" th:text="#{marketPrices}">Market Prices</option>
+            </select>
+
+            <ul class="nav nav-tabs" id="priceTabs" role="tablist">
+                <li class="nav-item">
+                    <button class="nav-link" id="cheapest-periods-tab" data-bs-toggle="tab"
+                            data-bs-target="#cheapest-periods" type="button"
+                            role="tab" aria-controls="cheapest-periods" th:text="#{cheapestPeriods}">
+                        Cheapest Periods
+                    </button>
+                </li>
+                <li class="nav-item">
+                    <button class="nav-link" id="market-prices-tab" data-bs-toggle="tab" data-bs-target="#market-prices"
+                            type="button" role="tab" aria-controls="market-prices" th:text="#{marketPrices}">
+                        Market Prices
+                    </button>
+                </li>
+                <li class="nav-item">
+                    <button class="nav-link active" id="scheduled-charging-periods-tab" data-bs-toggle="tab"
+                            data-bs-target="#scheduled-charging-periods"
+                            type="button" role="tab" aria-controls="scheduled-charging-periods"
+                            th:text="#{scheduledChargingPeriods}">
+                        Scheduled Charging Periods
+                    </button>
+                </li>
+            </ul>
+        </div>
+
+        <div class="tab-content" id="priceTabsContent">
+            <div class="tab-pane fade" id="cheapest-periods" role="tabpanel" aria-labelledby="cheapest-periods-tab">
+                <div class="data-panel">
+                    <div class="data-panel-toolbar">
+                        <button class="cool-btn secondary-btn view-toggle-btn" id="toggleCheapestPeriods" type="button">
+                            <i class="fas fa-chart-column" aria-hidden="true"></i>
+                            <span th:text="#{chart}">Chart</span>
+                        </button>
+                    </div>
+                    <div id="cheapestPeriodsTable" class="table-responsive">
+                        <table class="table table-hover">
+                            <caption class="visually-hidden" th:text="#{cheapestPeriods}">Cheapest Periods</caption>
+                            <thead>
+                            <tr>
+                                <th scope="col" th:text="#{startTime}">Start Time</th>
+                                <th scope="col" th:text="#{endTime}">End Time</th>
+                                <th scope="col" th:text="#{price}">Price</th>
+                            </tr>
+                            </thead>
+                            <tbody id="cheapestPeriodsTbody">
+                            <tr th:each="period : ${cheapestPeriods}"
+                                th:with="formattedPrice=${#numbers.formatDecimal(period.marketPrice, 1, 2)}"
+                                th:classappend="${period.startTimestamp <= currentTime && period.endTimestamp >= currentTime} ? 'highlight' : ''">
+                                <td th:text="${#dates.format(period.startTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</td>
+                                <td th:text="${#dates.format(period.endTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</td>
+                                <td th:text="${formattedPrice}">N/A</td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="chart-container" id="cheapestPeriodsChartContainer">
+                        <canvas id="cheapestPeriodsChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="market-prices" role="tabpanel" aria-labelledby="market-prices-tab">
+                <div class="data-panel">
+                    <div class="data-panel-toolbar">
+                        <button class="cool-btn secondary-btn view-toggle-btn" id="toggleMarketPrices" type="button">
+                            <i class="fas fa-chart-line" aria-hidden="true"></i>
+                            <span th:text="#{chart}">Chart</span>
+                        </button>
+                    </div>
+                    <div id="marketPricesTable" class="table-responsive">
+                        <table class="table table-hover">
+                            <caption class="visually-hidden" th:text="#{marketPrices}">Market Prices</caption>
+                            <thead>
+                            <tr>
+                                <th scope="col" th:text="#{startTime}">Start Time</th>
+                                <th scope="col" th:text="#{endTime}">End Time</th>
+                                <th scope="col" th:text="#{price}">Price</th>
+                            </tr>
+                            </thead>
+                            <tbody id="marketPricesTbody">
+                            <tr th:each="period : ${marketPrices}"
+                                th:with="formattedPrice=${#numbers.formatDecimal(period.marketPrice, 1, 2)}">
+                                <td th:text="${#dates.format(period.startTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</td>
+                                <td th:text="${#dates.format(period.endTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</td>
+                                <td th:text="${formattedPrice}">N/A</td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="chart-container" id="marketPricesChartContainer">
+                        <canvas id="marketPricesChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane fade show active" id="scheduled-charging-periods" role="tabpanel"
+                 aria-labelledby="scheduled-charging-periods-tab">
+                <div class="data-panel">
+                    <div class="data-panel-toolbar">
+                        <button class="cool-btn secondary-btn view-toggle-btn" id="toggleChargingSchedule" type="button">
+                            <i class="fas fa-chart-column" aria-hidden="true"></i>
+                            <span th:text="#{chart}">Chart</span>
+                        </button>
+                    </div>
+                    <div id="chargingScheduleTable" class="table-responsive">
+                        <table class="table table-hover">
+                            <caption class="visually-hidden" th:text="#{scheduledChargingPeriods}">Scheduled Charging Periods</caption>
+                            <thead>
+                            <tr>
+                                <th scope="col" th:text="#{startTime}">Start Time</th>
+                                <th scope="col" th:text="#{endTime}">End Time</th>
+                                <th scope="col" th:text="#{price}">Price</th>
+                            </tr>
+                            </thead>
+                            <tbody id="chargingScheduleTbody">
+                            <tr th:each="schedule : ${scheduledChargingPeriods}"
+                                th:with="formattedPrice=${#numbers.formatDecimal(schedule.price, 1, 2)}">
+                                <td th:text="${#dates.format(schedule.startTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</td>
+                                <td th:text="${#dates.format(schedule.endTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</td>
+                                <td th:text="${formattedPrice}">N/A</td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="chart-container" id="chargingScheduleChartContainer">
+                        <canvas id="chargingScheduleChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+</th:block>
+
+<th:block th:fragment="hero">
+    <section class="hero panel" aria-labelledby="heroTitle">
+        <div class="hero-copy">
+            <p class="eyebrow" th:text="#{liveState}">Live state</p>
+            <h2 id="heroTitle" th:text="#{dashboardTitle}">Status and charging control</h2>
+            <p class="panel-subtitle" th:text="#{pageSubtitle}">
+                Status, controls and market data at a glance.
+            </p>
+        </div>
+        <div class="hero-meta" th:unless="${batteryNotConfigured}">
+            <span class="status-pill"
+                  th:classappend="${currentMode == 'idle'} ? ' pill-warning' : ' pill-primary'">
+                <i class="fas" th:classappend="${currentMode == 'idle'} ? ' fa-pause' : ' fa-play'"></i>
+                <span th:text="${currentMode == 'idle'} ? #{idle} : #{automatic}">Automatic</span>
+            </span>
+            <span class="status-pill"
+                  th:classappend="${nightIdleActive} ? ' pill-success' : (${nightChargingIdle} ? ' pill-info' : ' pill-muted')">
+                <i class="fas fa-moon"></i>
+                <span th:text="${nightIdleActive} ? #{on} : (${nightChargingIdle} ? #{automatic} : #{off})">On</span>
+            </span>
+            <span class="status-pill"
+                  th:classappend="${isCharging} ? ' pill-success' : ' pill-muted'">
+                <i class="fas" th:classappend="${isCharging} ? ' fa-bolt' : ' fa-stop'"></i>
+                <span th:text="${isCharging} ? #{charging} : #{stopped}">Stopped</span>
+            </span>
+        </div>
+    </section>
+</th:block>
+
+<th:block th:fragment="batterySummary">
+    <section class="panel summary-panel" aria-labelledby="summarySectionTitle">
+        <div class="panel-header">
+            <div>
+                <p class="eyebrow" th:text="#{summarySectionKicker}">System overview</p>
+                <h2 class="panel-title" id="summarySectionTitle" th:text="#{currentBatteryStatus}">Current Battery Status</h2>
+            </div>
+            <p class="panel-subtitle" th:text="#{summarySectionText}">
+                Key values at a glance.
+            </p>
+        </div>
+
+        <div class="summary-grid summary-grid-primary">
+            <article class="status-card" data-bs-toggle="tooltip" data-bs-html="true"
+                     th:attr="data-bs-title=${capacityTooltip}">
+                <div class="status-card-icon" aria-hidden="true">
+                    <i class="fas fa-battery-full fa-3x" th:classappend="${batteryCapacity.stateOfChargePercent >= 80} ? '' : ' d-none'"></i>
+                    <i class="fas fa-battery-half fa-3x" th:classappend="${batteryCapacity.stateOfChargePercent < 80 && batteryCapacity.stateOfChargePercent > 20} ? '' : ' d-none'"></i>
+                    <i class="fas fa-battery-empty fa-3x" th:classappend="${batteryCapacity.stateOfChargePercent <= 20} ? '' : ' d-none'"></i>
+                </div>
+                <p class="status-card-label" th:text="#{capacity}">Capacity</p>
+                <p class="status-card-value"><span id="capacityPercentValue" th:text="${batteryCapacity.stateOfChargePercent}">0</span><small>%</small></p>
+                <p class="status-card-support"><span id="capacityRemainingWhValue" th:text="${batteryCapacity.remainingCapacityWh}">0</span><span>Wh</span></p>
+            </article>
+
+            <article class="status-card">
+                <div class="status-card-icon" aria-hidden="true">
+                    <i class="fas fa-3x" th:classappend="${batteryStatus.batteryCharging ? 'fa-charging fa-plug' : batteryStatus.batteryDischarging ? 'fa-discharging fa-bolt' : 'fa-idle fa-pause'}"></i>
+                </div>
+                <p class="status-card-label" th:text="#{chargingDischarging}">Activity</p>
+                <p class="status-card-value">
+                    <span th:text="${batteryStatus.batteryCharging ? chargingText : batteryStatus.batteryDischarging ? dischargingText : idleText}">Idle</span>
+                </p>
+                <p class="status-card-support"><span th:text="${batteryStatus.pacTotalW}">0</span><span th:text="#{watts}">W</span></p>
+            </article>
+
+            <article class="status-card">
+                <div class="status-card-icon status-card-icon-accent" aria-hidden="true">
+                    <i class="fas fa-3x" th:classappend="${lastSetpointW == 0} ? 'fa-play' : 'fa-sliders-h'"></i>
+                </div>
+                <p class="status-card-label" th:text="#{controlMode}">Control</p>
+                <p class="status-card-value">
+                    <span th:if="${lastSetpointW == 0}" th:text="#{automatic}">Automatic</span>
+                    <span th:if="${lastSetpointW != 0}" th:text="#{manual}">Manual</span>
+                </p>
+                <p class="status-card-support"><span th:text="${lastSetpointW}">0</span><span th:text="#{watts}">W</span></p>
+            </article>
+        </div>
+
+        <div class="summary-grid summary-grid-metrics">
+            <article class="metric-card">
+                <p class="metric-card-label" th:text="#{currentPriceLabel}">Current Price</p>
+                <p class="metric-card-value">
+                    <span id="currentPriceValue"
+                          th:text="${currentPrice != null ? #numbers.formatDecimal(currentPrice, 1, 2) : 'N/A'}">N/A</span>
+                    <small id="currentPriceUnit" th:style="${currentPrice != null ? '' : 'display:none;'}"
+                           th:text="#{centPerKwh}">cent/kWh</small>
+                </p>
+                <p class="metric-card-support" th:text="#{priceModeNettoLabel}">Market</p>
+            </article>
+
+            <article class="metric-card" data-bs-toggle="tooltip" data-bs-html="true"
+                     th:attr="data-bs-title=${dropRateTooltip}">
+                <p class="metric-card-label" th:text="#{dropRateLabel}">Drop Rate</p>
+                <p class="metric-card-value">
+                    <span id="dropRateValue"
+                          th:text="${dropRate != null ? #numbers.formatDecimal(dropRate, 1, 2) : 'N/A'}">N/A</span>
+                    <small id="dropRateUnit" th:style="${dropRate != null ? '' : 'display:none;'}">%/h</small>
+                </p>
+                <p class="metric-card-support" th:text="#{dropRateSupport}">Only while discharging</p>
+            </article>
+
+            <article class="metric-card" data-bs-toggle="tooltip" data-bs-html="true"
+                     th:attr="data-bs-title=${estimatedTimeToTargetTooltip}">
+                <p class="metric-card-label" th:text="#{estimatedTimeToTargetLabel}">Estimated Time to Target</p>
+                <p class="metric-card-value">
+                    <span id="estimatedTimeToTargetValue"
+                          th:text="${estimatedTimeToTarget != null ? #numbers.formatDecimal(estimatedTimeToTarget, 1, 2) : 'N/A'}">N/A</span>
+                    <small id="estimatedTimeToTargetUnit"
+                           th:style="${estimatedTimeToTarget != null ? '' : 'display:none;'}">h</small>
+                </p>
+                <p class="metric-card-support">
+                    <span th:if="${activeSeasonLabel != null}" th:text="${activeSeasonLabel}">Winterbetrieb</span>
+                    <span th:unless="${activeSeasonLabel != null}" th:text="#{targetStateOfChargeLabel}">Target state of charge</span>
+                    <span th:text="${targetStateOfCharge} + '%'">95%</span>
+                </p>
+            </article>
+        </div>
+
+        <article class="market-highlight" th:if="${cheapestPrice != null}" aria-labelledby="lowestPriceTitle">
+            <div class="market-highlight-head">
+                <div>
+                    <p class="eyebrow" th:text="#{marketHighlightKicker}">Market opportunity</p>
+                    <h3 id="lowestPriceTitle" class="panel-title" th:text="#{lowestMarketPrice}">Lowest Market Price</h3>
+                </div>
+                <div class="market-highlight-price">
+                    <span id="cheapestPriceValue" th:text="${#numbers.formatDecimal(cheapestPrice.marketPrice, 1, 2)}">0.00</span>
+                    <small id="cheapestPriceUnit" th:text="#{centPerKwh}">cent/kWh</small>
+                </div>
+            </div>
+            <div class="market-highlight-grid">
+                <div class="market-highlight-item">
+                    <span class="market-highlight-label" th:text="#{startTime}">Start Time</span>
+                    <strong id="cheapestStartTime" th:text="${#dates.format(cheapestPrice.startTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</strong>
+                </div>
+                <div class="market-highlight-item">
+                    <span class="market-highlight-label" th:text="#{endTime}">End Time</span>
+                    <strong id="cheapestEndTime" th:text="${#dates.format(cheapestPrice.endTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</strong>
+                </div>
+            </div>
+        </article>
+    </section>
+</th:block>
+
+<th:block th:fragment="confirmationModal">
+    <div class="modal fade" id="confirmationModal" tabindex="-1" aria-labelledby="confirmationModalLabel"
+         aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="confirmationModalLabel" th:text="#{confirm_start_charging_title}">Start Charging?</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" th:text="#{confirm_start_charging_message}"></div>
+                <div class="modal-footer">
+                    <button type="button" class="cool-btn secondary-btn modal-action" id="cancelStart"
+                            th:text="#{confirm_start_charging_cancel}" onclick="hideLoader();">Cancel</button>
+                    <button type="button" class="cool-btn modal-action" id="confirmStart"
+                            th:text="#{confirm_start_charging_confirm}">OK</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</th:block>
+
+<th:block th:fragment="loaderOverlay">
+    <div id="loaderOverlay" aria-live="polite" aria-busy="true">
+        <div class="loader-card">
+            <div class="loader" role="status" aria-label="Loading"></div>
+            <p id="loaderText" th:text="#{processing}">Processing...</p>
+        </div>
+    </div>
+</th:block>
+</body>
+</html>

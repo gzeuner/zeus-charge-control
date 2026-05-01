@@ -29,6 +29,7 @@ class ChargingManagementServiceTest {
     private TaskScheduler taskScheduler;
     private BatteryManagementService bms;
     private ChargingUtils utils;
+    private SeasonalTargetStateOfChargeService seasonalTargetStateOfChargeService;
 
     @BeforeEach
     void setUp() {
@@ -36,6 +37,8 @@ class ChargingManagementServiceTest {
         taskScheduler = mock(TaskScheduler.class);
         bms = mock(BatteryManagementService.class);
         utils = mock(ChargingUtils.class);
+        seasonalTargetStateOfChargeService = mock(SeasonalTargetStateOfChargeService.class);
+        when(seasonalTargetStateOfChargeService.getCurrentTargetStateOfCharge()).thenReturn(90);
 
         service = new ChargingManagementService();
         inject(service, "chargingScheduleRepository", scheduleRepo);
@@ -44,6 +47,7 @@ class ChargingManagementServiceTest {
         inject(service, "taskScheduler", taskScheduler);
         inject(service, "chargingUtils", utils);
         inject(service, "weatherForecastService", null);
+        inject(service, "seasonalTargetStateOfChargeService", seasonalTargetStateOfChargeService);
     }
 
     @Test

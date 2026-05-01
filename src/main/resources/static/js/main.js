@@ -1,104 +1,260 @@
-// Global variables
-
-// ===== Luna: 'Last-click-wins' - UI state helpers =====
 const LAST_ACTION_KEY = 'tt_last_action_ts';
-const LAST_MODE_KEY   = 'tt_last_mode'; // 'idle' | 'standard' | 'forced' | 'nightIdle'
-
-// ===== Price mode toggle =====
+const LAST_MODE_KEY = 'tt_last_mode';
 const PRICE_MODE_KEY = 'priceMode';
 const PRICE_MODE_NETTO = 'NETTO';
 const PRICE_MODE_BRUTTO = 'BRUTTO';
-let priceMode = PRICE_MODE_NETTO;
+const THEME_KEY = 'chargeControlTheme';
+const UI_STATE_KEY = 'chargeControlUiState';
+const USER_ACTION_SUPPRESS_MS = 5000;
+const DEFAULT_DATA_TAB = 'scheduled-charging-periods';
+const VALID_DATA_TABS = ['scheduled-charging-periods', 'cheapest-periods', 'market-prices'];
 
-function nowMs() { return Date.now(); }
+const translations = window.AppData?.translations || {};
+const cheapestPeriods = window.AppData?.cheapestPeriods || [];
+const marketPrices = window.AppData?.marketPrices || [];
+const scheduledChargingPeriods = window.AppData?.scheduledChargingPeriods || [];
+
+let priceMode = PRICE_MODE_NETTO;
+let nightIdleEnabled = window.AppData?.nightChargingIdle ?? false;
+let nightIdleActive = window.AppData?.nightIdleActive ?? false;
+let nightStartHour = window.AppData?.nightStartHour ?? 22;
+let nightEndHour = window.AppData?.nightEndHour ?? 6;
+let lastStatusData = null;
+
+const createdCharts = {};
+
+function nowMs() {
+  return Date.now();
+}
 
 function setLastAction(mode) {
   try {
     localStorage.setItem(LAST_ACTION_KEY, String(nowMs()));
     if (mode) localStorage.setItem(LAST_MODE_KEY, mode);
-  } catch(e) { /* ignore */ }
+  } catch (error) {
+    console.debug('Could not persist last action', error);
+  }
 }
 
 function getLastActionAgeMs() {
   try {
-    const ts = Number(localStorage.getItem(LAST_ACTION_KEY) || '0');
-    return ts > 0 ? (nowMs() - ts) : Number.POSITIVE_INFINITY;
-  } catch(e) { return Number.POSITIVE_INFINITY; }
-}
-
-// For a brief window after a user click, don't let polling flip the UI back.
-const USER_ACTION_SUPPRESS_MS = 5000;
-
-// Force UI exclusivity: when one mode is selected, reset others accordingly
-function setExclusiveModeUI(mode) {
-  // mode: 'idle' | 'standard' | 'forced' | 'nightIdle'
-  const modeBtn = document.getElementById('modeBtn');
-  const chargingBtn = document.getElementById('chargingBtn');
-  const nightBtn = document.getElementById('nightChargingBtn');
-
-  if (mode === 'idle') {
-    // Idle ON => charging OFF
-    if (chargingBtn && chargingBtn.classList.contains('on')) {
-      safeUpdateButtonState('chargingBtn', false, 'fa-stop', 'fa-bolt', translations.charging, translations.stopped);
-    }
-    if (modeBtn && !modeBtn.classList.contains('on')) {
-      safeUpdateButtonState('modeBtn', true, 'fa-pause', 'fa-play', translations.idle, translations.automatic);
-    }
-  } else if (mode === 'forced') {
-    // Forced charging ON => Idle OFF
-    if (modeBtn && modeBtn.classList.contains('on')) {
-      safeUpdateButtonState('modeBtn', false, 'fa-pause', 'fa-play', translations.idle, translations.automatic);
-    }
-    if (chargingBtn && !chargingBtn.classList.contains('on')) {
-      safeUpdateButtonState('chargingBtn', true, 'fa-stop', 'fa-bolt', translations.charging, translations.stopped);
-    }
-  } else if (mode === 'standard') {
-    // Standard => both idle & forced OFF
-    if (modeBtn && modeBtn.classList.contains('on')) {
-      safeUpdateButtonState('modeBtn', false, 'fa-pause', 'fa-play', translations.idle, translations.automatic);
-    }
-    if (chargingBtn && chargingBtn.classList.contains('on')) {
-      safeUpdateButtonState('chargingBtn', false, 'fa-stop', 'fa-bolt', translations.charging, translations.stopped);
-    }
+    const timestamp = Number(localStorage.getItem(LAST_ACTION_KEY) || '0');
+    return timestamp > 0 ? nowMs() - timestamp : Number.POSITIVE_INFINITY;
+  } catch (error) {
+    return Number.POSITIVE_INFINITY;
   }
 }
 
-// When polling, only update UI if no recent user action to prevent flicker.
 function safeUpdateButtonState(id, isOn, activeIcon, inactiveIcon, activeText, inactiveText) {
   if (getLastActionAgeMs() < USER_ACTION_SUPPRESS_MS) return;
   updateButtonState(id, isOn, activeIcon, inactiveIcon, activeText, inactiveText);
 }
 
-const translations = window.AppData.translations || {};
-const cheapestPeriods = window.AppData.cheapestPeriods || [];
-const marketPrices = window.AppData.marketPrices || [];
-const scheduledChargingPeriods = window.AppData.scheduledChargingPeriods || [];
-const appCurrentTime = window.AppData.currentTime || Date.now();
-let nightIdleEnabled = window.AppData.nightChargingIdle ?? false;
-let nightIdleActive = window.AppData.nightIdleActive ?? false;
-let nightStartHour = window.AppData.nightStartHour ?? 22;
-let nightEndHour = window.AppData.nightEndHour ?? 6;
-const createdCharts = {};
-let lastStatusData = null;
-
 function normalizeNumber(value) {
-  const num = Number(value);
-  return Number.isFinite(num) ? num : null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function getStoredPriceMode() {
   try {
     const stored = (localStorage.getItem(PRICE_MODE_KEY) || '').toUpperCase();
     return stored === PRICE_MODE_BRUTTO ? PRICE_MODE_BRUTTO : PRICE_MODE_NETTO;
-  } catch (e) {
+  } catch (error) {
     return PRICE_MODE_NETTO;
   }
+}
+
+function getStoredTheme() {
+  try {
+    const stored = localStorage.getItem(THEME_KEY);
+    return ['default', 'dark', 'energy', 'solar', 'ember'].includes(stored) ? stored : 'default';
+  } catch (error) {
+    return 'default';
+  }
+}
+
+function getStoredUiState() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(UI_STATE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function setStoredUiState(nextState) {
+  try {
+    localStorage.setItem(UI_STATE_KEY, JSON.stringify(nextState));
+  } catch (error) {
+    console.debug('Could not persist UI state', error);
+  }
+}
+
+function getStoredActiveTab() {
+  const storedTab = getStoredUiState().activeTab;
+  return VALID_DATA_TABS.includes(storedTab) ? storedTab : DEFAULT_DATA_TAB;
+}
+
+function persistActiveTab(tabId) {
+  if (!VALID_DATA_TABS.includes(tabId)) return;
+  const currentState = getStoredUiState();
+  const nextState = {
+    ...currentState,
+    activeTab: tabId,
+    viewModes: currentState.viewModes && typeof currentState.viewModes === 'object'
+      ? currentState.viewModes
+      : {}
+  };
+  setStoredUiState(nextState);
+}
+
+function getStoredViewMode(viewKey) {
+  const viewModes = getStoredUiState().viewModes;
+  const storedMode = viewModes && typeof viewModes === 'object' ? viewModes[viewKey] : null;
+  return storedMode === 'chart' ? 'chart' : 'table';
+}
+
+function persistViewMode(viewKey, mode) {
+  if (!viewKey) return;
+  const resolvedMode = mode === 'chart' ? 'chart' : 'table';
+  const currentState = getStoredUiState();
+  const currentViewModes = currentState.viewModes && typeof currentState.viewModes === 'object'
+    ? currentState.viewModes
+    : {};
+  const nextState = {
+    ...currentState,
+    viewModes: {
+      ...currentViewModes,
+      [viewKey]: resolvedMode
+    }
+  };
+  setStoredUiState(nextState);
+}
+
+function applyTheme(theme, persist = true) {
+  const resolvedTheme = ['default', 'dark', 'energy', 'solar', 'ember'].includes(theme) ? theme : 'default';
+  document.documentElement.setAttribute('data-theme', resolvedTheme);
+  if (persist) {
+    try {
+      localStorage.setItem(THEME_KEY, resolvedTheme);
+    } catch (error) {
+      console.debug('Could not persist theme', error);
+    }
+  }
+
+  const selector = document.getElementById('themeSelector');
+  if (selector) selector.value = resolvedTheme;
+  syncThemeDropdownUI(resolvedTheme);
+  refreshChartsForTheme();
+}
+
+function syncThemeDropdownUI(theme) {
+  const selector = document.getElementById('themeSelector');
+  const label = document.getElementById('themeDropdownLabel');
+
+  if (selector) {
+    selector.value = theme;
+    const selectedOption = selector.options[selector.selectedIndex];
+    if (label) label.textContent = selectedOption ? selectedOption.textContent.trim() : theme;
+  } else if (label) {
+    label.textContent = theme;
+  }
+
+  document.querySelectorAll('[data-theme-option]').forEach(button => {
+    const isActive = button.getAttribute('data-theme-option') === theme;
+    button.classList.toggle('active', isActive);
+    button.setAttribute('aria-pressed', String(isActive));
+  });
+}
+
+function getCssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function getChartPalette(type) {
+  return {
+    backgroundColor: type === 'line' ? getCssVar('--chart-fill') : getCssVar('--chart-fill'),
+    borderColor: getCssVar('--chart-line'),
+    tickColor: getCssVar('--chart-text'),
+    gridColor: getCssVar('--chart-grid')
+  };
+}
+
+function buildChartOptions() {
+  const palette = getChartPalette('line');
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        labels: {
+          color: palette.tickColor
+        }
+      },
+      tooltip: {
+        backgroundColor: getCssVar('--surface-strong'),
+        titleColor: getCssVar('--heading'),
+        bodyColor: getCssVar('--text')
+      }
+    },
+    scales: {
+      x: {
+        type: 'time',
+        time: {
+          unit: 'hour',
+          tooltipFormat: 'dd LLLL HH:mm',
+          displayFormats: { hour: 'dd LLLL HH:mm' }
+        },
+        title: {
+          display: true,
+          text: translations.startTime || 'Start Time',
+          color: palette.tickColor
+        },
+        ticks: { color: palette.tickColor },
+        grid: { color: palette.gridColor }
+      },
+      y: {
+        beginAtZero: true,
+        title: {
+          display: true,
+          text: getYAxisTitle(),
+          color: palette.tickColor
+        },
+        ticks: { color: palette.tickColor },
+        grid: { color: palette.gridColor }
+      }
+    }
+  };
+}
+
+function refreshChartsForTheme() {
+  Object.values(createdCharts).forEach(chart => {
+    const palette = getChartPalette(chart.config.type);
+    chart.data.datasets[0].backgroundColor = palette.backgroundColor;
+    chart.data.datasets[0].borderColor = palette.borderColor;
+    chart.options.plugins.legend.labels.color = palette.tickColor;
+    chart.options.plugins.tooltip.backgroundColor = getCssVar('--surface-strong');
+    chart.options.plugins.tooltip.titleColor = getCssVar('--heading');
+    chart.options.plugins.tooltip.bodyColor = getCssVar('--text');
+    chart.options.scales.x.title.color = palette.tickColor;
+    chart.options.scales.x.ticks.color = palette.tickColor;
+    chart.options.scales.x.grid.color = palette.gridColor;
+    chart.options.scales.y.title.color = palette.tickColor;
+    chart.options.scales.y.title.text = getYAxisTitle();
+    chart.options.scales.y.ticks.color = palette.tickColor;
+    chart.options.scales.y.grid.color = palette.gridColor;
+    chart.update();
+  });
 }
 
 function setPriceMode(mode, persist = true) {
   priceMode = mode === PRICE_MODE_BRUTTO ? PRICE_MODE_BRUTTO : PRICE_MODE_NETTO;
   if (persist) {
-    try { localStorage.setItem(PRICE_MODE_KEY, priceMode); } catch (e) { /* ignore */ }
+    try {
+      localStorage.setItem(PRICE_MODE_KEY, priceMode);
+    } catch (error) {
+      console.debug('Could not persist price mode', error);
+    }
   }
   const toggle = document.getElementById('priceModeToggle');
   if (toggle) toggle.checked = priceMode === PRICE_MODE_BRUTTO;
@@ -110,10 +266,9 @@ function getDisplayedPrice(item) {
   const brutto = normalizeNumber(item.displayPriceBruttoCt);
   const netto = normalizeNumber(item.displayPriceNettoCt);
   const fallback = normalizeNumber(item.marketPrice ?? item.price);
-  if (priceMode === PRICE_MODE_BRUTTO) {
-    return brutto ?? fallback ?? netto;
-  }
-  return netto ?? fallback ?? brutto;
+  return priceMode === PRICE_MODE_BRUTTO
+    ? (brutto ?? fallback ?? netto)
+    : (netto ?? fallback ?? brutto);
 }
 
 function formatPrice(value) {
@@ -124,22 +279,24 @@ function formatDateTime(timestamp) {
   if (!timestamp) return 'N/A';
   try {
     if (window.luxon?.DateTime) {
-      const dt = luxon.DateTime.fromMillis(timestamp);
-      return dt.isValid ? dt.toFormat('dd.MM.yyyy HH:mm:ss') : 'N/A';
+      const dateTime = luxon.DateTime.fromMillis(timestamp);
+      return dateTime.isValid ? dateTime.toFormat('dd.MM.yyyy HH:mm:ss') : 'N/A';
     }
-  } catch (e) { /* ignore */ }
+  } catch (error) {
+    console.debug('Could not format time via luxon', error);
+  }
   return new Date(timestamp).toLocaleString();
 }
 
 function getCheapestMarketPrice() {
   let cheapest = null;
   let cheapestValue = null;
-  marketPrices.forEach(p => {
-    const val = normalizeNumber(p.marketPrice);
-    if (val == null) return;
-    if (cheapestValue == null || val < cheapestValue) {
-      cheapestValue = val;
-      cheapest = p;
+  marketPrices.forEach(item => {
+    const value = normalizeNumber(item.marketPrice);
+    if (value == null) return;
+    if (cheapestValue == null || value < cheapestValue) {
+      cheapestValue = value;
+      cheapest = item;
     }
   });
   return cheapest;
@@ -148,6 +305,7 @@ function getCheapestMarketPrice() {
 function renderCheapestPriceCard() {
   const cheapest = getCheapestMarketPrice();
   if (!cheapest) return;
+
   const startEl = document.getElementById('cheapestStartTime');
   const endEl = document.getElementById('cheapestEndTime');
   const priceEl = document.getElementById('cheapestPriceValue');
@@ -162,7 +320,8 @@ function renderCheapestPriceCard() {
 function renderTable(tbodyId, data, highlightCurrent = false) {
   const tbody = document.getElementById(tbodyId);
   if (!tbody) return;
-  const now = appCurrentTime || Date.now();
+
+  const now = Date.now();
   const rows = (data || []).map(item => {
     const highlight = highlightCurrent
       && item.startTimestamp != null
@@ -175,69 +334,60 @@ function renderTable(tbodyId, data, highlightCurrent = false) {
       <td>${formatPrice(getDisplayedPrice(item))}</td>
     </tr>`;
   }).join('');
+
   tbody.innerHTML = rows;
 }
 
 function getYAxisTitle() {
   const base = translations.price || 'Price';
   const modeLabel = priceMode === PRICE_MODE_BRUTTO
-    ? (translations.priceModeBruttoLabel || 'Total (gross)')
-    : (translations.priceModeNettoLabel || 'Market (net)');
+    ? (translations.priceModeBruttoLabel || 'Total')
+    : (translations.priceModeNettoLabel || 'Market');
   return `${base} - ${modeLabel}`;
 }
 
-// Create a chart once (idempotent)
-function createChartOnce(id, type, labels, data, options) {
-  if (createdCharts[id]) {
-    console.log(`Chart "${id}" wurde bereits erstellt`);
-    return createdCharts[id];
-  }
+function createChartOnce(id, type, labels, data) {
+  if (createdCharts[id]) return createdCharts[id];
 
   const canvas = document.getElementById(id);
-  if (!canvas) {
-    console.error(`Canvas mit ID "${id}" nicht gefunden`);
-    return;
-  }
+  if (!canvas) return null;
 
-  try {
-    const chart = new Chart(canvas.getContext('2d'), {
-      type,
-      data: {
-        labels,
-        datasets: [{
-          label: translations.centPerKwh || 'cent/kWh',
-          data,
-          backgroundColor: type === 'line' ? 'rgba(102, 217, 232, 0.2)' : 'rgba(102, 217, 232, 0.6)',
-          borderColor: '#66d9e8',
-          borderWidth: 1,
-          fill: type === 'line'
-        }]
-      },
-      options
-    });
-    createdCharts[id] = chart;
-    console.log(`Chart "${id}" erfolgreich erstellt mit ${labels.length} Datenpunkten`);
-    return chart;
-  } catch (error) {
-    console.error(`Fehler beim Erstellen des Charts "${id}":`, error);
-  }
+  const palette = getChartPalette(type);
+  const chart = new Chart(canvas.getContext('2d'), {
+    type,
+    data: {
+      labels,
+      datasets: [{
+        label: translations.centPerKwh || 'cent/kWh',
+        data,
+        backgroundColor: palette.backgroundColor,
+        borderColor: palette.borderColor,
+        borderWidth: 2,
+        fill: type === 'line',
+        tension: type === 'line' ? 0.25 : 0
+      }]
+    },
+    options: buildChartOptions()
+  });
+
+  createdCharts[id] = chart;
+  return chart;
 }
 
 function parseHourInput(inputEl, fallback) {
   if (!inputEl) return fallback;
-  const val = parseInt((inputEl.value || '').trim(), 10);
-  return Number.isFinite(val) && val >= 0 && val <= 23 ? val : fallback;
+  const value = parseInt((inputEl.value || '').trim(), 10);
+  return Number.isFinite(value) && value >= 0 && value <= 23 ? value : fallback;
 }
 
-function isHourValid(val) {
-  return Number.isFinite(val) && val >= 0 && val <= 23;
+function isHourValid(value) {
+  return Number.isFinite(value) && value >= 0 && value <= 23;
 }
 
 function updateNightWindowStatus(message, isError = false) {
   const statusEl = document.getElementById('nightWindowStatus');
   if (!statusEl) return;
   statusEl.textContent = message;
-  statusEl.classList.remove('text-muted');
   statusEl.classList.toggle('text-danger', isError);
   statusEl.classList.toggle('text-success', !isError);
 }
@@ -252,173 +402,57 @@ function getNightWindowFromInputs() {
 }
 
 function getValidatedNightWindow() {
-  const nightStartInput = document.getElementById('nightStartInput');
-  const nightEndInput = document.getElementById('nightEndInput');
-  const rawStart = parseInt((nightStartInput?.value || '').trim(), 10);
-  const rawEnd = parseInt((nightEndInput?.value || '').trim(), 10);
+  const startInput = document.getElementById('nightStartInput');
+  const endInput = document.getElementById('nightEndInput');
+  const rawStart = parseInt((startInput?.value || '').trim(), 10);
+  const rawEnd = parseInt((endInput?.value || '').trim(), 10);
+
   if (!isHourValid(rawStart) || !isHourValid(rawEnd)) {
     updateNightWindowStatus(translations.nightWindowInvalidHours || 'Please enter hours between 0 and 23.', true);
     return null;
   }
+
   return getNightWindowFromInputs();
 }
 
-// Document ready
-document.addEventListener("DOMContentLoaded", function () {
-  console.log("AppData geladen:", window.AppData);
-
-  priceMode = getStoredPriceMode();
-  const priceModeToggle = document.getElementById('priceModeToggle');
-  if (priceModeToggle) {
-    priceModeToggle.checked = priceMode === PRICE_MODE_BRUTTO;
-    priceModeToggle.addEventListener('change', () => {
-      setPriceMode(priceModeToggle.checked ? PRICE_MODE_BRUTTO : PRICE_MODE_NETTO);
-    });
+function updateToggleButton(button, chartVisible) {
+  if (!button) return;
+  const label = button.querySelector('span');
+  const icon = button.querySelector('i');
+  if (label) label.textContent = chartVisible ? (translations.table || 'Table') : (translations.chart || 'Chart');
+  if (icon) {
+    icon.classList.remove('fa-chart-column', 'fa-chart-line', 'fa-table');
+    icon.classList.add(chartVisible ? 'fa-table' : 'fa-chart-column');
   }
+}
 
-  // Initialize tooltips
-  const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-  tooltipTriggerList.forEach(el => new bootstrap.Tooltip(el));
+function applyToggleViewState(button, table, chartContainer, chartId, chartType, dataSet, showChart) {
+  table.style.display = showChart ? 'none' : 'block';
+  chartContainer.style.display = showChart ? 'block' : 'none';
+  updateToggleButton(button, showChart);
 
-  // Chart options
-  const chartOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-      tooltip: {
-        backgroundColor: 'rgba(102, 217, 232, 0.8)',
-        titleColor: '#fff',
-        bodyColor: '#fff'
-      },
-      legend: {
-        labels: { color: '#f0f0f0' }
-      }
-    },
-    scales: {
-      x: {
-        type: 'time',
-        time: {
-          unit: 'hour',
-          tooltipFormat: 'dd LLLL HH:mm',
-          displayFormats: { hour: 'dd LLLL HH:mm' }
-        },
-        title: { display: true, text: translations.startTime || 'Start Time', color: '#f0f0f0' },
-        ticks: { color: '#f0f0f0' },
-        grid: { color: 'rgba(255, 255, 255, 0.1)' }
-      },
-      y: {
-        beginAtZero: true,
-        title: { display: true, text: getYAxisTitle(), color: '#f0f0f0' },
-        ticks: { color: '#f0f0f0' },
-        grid: { color: 'rgba(255, 255, 255, 0.1)' }
-      }
-    }
-  };
-
-  // Toggle between table and chart
-  function toggleView(buttonId, tableId, chartContainerId, chartId, chartType, dataSet) {
-    const button = document.getElementById(buttonId);
-    const table = document.getElementById(tableId);
-    const chartContainer = document.getElementById(chartContainerId);
-    const textSpan = button?.querySelector('span');
-
-    if (!button || !table || !chartContainer) {
-      console.error(`Elemente fehlen: button=${buttonId}, table=${tableId}, chart=${chartContainerId}`);
-      return;
-    }
-
-    // Initial visibility: table visible, chart hidden
-    table.style.display = 'block';
-    chartContainer.style.display = 'none';
-
-    button.addEventListener('click', () => {
-      const showChart = chartContainer.style.display === 'none';
-
-      table.style.display = showChart ? 'none' : 'block';
-      chartContainer.style.display = showChart ? 'block' : 'none';
-
-      if (textSpan) {
-        textSpan.textContent = showChart ? (translations.table || 'Table') : (translations.chart || 'Chart');
-      }
-
-      if (showChart && !createdCharts[chartId]) {
-        console.log(`Erstelle Chart "${chartId}" mit Daten:`, dataSet);
-        if (!Array.isArray(dataSet)) {
-          console.error(`dataSet für "${chartId}" ist kein Array:`, dataSet);
-          return;
-        }
-        if (dataSet.length === 0) {
-          console.warn(`dataSet für "${chartId}" ist leer`);
-          return;
-        }
-        try {
-          const labels = dataSet.map(p => new Date(p.startTimestamp));
-          const data = dataSet.map(p => getDisplayedPrice(p));
-          createChartOnce(chartId, chartType, labels, data, chartOptions);
-          chartOptions.scales.y.title.text = getYAxisTitle();
-        } catch (error) {
-          console.error(`Fehler beim Verarbeiten der Daten für "${chartId}":`, error);
-        }
-      }
-    });
+  if (showChart) {
+    const labels = dataSet.map(item => new Date(item.startTimestamp));
+    const data = dataSet.map(item => getDisplayedPrice(item));
+    createChartOnce(chartId, chartType, labels, data);
+    updateChart(chartId, dataSet);
   }
+}
 
-  // Toggle initialization
-  toggleView('toggleCheapestPeriods', 'cheapestPeriodsTable', 'cheapestPeriodsChartContainer', 'cheapestPeriodsChart', 'bar', cheapestPeriods);
-  toggleView('toggleMarketPrices', 'marketPricesTable', 'marketPricesChartContainer', 'marketPricesChart', 'line', marketPrices);
-  toggleView('toggleChargingSchedule', 'chargingScheduleTable', 'chargingScheduleChartContainer', 'chargingScheduleChart', 'bar', scheduledChargingPeriods);
+function toggleView(buttonId, tableId, chartContainerId, chartId, chartType, dataSet, viewKey) {
+  const button = document.getElementById(buttonId);
+  const table = document.getElementById(tableId);
+  const chartContainer = document.getElementById(chartContainerId);
+  if (!button || !table || !chartContainer) return;
 
-  const nightStartInput = document.getElementById('nightStartInput');
-  const nightEndInput = document.getElementById('nightEndInput');
-  if (nightStartInput && nightEndInput) {
-    nightStartInput.value = nightStartHour;
-    nightEndInput.value = nightEndHour;
-  }
-  updateNightIdleState(nightIdleEnabled, nightIdleActive);
+  const initialShowChart = getStoredViewMode(viewKey) === 'chart';
+  applyToggleViewState(button, table, chartContainer, chartId, chartType, dataSet, initialShowChart);
 
-  // Fetch and refresh status
-  fetchCurrentStatus();
-  setInterval(fetchCurrentStatus, 10000);
-  setInterval(() => window.location.reload(), 65000);
-
-  renderAllPrices();
-});
-
-// Fetch status
-function fetchCurrentStatus() {
-  fetch('/current-status', { method: 'GET' })
-    .then(response => response.json())
-    .then(data => {
-      lastStatusData = data;
-      safeUpdateButtonState('modeBtn', data.currentMode === 'idle', 'fa-pause', 'fa-play', translations.idle, translations.automatic);
-      if (typeof data.nightChargingIdle === 'boolean') nightIdleEnabled = data.nightChargingIdle;
-      if (typeof data.nightIdleActive === 'boolean') nightIdleActive = data.nightIdleActive;
-      updateNightIdleState(nightIdleEnabled, nightIdleActive);
-      safeUpdateButtonState('chargingBtn', data.isCharging, 'fa-stop', 'fa-bolt', translations.charging, translations.stopped);
-
-      if (typeof data.nightStartHour === 'number') {
-        nightStartHour = data.nightStartHour;
-        const startInput = document.getElementById('nightStartInput');
-        if (startInput && document.activeElement !== startInput) startInput.value = data.nightStartHour;
-      }
-      if (typeof data.nightEndHour === 'number') {
-        nightEndHour = data.nightEndHour;
-        const endInput = document.getElementById('nightEndInput');
-        if (endInput && document.activeElement !== endInput) endInput.value = data.nightEndHour;
-      }
-
-      const chargingBtn = document.getElementById('chargingBtn');
-      const currentPriceValue = getDisplayedStatusPrice(data);
-      const currentPrice = currentPriceValue != null ? currentPriceValue.toFixed(2) + ' ' + (translations.centPerKwh || 'cent/kWh') : translations.noCurrentPriceInfo;
-      const dropRate = data.dropRate != null ? data.dropRate.toFixed(2) + ' %/h' : 'N/A';
-      const tooltipText = `${translations.chargingButtonTooltip}<br><strong>${translations.currentPriceLabel}:</strong> ${currentPrice}<br><strong>${translations.dropRateLabel}:</strong> ${dropRate}`;
-      chargingBtn.setAttribute('data-bs-title', tooltipText);
-
-      const tooltip = bootstrap.Tooltip.getInstance(chargingBtn);
-      if (tooltip) tooltip.dispose();
-      new bootstrap.Tooltip(chargingBtn);
-    })
-    .catch(error => console.error('Fehler beim Abrufen des Status:', error));
+  button.addEventListener('click', () => {
+    const showChart = chartContainer.style.display === 'none';
+    applyToggleViewState(button, table, chartContainer, chartId, chartType, dataSet, showChart);
+    persistViewMode(viewKey, showChart ? 'chart' : 'table');
+  });
 }
 
 function getDisplayedStatusPrice(status) {
@@ -426,30 +460,81 @@ function getDisplayedStatusPrice(status) {
   const brutto = normalizeNumber(status.displayPriceBruttoCt);
   const netto = normalizeNumber(status.displayPriceNettoCt);
   const fallback = normalizeNumber(status.currentPrice);
-  if (priceMode === PRICE_MODE_BRUTTO) {
-    return brutto ?? fallback ?? netto;
-  }
-  return netto ?? fallback ?? brutto;
+  return priceMode === PRICE_MODE_BRUTTO
+    ? (brutto ?? fallback ?? netto)
+    : (netto ?? fallback ?? brutto);
 }
 
 function updateCurrentPriceTooltip() {
   const chargingBtn = document.getElementById('chargingBtn');
   if (!chargingBtn || !lastStatusData) return;
+
   const currentPriceValue = getDisplayedStatusPrice(lastStatusData);
-  const currentPrice = currentPriceValue != null ? currentPriceValue.toFixed(2) + ' ' + (translations.centPerKwh || 'cent/kWh') : translations.noCurrentPriceInfo;
-  const dropRate = lastStatusData.dropRate != null ? lastStatusData.dropRate.toFixed(2) + ' %/h' : 'N/A';
-  const tooltipText = `${translations.chargingButtonTooltip}<br><strong>${translations.currentPriceLabel}:</strong> ${currentPrice}<br><strong>${translations.dropRateLabel}:</strong> ${dropRate}`;
+  const currentPrice = currentPriceValue != null
+    ? `${currentPriceValue.toFixed(2)} ${(translations.centPerKwh || 'cent/kWh')}`
+    : translations.noCurrentPriceInfo;
+  const dropRate = lastStatusData.dropRate != null ? `${lastStatusData.dropRate.toFixed(2)} %/h` : 'N/A';
+  const estimatedTimeToTarget = lastStatusData.estimatedTimeToTarget != null
+    ? `${lastStatusData.estimatedTimeToTarget.toFixed(2)} h`
+    : 'N/A';
+  const tooltipText = `${translations.chargingButtonTooltip}<br><strong>${translations.currentPriceLabel}:</strong> ${currentPrice}<br><strong>${translations.dropRateLabel}:</strong> ${dropRate}<br><strong>${translations.estimatedTimeToTargetLabel || 'Estimated Time to Target'}:</strong> ${estimatedTimeToTarget}`;
+
   chargingBtn.setAttribute('data-bs-title', tooltipText);
   const tooltip = bootstrap.Tooltip.getInstance(chargingBtn);
   if (tooltip) tooltip.dispose();
-  new bootstrap.Tooltip(chargingBtn);
+  bootstrap.Tooltip.getOrCreateInstance(chargingBtn);
+}
+
+function updateMetricValue(valueId, unitId, value, unitText) {
+  const valueEl = document.getElementById(valueId);
+  const unitEl = document.getElementById(unitId);
+  if (!valueEl) return;
+
+  if (value == null) {
+    valueEl.textContent = 'N/A';
+    if (unitEl) unitEl.style.display = 'none';
+    return;
+  }
+
+  valueEl.textContent = value.toFixed(2);
+  if (unitEl) {
+    if (unitText) unitEl.textContent = unitText;
+    unitEl.style.display = '';
+  }
+}
+
+function updateWholeNumberValue(valueId, value) {
+  const valueEl = document.getElementById(valueId);
+  if (!valueEl) return;
+  if (value == null) {
+    valueEl.textContent = 'N/A';
+    return;
+  }
+  valueEl.textContent = String(Math.round(value));
+}
+
+function updateStatusMetricCards() {
+  if (!lastStatusData) return;
+
+  const currentPriceValue = getDisplayedStatusPrice(lastStatusData);
+  updateMetricValue('currentPriceValue', 'currentPriceUnit', currentPriceValue, translations.centPerKwh || 'cent/kWh');
+  updateMetricValue('dropRateValue', 'dropRateUnit', normalizeNumber(lastStatusData.dropRate), '%/h');
+  updateMetricValue(
+    'estimatedTimeToTargetValue',
+    'estimatedTimeToTargetUnit',
+    normalizeNumber(lastStatusData.estimatedTimeToTarget),
+    'h'
+  );
+  updateWholeNumberValue('capacityPercentValue', normalizeNumber(lastStatusData.stateOfCharge));
+  updateWholeNumberValue('capacityRemainingWhValue', normalizeNumber(lastStatusData.remainingCapacityWh));
 }
 
 function updateChart(chartId, dataSet) {
   const chart = createdCharts[chartId];
-  if (!chart || !Array.isArray(dataSet)) return;
-  chart.data.labels = dataSet.map(p => new Date(p.startTimestamp));
-  chart.data.datasets[0].data = dataSet.map(p => getDisplayedPrice(p));
+  if (!chart) return;
+
+  chart.data.labels = dataSet.map(item => new Date(item.startTimestamp));
+  chart.data.datasets[0].data = dataSet.map(item => getDisplayedPrice(item));
   chart.data.datasets[0].label = translations.centPerKwh || 'cent/kWh';
   chart.options.scales.y.title.text = getYAxisTitle();
   chart.update();
@@ -463,63 +548,111 @@ function renderAllPrices() {
   updateChart('cheapestPeriodsChart', cheapestPeriods);
   updateChart('marketPricesChart', marketPrices);
   updateChart('chargingScheduleChart', scheduledChargingPeriods);
+  updateStatusMetricCards();
   updateCurrentPriceTooltip();
 }
 
-// Update button state
-function updateButtonState(btnId, isActive, activeIcon, inactiveIcon, activeText, inactiveText) {
-  const btn = document.getElementById(btnId);
-  if (!btn) return;
+function updateButtonState(buttonId, isActive, activeIcon, inactiveIcon, activeText, inactiveText) {
+  const button = document.getElementById(buttonId);
+  if (!button) return;
 
-  const icon = btn.querySelector('i');
-  const text = btn.querySelector('span:not(.status-indicator)');
-  const indicator = btn.querySelector('.status-indicator');
+  const icon = button.querySelector('i');
+  const label = button.querySelector('[data-role="label"]');
+  const indicator = button.querySelector('.status-indicator');
 
-  if (isActive) {
-    btn.classList.remove('off');
-    btn.classList.add('on');
-    icon.classList.remove(inactiveIcon);
-    icon.classList.add(activeIcon);
-    text.textContent = activeText;
-    indicator.classList.remove('inactive');
-    indicator.classList.add('active');
-  } else {
-    btn.classList.remove('on');
-    btn.classList.add('off');
-    icon.classList.remove(activeIcon);
-    icon.classList.add(inactiveIcon);
-    text.textContent = inactiveText;
-    indicator.classList.remove('active');
-    indicator.classList.add('inactive');
+  button.classList.toggle('on', isActive);
+  button.classList.toggle('off', !isActive);
+  button.setAttribute('aria-pressed', String(isActive));
+
+  if (icon) {
+    icon.classList.remove(activeIcon, inactiveIcon);
+    icon.classList.add(isActive ? activeIcon : inactiveIcon);
+  }
+
+  if (label) label.textContent = isActive ? activeText : inactiveText;
+  if (indicator) {
+    indicator.classList.toggle('active', isActive);
+    indicator.classList.toggle('inactive', !isActive);
+    indicator.classList.remove('enabled');
   }
 }
 
 function updateNightIdleState(enabled, active) {
-  const btn = document.getElementById('nightChargingBtn');
-  if (!btn) return;
+  const button = document.getElementById('nightChargingBtn');
+  if (!button) return;
 
-  const indicator = btn.querySelector('.status-indicator');
-  const text = btn.querySelector('span:not(.status-indicator)');
+  const indicator = button.querySelector('.status-indicator');
+  const label = button.querySelector('[data-role="label"]');
 
-  if (active) {
-    btn.classList.remove('off');
-    btn.classList.add('on');
-  } else {
-    btn.classList.remove('on');
-    btn.classList.add('off');
-  }
+  button.classList.toggle('on', active);
+  button.classList.toggle('off', !active);
+  button.setAttribute('aria-pressed', String(active));
 
-  if (text) text.textContent = translations.nightIdle || 'Night Idle';
-
+  if (label) label.textContent = translations.nightIdle || 'Night Idle';
   if (indicator) {
     indicator.classList.remove('active', 'enabled', 'inactive');
     indicator.classList.add(active ? 'active' : (enabled ? 'enabled' : 'inactive'));
   }
 }
 
-// Execute action
-function handleAction(url, method, body = null, onSuccess = null, onFailure = null) {
+function setExclusiveModeUI(mode) {
+  const modeBtn = document.getElementById('modeBtn');
+  const chargingBtn = document.getElementById('chargingBtn');
+
+  if (mode === 'idle') {
+    if (chargingBtn?.classList.contains('on')) {
+      updateButtonState('chargingBtn', false, 'fa-stop', 'fa-bolt', translations.charging, translations.stopped);
+    }
+    if (modeBtn && !modeBtn.classList.contains('on')) {
+      updateButtonState('modeBtn', true, 'fa-pause', 'fa-play', translations.idle, translations.automatic);
+    }
+  } else if (mode === 'forced') {
+    if (modeBtn?.classList.contains('on')) {
+      updateButtonState('modeBtn', false, 'fa-pause', 'fa-play', translations.idle, translations.automatic);
+    }
+    if (chargingBtn && !chargingBtn.classList.contains('on')) {
+      updateButtonState('chargingBtn', true, 'fa-stop', 'fa-bolt', translations.charging, translations.stopped);
+    }
+  } else if (mode === 'standard') {
+    if (modeBtn?.classList.contains('on')) {
+      updateButtonState('modeBtn', false, 'fa-pause', 'fa-play', translations.idle, translations.automatic);
+    }
+    if (chargingBtn?.classList.contains('on')) {
+      updateButtonState('chargingBtn', false, 'fa-stop', 'fa-bolt', translations.charging, translations.stopped);
+    }
+  }
+}
+
+function setBusyState(isBusy) {
+  document.body.classList.toggle('is-loading', isBusy);
+  document.querySelectorAll('[data-ui-action="true"]').forEach(element => {
+    element.disabled = isBusy;
+  });
+}
+
+function showLoader(text) {
+  const overlay = document.getElementById('loaderOverlay');
+  const loaderText = document.getElementById('loaderText');
+  if (loaderText && text) loaderText.textContent = text;
+  if (overlay) overlay.classList.add('show');
+}
+
+function hideLoader() {
+  const overlay = document.getElementById('loaderOverlay');
+  if (overlay) overlay.classList.remove('show');
+}
+
+function executeJsonAction(url, method, body = null, options = {}) {
+  const {
+    onSuccess = null,
+    onFailure = null,
+    reloadOnSuccess = true,
+    successDelayMs = 6000
+  } = options;
+
+  setBusyState(true);
   showLoader();
+
   fetch(url, {
     method,
     headers: { 'Content-Type': 'application/json' },
@@ -527,119 +660,241 @@ function handleAction(url, method, body = null, onSuccess = null, onFailure = nu
   })
     .then(response => response.json())
     .then(data => {
-      if (data.success) {
-        if (typeof onSuccess === 'function') onSuccess(data);
-        setTimeout(() => {
-          window.location.reload();
-          hideLoader();
-        }, 6000);
-      } else {
+      if (!data.success) {
         if (typeof onFailure === 'function') onFailure(data);
         alert(`Aktion fehlgeschlagen: ${data.message}`);
+        setBusyState(false);
         hideLoader();
+        return;
       }
+
+      if (typeof onSuccess === 'function') onSuccess(data);
+
+      if (reloadOnSuccess) {
+        setTimeout(() => window.location.reload(), successDelayMs);
+        return;
+      }
+
+      setBusyState(false);
+      hideLoader();
     })
     .catch(error => {
-      console.error('Fehler bei der Aktion:', error);
+      console.error('Action failed', error);
       if (typeof onFailure === 'function') onFailure({ success: false, message: error?.message });
-      alert('Fehler bei der Ausführung der Aktion');
+      alert('Fehler bei der Ausfuehrung der Aktion');
+      setBusyState(false);
       hideLoader();
     });
 }
 
-// Show/hide loader
-function showLoader(){
-  var o=document.getElementById('loaderOverlay')||document.getElementById('loader');
-  if(o){
-    if(o.id==='loaderOverlay'){ o.classList.add('show'); }
-    else { o.style.display='block'; }
-  }
+function fetchCurrentStatus() {
+  fetch('/current-status', { method: 'GET' })
+    .then(response => response.json())
+    .then(data => {
+      lastStatusData = data;
+      safeUpdateButtonState('modeBtn', data.currentMode === 'idle', 'fa-pause', 'fa-play', translations.idle, translations.automatic);
+      safeUpdateButtonState('chargingBtn', data.isCharging, 'fa-stop', 'fa-bolt', translations.charging, translations.stopped);
+
+      if (typeof data.nightChargingIdle === 'boolean') nightIdleEnabled = data.nightChargingIdle;
+      if (typeof data.nightIdleActive === 'boolean') nightIdleActive = data.nightIdleActive;
+      updateNightIdleState(nightIdleEnabled, nightIdleActive);
+
+      if (typeof data.nightStartHour === 'number') {
+        nightStartHour = data.nightStartHour;
+        const startInput = document.getElementById('nightStartInput');
+        if (startInput && document.activeElement !== startInput) startInput.value = data.nightStartHour;
+      }
+      if (typeof data.nightEndHour === 'number') {
+        nightEndHour = data.nightEndHour;
+        const endInput = document.getElementById('nightEndInput');
+        if (endInput && document.activeElement !== endInput) endInput.value = data.nightEndHour;
+      }
+
+      updateStatusMetricCards();
+      updateCurrentPriceTooltip();
+    })
+    .catch(error => console.error('Status polling failed', error));
 }
 
-function hideLoader(){
-  var o=document.getElementById('loaderOverlay')||document.getElementById('loader');
-  if(o){
-    if(o.id==='loaderOverlay'){ o.classList.remove('show'); }
-    else { o.style.display='none'; }
-  }
-}
-
-// Debounce helper
-function debounce(func, wait) {
-  let timeout;
-  return function (...args) {
-    clearTimeout(timeout);
-    timeout = setTimeout(() => func.apply(this, args), wait);
-  };
-}
-
-// Debounced functions
-const debouncedToggleMode = debounce(() => {
-  const btn = document.getElementById('modeBtn');
-  const nextMode = btn.classList.contains('on') ? 'standard' : 'idle';
-  setLastAction(nextMode);
-  setExclusiveModeUI(nextMode);
-  handleAction('/toggle-mode', 'POST', {
-    mode: nextMode,
-    force: btn.classList.contains('on')   // when switching back to automatic => force=true
-  });
-}, 300);
-
-const debouncedToggleNightCharging = debounce(() => {
-  const btn = document.getElementById('nightChargingBtn');
-  const next = !nightIdleEnabled;
-  setLastAction(next ? 'nightIdle' : 'standard');
-  setExclusiveModeUI(next ? 'nightIdle' : 'standard');
-  if (!next) nightIdleActive = false;
-  updateNightIdleState(next, nightIdleActive);
-
-  const windowValues = getValidatedNightWindow();
-  if (!windowValues) return;
-
-  handleAction('/toggle-night-charging', 'POST', { nightChargingIdle: next, ...windowValues }, () => {
-    nightIdleEnabled = next;
-    const { startHour, endHour } = windowValues;
-    updateNightWindowStatus(`${translations.nightWindowStatusSaved || 'Saved'}: ${String(startHour).padStart(2, '0')}:00 - ${String(endHour).padStart(2, '0')}:00`);
-  });
-}, 300);
-
-const debouncedToggleCharging = debounce(() => {
-  const btn = document.getElementById('chargingBtn');
-  if (!btn.classList.contains('on')) {
-    setLastAction('forced');
-    setExclusiveModeUI('forced');
-    confirmStartCharging();
-  } else {
-    setLastAction('standard');
-    setExclusiveModeUI('standard');
-    handleAction('/toggle-charging', 'POST', { charging: 'stop' });
-  }
-}, 300);
-
-// Charging confirmation
 function confirmStartCharging() {
-  const modal = new bootstrap.Modal(document.getElementById('confirmationModal'));
+  const modalElement = document.getElementById('confirmationModal');
+  if (!modalElement) {
+    executeJsonAction('/toggle-charging', 'POST', { charging: 'start' });
+    return;
+  }
+
+  const modal = new bootstrap.Modal(modalElement);
   modal.show();
   const timeout = setTimeout(() => modal.hide(), 5000);
+  let confirmed = false;
 
   document.getElementById('confirmStart').onclick = () => {
     clearTimeout(timeout);
-    handleAction('/toggle-charging', 'POST', { charging: 'start' });
+    confirmed = true;
     modal.hide();
+    executeJsonAction('/toggle-charging', 'POST', { charging: 'start' });
   };
 
   document.getElementById('cancelStart').onclick = () => {
     clearTimeout(timeout);
     modal.hide();
+    setExclusiveModeUI('standard');
     hideLoader();
+  };
+
+  modalElement.addEventListener('hidden.bs.modal', () => {
+    if (!confirmed) {
+      setExclusiveModeUI('standard');
+    }
+  }, { once: true });
+}
+
+function showTab(tabId) {
+  const resolvedTabId = VALID_DATA_TABS.includes(tabId) ? tabId : DEFAULT_DATA_TAB;
+  const targetButton = document.querySelector(`[data-bs-target="#${resolvedTabId}"]`);
+  if (targetButton) {
+    bootstrap.Tab.getOrCreateInstance(targetButton).show();
+  }
+
+  const select = document.getElementById('dataTabSelect');
+  if (select) select.value = resolvedTabId;
+  persistActiveTab(resolvedTabId);
+}
+
+function bindTabSync() {
+  const select = document.getElementById('dataTabSelect');
+  document.querySelectorAll('#priceTabs [data-bs-toggle="tab"]').forEach(button => {
+    button.addEventListener('shown.bs.tab', event => {
+      const targetId = event.target.getAttribute('data-bs-target')?.replace('#', '');
+      if (select && targetId) select.value = targetId;
+      if (targetId) persistActiveTab(targetId);
+    });
+  });
+}
+
+function debounce(fn, wait) {
+  let timeout;
+  return function debounced(...args) {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => fn.apply(this, args), wait);
   };
 }
 
-// Show tab
-function showTab(tabId) {
-  document.querySelectorAll('.tab-pane').forEach(tab => {
-    tab.classList.remove('show', 'active');
+const debouncedToggleMode = debounce(() => {
+  const button = document.getElementById('modeBtn');
+  if (!button) return;
+
+  const nextMode = button.classList.contains('on') ? 'standard' : 'idle';
+  setLastAction(nextMode);
+  setExclusiveModeUI(nextMode);
+  executeJsonAction('/toggle-mode', 'POST', {
+    mode: nextMode,
+    force: button.classList.contains('on')
   });
-  const tab = document.getElementById(tabId);
-  if (tab) tab.classList.add('show', 'active');
-}
+}, 300);
+
+const debouncedToggleNightCharging = debounce(() => {
+  const windowValues = getValidatedNightWindow();
+  if (!windowValues) return;
+
+  const next = !nightIdleEnabled;
+  setLastAction(next ? 'nightIdle' : 'standard');
+  if (!next) nightIdleActive = false;
+  updateNightIdleState(next, nightIdleActive);
+
+  executeJsonAction('/toggle-night-charging', 'POST', { nightChargingIdle: next, ...windowValues }, {
+    onSuccess: () => {
+      nightIdleEnabled = next;
+      updateNightWindowStatus(`${translations.nightWindowStatusSaved || 'Saved'}: ${String(windowValues.startHour).padStart(2, '0')}:00 - ${String(windowValues.endHour).padStart(2, '0')}:00`);
+    }
+  });
+}, 300);
+
+const debouncedToggleCharging = debounce(() => {
+  const button = document.getElementById('chargingBtn');
+  if (!button) return;
+
+  if (!button.classList.contains('on')) {
+    setLastAction('forced');
+    setExclusiveModeUI('forced');
+    confirmStartCharging();
+    return;
+  }
+
+  setLastAction('standard');
+  setExclusiveModeUI('standard');
+  executeJsonAction('/toggle-charging', 'POST', { charging: 'stop' });
+}, 300);
+
+window.debouncedToggleMode = debouncedToggleMode;
+window.debouncedToggleNightCharging = debouncedToggleNightCharging;
+window.debouncedToggleCharging = debouncedToggleCharging;
+window.hideLoader = hideLoader;
+window.showTab = showTab;
+
+document.addEventListener('DOMContentLoaded', () => {
+  priceMode = getStoredPriceMode();
+  setPriceMode(priceMode, false);
+  applyTheme(getStoredTheme(), false);
+
+  const themeSelector = document.getElementById('themeSelector');
+  if (themeSelector) {
+    themeSelector.addEventListener('change', event => applyTheme(event.target.value));
+  }
+
+  document.querySelectorAll('[data-theme-option]').forEach(button => {
+    button.addEventListener('click', () => {
+      const nextTheme = button.getAttribute('data-theme-option');
+      if (nextTheme) applyTheme(nextTheme);
+    });
+  });
+
+  const priceModeToggle = document.getElementById('priceModeToggle');
+  if (priceModeToggle) {
+    priceModeToggle.checked = priceMode === PRICE_MODE_BRUTTO;
+    priceModeToggle.addEventListener('change', () => {
+      setPriceMode(priceModeToggle.checked ? PRICE_MODE_BRUTTO : PRICE_MODE_NETTO);
+    });
+  }
+
+  const saveNightWindowBtn = document.getElementById('saveNightWindowBtn');
+  if (saveNightWindowBtn) {
+    saveNightWindowBtn.addEventListener('click', () => {
+      const windowValues = getValidatedNightWindow();
+      if (!windowValues) return;
+
+      executeJsonAction('/night-charging-window', 'POST', windowValues, {
+        reloadOnSuccess: false,
+        onSuccess: () => {
+          nightStartHour = windowValues.startHour;
+          nightEndHour = windowValues.endHour;
+          updateNightWindowStatus(`${translations.nightWindowStatusSaved || 'Saved'}: ${String(windowValues.startHour).padStart(2, '0')}:00 - ${String(windowValues.endHour).padStart(2, '0')}:00`);
+        },
+        onFailure: () => updateNightWindowStatus(translations.nightWindowSaveError || 'Saving night window failed', true)
+      });
+    });
+  }
+
+  document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(element => {
+    bootstrap.Tooltip.getOrCreateInstance(element);
+  });
+
+  toggleView('toggleCheapestPeriods', 'cheapestPeriodsTable', 'cheapestPeriodsChartContainer', 'cheapestPeriodsChart', 'bar', cheapestPeriods, 'cheapest-periods');
+  toggleView('toggleMarketPrices', 'marketPricesTable', 'marketPricesChartContainer', 'marketPricesChart', 'line', marketPrices, 'market-prices');
+  toggleView('toggleChargingSchedule', 'chargingScheduleTable', 'chargingScheduleChartContainer', 'chargingScheduleChart', 'bar', scheduledChargingPeriods, 'scheduled-charging-periods');
+  bindTabSync();
+  showTab(getStoredActiveTab());
+
+  const startInput = document.getElementById('nightStartInput');
+  const endInput = document.getElementById('nightEndInput');
+  if (startInput && endInput) {
+    startInput.value = nightStartHour;
+    endInput.value = nightEndHour;
+  }
+
+  updateNightIdleState(nightIdleEnabled, nightIdleActive);
+  fetchCurrentStatus();
+  setInterval(fetchCurrentStatus, 10000);
+  setInterval(() => window.location.reload(), 65000);
+  renderAllPrices();
+});

@@ -1,23 +1,35 @@
 <!DOCTYPE html>
-<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<html lang="en" xmlns:th="http://www.thymeleaf.org" th:lang="${lang}">
 <head>
     <meta charset="UTF-8">
-    <title th:text="#{title}">Charging Status and Market Prices</title>
+    <title th:text="#{title}">ChargeControl V3.0</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <!-- Stylesheets -->
+    <script>
+        (function () {
+            const key = 'chargeControlTheme';
+            const allowedThemes = ['default', 'dark', 'energy', 'solar', 'ember'];
+            let theme = 'default';
+            try {
+                const stored = localStorage.getItem(key);
+                if (allowedThemes.includes(stored)) theme = stored;
+            } catch (error) {
+                theme = 'default';
+            }
+            document.documentElement.setAttribute('data-theme', theme);
+        })();
+    </script>
+
     <link rel="stylesheet" th:href="@{/css/bootstrap.min.css}">
     <link rel="stylesheet" th:href="@{/css/all.min.css}">
     <link rel="stylesheet" th:href="@{/css/darkmode.css}">
 
-    <!-- Vendor Scripts -->
     <script th:src="@{/js/jquery.slim.min.js}"></script>
     <script th:src="@{/js/bootstrap.bundle.min.js}"></script>
     <script th:src="@{/js/chart.min.js}"></script>
     <script th:src="@{/js/luxon.min.js}"></script>
     <script th:src="@{/js/chartjs-adapter-luxon.umd.js}"></script>
 
-    <!-- Initial AppData via Thymeleaf -->
     <script th:inline="javascript">
         /*<![CDATA[*/
         window.AppData = {
@@ -41,13 +53,14 @@
             chargingButtonTooltip: /*[[#{chargingButtonTooltip}]]*/ 'Starts or stops charging from the grid.',
             currentPriceLabel: /*[[#{currentPriceLabel}]]*/ 'Current Price',
             dropRateLabel: /*[[#{dropRateLabel}]]*/ 'Drop Rate',
+            estimatedTimeToTargetLabel: /*[[#{estimatedTimeToTargetLabel}]]*/ 'Estimated Time to Target',
             noCurrentPriceInfo: /*[[#{noCurrentPriceInfo}]]*/ 'No current price available',
             chart: /*[[#{chart}]]*/ 'Chart',
             table: /*[[#{table}]]*/ 'Table',
             startTime: /*[[#{startTime}]]*/ 'Start Time',
             price: /*[[#{price}]]*/ 'Price',
-            priceModeNettoLabel: /*[[#{priceModeNettoLabel}]]*/ 'Börse (netto)',
-            priceModeBruttoLabel: /*[[#{priceModeBruttoLabel}]]*/ 'Gesamt (brutto)',
+            priceModeNettoLabel: /*[[#{priceModeNettoLabel}]]*/ 'Market',
+            priceModeBruttoLabel: /*[[#{priceModeBruttoLabel}]]*/ 'Total',
             centPerKwh: /*[[#{centPerKwh}]]*/ 'cent/kWh'
           },
           cheapestPeriods: JSON.parse(/*[[${cheapestPeriodsJson}]]*/ "[]"),
@@ -62,360 +75,42 @@
         /*]]>*/
     </script>
 
-    <!-- Main App Script -->
-    <script th:src="@{/js/main.js}"></script>
-
-    <!-- Language Switch Helper -->
+    <script th:src="@{/js/main.js}" defer></script>
     <script>
         function toggleLanguage(lang) {
           window.location.href = '/charging-status?lang=' + lang;
         }
     </script>
-
-    <style id="spinner-styles">
-        #loaderOverlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.35);z-index:2000}
-        #loaderOverlay.show{display:flex}
-        .loader{width:56px;height:56px;border:6px solid #e0e0e0;border-top-color:#3b82f6;border-radius:50%;animation:spin 1s linear infinite}
-        @keyframes spin{to{transform:rotate(360deg)}}
-    </style>
-
 </head>
 
-<body>
-<div class="container">
-    <div class="top-bar">
-        <h1 th:text="#{title}">Charging Status and Market Prices</h1>
-        <div class="d-flex align-items-center gap-4">
-            <a th:href="@{/license(lang=${#locale.language})}" class="cool-btn">
-                <i class="fas fa-file-alt"></i>
-                <span th:text="#{licenseTerms}">License Terms</span>
-            </a>
-            <div class="dropdown">
-                <button class="cool-btn dropdown-toggle" id="languageDropdown" data-bs-toggle="dropdown">
-                    <i class="fas fa-globe"></i>
-                    <span th:text="${#locale.language == 'de' ? 'Deutsch' : 'English'}">Deutsch</span>
-                </button>
-                <ul class="dropdown-menu" aria-labelledby="languageDropdown">
-                    <li><a class="dropdown-item" href="#" onclick="toggleLanguage('de')">Deutsch</a></li>
-                    <li><a class="dropdown-item" href="#" onclick="toggleLanguage('en')">English</a></li>
-                </ul>
-            </div>
-        </div>
-    </div>
+<body class="status-page">
+<div class="app-shell"
+     th:with="chargingText=#{charging}, dischargingText=#{discharging}, idleText=#{idle}, manualText=#{manual}, automaticText=#{automatic}">
+    <header th:replace="~{fragments/charging-status :: topbar}"></header>
 
-    <div th:with="chargingText=#{charging}, dischargingText=#{discharging}, idleText=#{idle}, manualText=#{manual}, automaticText=#{automatic}">
-        <div class="card" th:if="${batteryNotConfigured}">
-            <div class="card-header">
-                <h2 th:text="#{batteryNotConfiguredTitle}">Battery Configuration Error</h2>
-            </div>
-            <div class="card-body">
-                <p th:text="#{batteryNotConfiguredMessage}">The battery is not configured properly.</p>
-            </div>
-        </div>
-        <div class="card" th:unless="${batteryNotConfigured}">
-            <div class="card-header">
-                <h2 th:text="#{currentBatteryStatus}">Current Battery Status</h2>
-            </div>
-            <div class="card-body">
-                <div class="status-grid">
-                    <div class="status-item">
-                        <i class="fas fa-battery-full fa-4x"
-                           th:classappend="${batteryStatus.rsoc >= 80} ? '' : 'd-none'"></i>
-                        <i class="fas fa-battery-half fa-4x"
-                           th:classappend="${batteryStatus.rsoc < 80 && batteryStatus.rsoc > 20} ? '' : 'd-none'"></i>
-                        <i class="fas fa-battery-empty fa-4x"
-                           th:classappend="${batteryStatus.rsoc <= 20} ? '' : 'd-none'"></i>
-                        <p th:text="#{capacity}">Capacity:</p>
-                        <span th:text="${batteryStatus.rsoc}">0</span>%
-                    </div>
-                    <div class="status-item">
-                        <i class="fas fa-4x"
-                           th:classappend="${batteryStatus.batteryCharging ? 'fa-charging fa-plug' : batteryStatus.batteryDischarging ? 'fa-discharging fa-bolt' : 'fa-idle fa-pause'}"></i>
-                        <p th:text="#{chargingDischarging}">Charging/Discharging:</p>
-                        <span th:text="${batteryStatus.batteryCharging ? chargingText : batteryStatus.batteryDischarging ? dischargingText : idleText}">Idle</span>
-                    </div>
-                    <!-- Steuerung (Automatisch/Manuell + ggf. Setpoint) -->
-                    <div class="status-item">
-                        <i class="fas fa-4x"
-                           th:classappend="${lastSetpointW == 0} ? 'fa-play' : 'fa-sliders-h'"
-                           style="background: linear-gradient(135deg, #6a0dad, #00008b); -webkit-background-clip: text; -webkit-text-fill-color: transparent;"></i>
-                        <p th:text="#{controlMode}">Betriebsmodus</p>
-                        <span th:if="${lastSetpointW == 0}" th:text="#{automatic}">Automatic</span>
-                        <span th:if="${lastSetpointW != 0}" th:text="#{manual}">Manual</span>
-                        <div class="small text-muted" th:if="${lastSetpointW != 0}">
-                            <span th:text="${lastSetpointW}">0</span>
-                            <span th:text="#{watts}">W</span>
-                        </div>
-                    </div>
-                </div>
-                <div class="action-buttons mt-4">
-                    <div class="card control-group">
-                        <div class="card-header">
-                            <h3 th:text="#{controlPanel}">Control Panel</h3>
-                        </div>
-                        <div class="card-body">
-                            <div class="button-container">
-                                <button class="on-off-btn" id="modeBtn"
-                                        th:classappend="${currentMode == 'idle' ? 'on' : 'off'}"
-                                        onclick="debouncedToggleMode()" data-bs-toggle="tooltip" data-bs-html="true"
-                                        th:attr="data-bs-title=#{modeTooltip}">
-                                    <i class="fas"
-                                       th:classappend="${currentMode == 'idle' ? 'fa-pause' : 'fa-play'}"></i>
-                                    <span th:if="${currentMode == 'idle'}" th:text="#{idle}">Idle</span>
-                                    <span th:unless="${currentMode == 'idle'}" th:text="#{automatic}">Automatic</span>
-                                    <span class="status-indicator"
-                                          th:classappend="${currentMode == 'idle' ? 'active' : 'inactive'}"></span>
-                                </button>
-                                <button class="on-off-btn" id="nightChargingBtn"
-                                        th:classappend="${nightIdleActive ? 'on' : 'off'}"
-                                        onclick="debouncedToggleNightCharging()" data-bs-toggle="tooltip"
-                                        data-bs-html="true"
-                                        th:attr="data-bs-title=#{nightIdleTooltip}">
-                                    <i class="fas fa-moon"></i>
-                                    <span th:text="#{nightIdle}">Night Idle</span>
-                                    <span class="status-indicator"
-                                          th:classappend="${nightIdleActive ? 'active' : (nightChargingIdle ? 'enabled' : 'inactive')}"></span>
-                                </button>
-                                <button class="on-off-btn" id="chargingBtn"
-                                        th:classappend="${isCharging ? 'on' : 'off'}"
-                                        onclick="debouncedToggleCharging()" data-bs-toggle="tooltip" data-bs-html="true"
-                                        th:attr="data-bs-title=${gridChargingTooltip}">
-                                    <i class="fas" th:classappend="${isCharging ? 'fa-stop' : 'fa-bolt'}"></i>
-                                    <span th:if="${isCharging}" th:text="#{charging}">Charging</span>
-                                    <span th:unless="${isCharging}" th:text="#{stopped}">Stopped</span>
-                                    <span class="status-indicator"
-                                          th:classappend="${isCharging ? 'active' : 'inactive'}"></span>
-                                </button>
-                            </div>
-                            <div class="night-window-card" id="nightWindowConfig">
-                                <div class="night-window-head">
-                                    <div>
-                                        <p class="night-window-kicker" th:text="#{nightIdle}">Night Idle</p>
-                                        <h4 class="night-window-title" th:text="#{nightIdle}">Night Idle</h4>
-                                    </div>
-                                    <span class="night-window-badge">
-                                        <i class="fas fa-moon"></i>
-                                    </span>
-                                </div>
-                                <div class="night-window-body">
-                                    <div class="night-input">
-                                        <label for="nightStartInput" th:text="#{nightWindowStartLabel}">Start</label>
-                                        <input type="number" id="nightStartInput" min="0" max="23" step="1" th:value="${nightStartHour}">
-                                    </div>
-                                    <div class="night-input">
-                                        <label for="nightEndInput" th:text="#{nightWindowEndLabel}">End</label>
-                                        <input type="number" id="nightEndInput" min="0" max="23" step="1" th:value="${nightEndHour}">
-                                    </div>
-                                </div>
-                                <div class="night-window-status" id="nightWindowStatus">
-                                    <span th:text="#{nightWindowStatusDefault}">Default values apply until saved.</span>
-                                </div>
-                            </div>
-                            <div class="price-mode-panel">
-                                <div class="price-mode-toggle">
-                                    <span class="me-2" th:text="#{priceModeNettoLabel}">Börse (netto)</span>
-                                    <div class="form-check form-switch m-0">
-                                        <input class="form-check-input" type="checkbox" id="priceModeToggle">
-                                    </div>
-                                    <span class="ms-2" th:text="#{priceModeBruttoLabel}">Gesamt (brutto)</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <div class="text-center mt-4">
-                    <div class="spinner-border" id="loader" role="status">
-                        <span class="visually-hidden">Loading...</span>
-                    </div>
-                    <div id="progress-text">Processing...</div>
+    <main class="app-main">
+        <section th:replace="~{fragments/charging-status :: hero}"></section>
+
+        <section class="panel error-panel" th:if="${batteryNotConfigured}" aria-labelledby="batteryConfigErrorTitle">
+            <div class="panel-header">
+                <div>
+                    <p class="eyebrow" th:text="#{summarySectionKicker}">System overview</p>
+                    <h2 class="panel-title" id="batteryConfigErrorTitle" th:text="#{batteryNotConfiguredTitle}">Battery Configuration Error</h2>
                 </div>
             </div>
+            <p class="error-text" th:text="#{batteryNotConfiguredMessage}">The battery is not configured properly.</p>
+        </section>
+
+        <div class="app-grid" th:unless="${batteryNotConfigured}">
+            <section th:replace="~{fragments/charging-status :: batterySummary}"></section>
+            <aside th:replace="~{fragments/charging-status :: controlSidebar}"></aside>
         </div>
 
-        <div class="card" th:if="${cheapestPrice != null}">
-            <div class="card-header">
-                <h2 th:text="#{lowestMarketPrice}">Lowest Market Price</h2>
-            </div>
-            <div class="card-body">
-                <div class="status-grid">
-                    <div class="status-item">
-                        <i class="fas fa-clock fa-4x"></i>
-                        <p th:text="#{startTime}">Start Time:</p>
-                        <span id="cheapestStartTime" th:text="${#dates.format(cheapestPrice.startTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</span>
-                    </div>
-                    <div class="status-item">
-                        <i class="fas fa-clock fa-4x"></i>
-                        <p th:text="#{endTime}">End Time:</p>
-                        <span id="cheapestEndTime" th:text="${#dates.format(cheapestPrice.endTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</span>
-                    </div>
-                    <div class="status-item">
-                        <i class="fas fa-euro-sign fa-4x"></i>
-                        <p th:text="#{price}">Price:</p>
-                        <span id="cheapestPriceValue" class="cheapest-price"
-                              th:text="${#numbers.formatDecimal(cheapestPrice.marketPrice, 1, 2)}">N/A</span>
-                        <span id="cheapestPriceUnit" th:text="#{centPerKwh}">cent/kWh</span>
-                    </div>
-                </div>
-            </div>
-        </div>
+        <section th:replace="~{fragments/charging-status :: dataSection}"></section>
+    </main>
 
-        <select class="tab-select" onchange="showTab(this.value)">
-            <option value="scheduled-charging-periods" th:text="#{scheduledChargingPeriods}" selected></option>
-            <option value="cheapest-periods" th:text="#{cheapestPeriods}"></option>
-            <option value="market-prices" th:text="#{marketPrices}"></option>
-        </select>
-        <ul class="nav nav-tabs" id="priceTabs" role="tablist">
-            <li class="nav-item">
-                <button class="nav-link" id="cheapest-periods-tab" data-bs-toggle="tab"
-                        data-bs-target="#cheapest-periods" type="button"
-                        role="tab" aria-controls="cheapest-periods" th:text="#{cheapestPeriods}">Cheapest Periods
-                </button>
-            </li>
-            <li class="nav-item">
-                <button class="nav-link" id="market-prices-tab" data-bs-toggle="tab" data-bs-target="#market-prices"
-                        type="button"
-                        role="tab" aria-controls="market-prices" th:text="#{marketPrices}">Market Prices
-                </button>
-            </li>
-            <li class="nav-item">
-                <button class="nav-link active" id="scheduled-charging-periods-tab" data-bs-toggle="tab"
-                        data-bs-target="#scheduled-charging-periods"
-                        type="button" role="tab" aria-controls="scheduled-charging-periods"
-                        th:text="#{scheduledChargingPeriods}">Scheduled Charging Periods
-                </button>
-            </li>
-        </ul>
-
-        <div class="tab-content" id="priceTabsContent">
-            <div class="tab-pane fade" id="cheapest-periods" role="tabpanel" aria-labelledby="cheapest-periods-tab">
-                <div class="card">
-                    <div class="card-body">
-                        <div class="action-buttons mb-3">
-                            <button class="cool-btn" id="toggleCheapestPeriods">
-                                <i class="fas fa-eye"></i>
-                                <span th:text="#{toggleView}">Toggle View</span>
-                            </button>
-                        </div>
-                        <div id="cheapestPeriodsTable" class="table-responsive">
-                            <table class="table table-hover">
-                                <thead>
-                                <tr>
-                                    <th th:text="#{startTime}">Start Time</th>
-                                    <th th:text="#{endTime}">End Time</th>
-                                    <th th:text="#{price}">Price (cent/kWh)</th>
-                                </tr>
-                                </thead>
-                                <tbody id="cheapestPeriodsTbody">
-                                <tr th:each="period : ${cheapestPeriods}"
-                                    th:with="formattedPrice=${#numbers.formatDecimal(period.marketPrice, 1, 2)}"
-                                    th:classappend="${period.startTimestamp <= currentTime && period.endTimestamp >= currentTime} ? 'highlight' : ''">
-                                    <td th:text="${#dates.format(period.startTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</td>
-                                    <td th:text="${#dates.format(period.endTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</td>
-                                    <td th:text="${formattedPrice}">N/A</td>
-                                </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                        <div class="chart-container" id="cheapestPeriodsChartContainer">
-                            <canvas id="cheapestPeriodsChart"></canvas>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="tab-pane fade" id="market-prices" role="tabpanel" aria-labelledby="market-prices-tab">
-                <div class="card">
-                    <div class="card-body">
-                        <div class="action-buttons mb-3">
-                            <button class="cool-btn" id="toggleMarketPrices">
-                                <i class="fas fa-eye"></i>
-                                <span th:text="#{toggleView}">Toggle View</span>
-                            </button>
-                        </div>
-                        <div id="marketPricesTable" class="table-responsive">
-                            <table class="table table-hover">
-                                <thead>
-                                <tr>
-                                    <th th:text="#{startTime}">Start Time</th>
-                                    <th th:text="#{endTime}">End Time</th>
-                                    <th th:text="#{price}">Price (cent/kWh)</th>
-                                </tr>
-                                </thead>
-                                <tbody id="marketPricesTbody">
-                                <tr th:each="period : ${marketPrices}"
-                                    th:with="formattedPrice=${#numbers.formatDecimal(period.marketPrice, 1, 2)}">
-                                    <td th:text="${#dates.format(period.startTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</td>
-                                    <td th:text="${#dates.format(period.endTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</td>
-                                    <td th:text="${formattedPrice}">N/A</td>
-                                </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                        <div class="chart-container" id="marketPricesChartContainer">
-                            <canvas id="marketPricesChart"></canvas>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="tab-pane fade show active" id="scheduled-charging-periods" role="tabpanel"
-                 aria-labelledby="scheduled-charging-periods-tab">
-                <div class="card">
-                    <div class="card-body">
-                        <div class="action-buttons mb-3">
-                            <button class="cool-btn" id="toggleChargingSchedule">
-                                <i class="fas fa-eye"></i>
-                                <span th:text="#{toggleView}">Toggle View</span>
-                            </button>
-                        </div>
-                        <div id="chargingScheduleTable" class="table-responsive">
-                            <table class="table table-hover">
-                                <thead>
-                                <tr>
-                                    <th th:text="#{startTime}">Start Time</th>
-                                    <th th:text="#{endTime}">End Time</th>
-                                    <th th:text="#{price}">Price (cent/kWh)</th>
-                                </tr>
-                                </thead>
-                                <tbody id="chargingScheduleTbody">
-                                <tr th:each="schedule : ${scheduledChargingPeriods}"
-                                    th:with="formattedPrice=${#numbers.formatDecimal(schedule.price, 1, 2)}">
-                                    <td th:text="${#dates.format(schedule.startTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</td>
-                                    <td th:text="${#dates.format(schedule.endTimestamp, 'dd.MM.yyyy HH:mm:ss')}">N/A</td>
-                                    <td th:text="${formattedPrice}">N/A</td>
-                                </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                        <div class="chart-container" id="chargingScheduleChartContainer">
-                            <canvas id="chargingScheduleChart"></canvas>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
+    <div th:replace="~{fragments/charging-status :: confirmationModal}"></div>
+    <div th:replace="~{fragments/charging-status :: loaderOverlay}"></div>
 </div>
-
-<div class="modal fade" id="confirmationModal" tabindex="-1" aria-labelledby="confirmationModalLabel"
-     aria-hidden="true">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="confirmationModalLabel" th:text="#{confirm_start_charging_title}">Start Charging?</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body" th:text="#{confirm_start_charging_message}"></div>
-            <div class="modal-footer">
-                <button type="button" class="cool-btn" id="cancelStart" th:text="#{confirm_start_charging_cancel}"
-                        onclick="hideLoader();">Cancel</button>
-                <button type="button" class="cool-btn" id="confirmStart" th:text="#{confirm_start_charging_confirm}">OK</button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<div id="loaderOverlay" aria-live="polite" aria-busy="true">
-    <div class="loader" role="status" aria-label="Laden..."></div>
-</div>
-
 </body>
 </html>
