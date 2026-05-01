@@ -3,7 +3,7 @@ package de.zeus.power.util;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import javax.annotation.PostConstruct;
+import jakarta.annotation.PostConstruct;
 
 /**
  * Copyright 2025 Guido Zeuner - https://tiny-tool.de

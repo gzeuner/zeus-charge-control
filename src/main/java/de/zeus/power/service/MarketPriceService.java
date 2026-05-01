@@ -278,7 +278,7 @@ public class MarketPriceService {
     }
 
     private ApiResponse<MarketPriceResponse> handleException(Exception e) {
-        HttpStatus status = HttpStatus.INTERNAL_SERVER_ERROR;
+        HttpStatusCode status = HttpStatus.INTERNAL_SERVER_ERROR;
         String message = "Internal server error";
 
         if (e instanceof RestClientException) {

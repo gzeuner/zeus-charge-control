@@ -1,9 +1,12 @@
 package de.zeus.power.config;
 
-import org.apache.http.client.config.RequestConfig;
-import org.apache.http.impl.client.CloseableHttpClient;
-import org.apache.http.impl.client.HttpClients;
-import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
+import org.apache.hc.client5.http.config.RequestConfig;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
+import org.apache.hc.core5.util.TimeValue;
+import org.apache.hc.core5.util.Timeout;
 import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -16,7 +19,6 @@ import org.springframework.web.servlet.i18n.LocaleChangeInterceptor;
 import org.springframework.web.servlet.i18n.SessionLocaleResolver;
 
 import java.util.Locale;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Copyright 2024 Guido Zeuner - https://tiny-tool.de
@@ -58,27 +60,24 @@ public class WebConfig implements WebMvcConfigurer {
 
     @Bean
     public RestTemplateBuilder restTemplateBuilder() {
-        PoolingHttpClientConnectionManager connectionManager = new PoolingHttpClientConnectionManager();
+        PoolingHttpClientConnectionManager connectionManager = PoolingHttpClientConnectionManagerBuilder.create().build();
         connectionManager.setMaxTotal(100);
         connectionManager.setDefaultMaxPerRoute(20);
-        connectionManager.setValidateAfterInactivity(5000);
+        connectionManager.setValidateAfterInactivity(TimeValue.ofSeconds(5));
 
         RequestConfig requestConfig = RequestConfig.custom()
-                .setConnectTimeout(2000)
-                .setConnectionRequestTimeout(2000)
-                .setSocketTimeout(5000)
+                .setConnectTimeout(Timeout.ofSeconds(2))
+                .setConnectionRequestTimeout(Timeout.ofSeconds(2))
+                .setResponseTimeout(Timeout.ofSeconds(5))
                 .build();
 
         CloseableHttpClient httpClient = HttpClients.custom()
                 .setConnectionManager(connectionManager)
                 .setDefaultRequestConfig(requestConfig)
-                .evictIdleConnections(30, TimeUnit.SECONDS)
+                .evictIdleConnections(TimeValue.ofSeconds(30))
                 .build();
 
         HttpComponentsClientHttpRequestFactory requestFactory = new HttpComponentsClientHttpRequestFactory(httpClient);
-        requestFactory.setConnectTimeout(2000);
-        requestFactory.setReadTimeout(5000);
-
         return new RestTemplateBuilder().requestFactory(() -> requestFactory);
     }
 

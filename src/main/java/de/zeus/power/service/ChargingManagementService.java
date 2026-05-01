@@ -5,6 +5,7 @@ import de.zeus.power.config.LogFilter;
 import de.zeus.power.entity.ChargingSchedule;
 import de.zeus.power.entity.MarketPrice;
 import de.zeus.power.event.MarketPricesUpdatedEvent;
+import de.zeus.power.model.BatteryStatusResponse;
 import de.zeus.power.repository.ChargingScheduleRepository;
 import de.zeus.power.repository.MarketPriceRepository;
 import de.zeus.power.util.ChargingUtils;
@@ -51,9 +52,7 @@ public class ChargingManagementService {
     @Autowired private ChargingUtils chargingUtils;
     @Autowired(required = false) private BatteryProperties batteryProperties; // nightPauseWatts & holdIntervalSeconds
     @Autowired private WeatherForecastService weatherForecastService;
-
-    @Value("${battery.target.stateOfCharge:90}")
-    private int targetStateOfCharge;
+    @Autowired private SeasonalTargetStateOfChargeService seasonalTargetStateOfChargeService;
 
     @Value("${marketdata.acceptable.price.cents:15}")
     private int maxAcceptableMarketPriceInCent;
@@ -211,6 +210,8 @@ public class ChargingManagementService {
 
         chargingUtils.handleAutomaticModeTransition(now);
         batteryManagementService.updateRsocHistory(now, rsoc);
+        BatteryStatusResponse currentStatus = batteryManagementService.getCurrentBatteryStatus();
+        batteryManagementService.updateBatteryStatusHistory(now, currentStatus);
         tryCatchupStart(now, rsoc);
     }
 
@@ -219,7 +220,7 @@ public class ChargingManagementService {
         if (!catchupEnabled) return;
         if (batteryManagementService.isOwnerProtected()) return; // respect manual/other holds
 
-        int threshold = Math.max(0, targetStateOfCharge - Math.max(0, catchupRsocDropPct));
+        int threshold = Math.max(0, currentTargetStateOfCharge() - Math.max(0, catchupRsocDropPct));
         if (rsoc >= threshold) return;
 
         Optional<ChargingSchedule> active = chargingScheduleRepository.findAll().stream()
@@ -258,9 +259,10 @@ public class ChargingManagementService {
         int dynamicThreshold = chargingUtils.calculateDynamicDaytimeThreshold();
         int currentRsoc = batteryManagementService.getRelativeStateOfCharge();
         long currentTime = System.currentTimeMillis();
+        int targetRsoc = currentTargetStateOfCharge();
 
         if (!ChargingUtils.isNight(currentTime) && currentRsoc <= dynamicThreshold) {
-            if (currentRsoc < targetStateOfCharge) {
+            if (currentRsoc < targetRsoc) {
                 optimized.addAll(getFutureDaytimeSchedules(currentTime));
             }
         }
@@ -270,8 +272,9 @@ public class ChargingManagementService {
     private void optimizeChargingProcess() {
         int currentRsoc = batteryManagementService.getRelativeStateOfCharge();
         List<MarketPrice> marketPrices = marketPriceRepository.findAll();
+        int targetRsoc = currentTargetStateOfCharge();
 
-        if (currentRsoc >= targetStateOfCharge) {
+        if (currentRsoc >= targetRsoc) {
             removeAllPlannedChargingPeriods();
             return;
         }
@@ -343,7 +346,7 @@ public class ChargingManagementService {
         int currentRsoc = batteryManagementService.getRelativeStateOfCharge();
         long currentTime = System.currentTimeMillis();
         boolean hasFuture = chargingScheduleRepository.findAll().stream().anyMatch(s -> s.getEndTimestamp() > currentTime);
-        return !hasFuture || currentRsoc < targetStateOfCharge;
+        return !hasFuture || currentRsoc < currentTargetStateOfCharge();
     }
 
     private void removeAllPlannedChargingPeriods() {
@@ -353,9 +356,10 @@ public class ChargingManagementService {
         if (toRemove.isEmpty()) return;
 
         int rsoc = batteryManagementService.getRelativeStateOfCharge();
+        int targetRsoc = currentTargetStateOfCharge();
         LogFilter.logInfo(ChargingManagementService.class,
                 "Removing all planned charging periods (count={}, RSOC={}%, target={}%).",
-                toRemove.size(), rsoc, targetStateOfCharge);
+                toRemove.size(), rsoc, targetRsoc);
 
         toRemove.forEach(s -> {
             cancelHoldForSchedule(s.getId());
@@ -411,7 +415,8 @@ public class ChargingManagementService {
 
     private List<ChargingSchedule> optimizeNighttimeCharging() {
         int rsoc = batteryManagementService.getRelativeStateOfCharge();
-        if (rsoc >= targetStateOfCharge) return Collections.emptyList();
+        int targetRsoc = currentTargetStateOfCharge();
+        if (rsoc >= targetRsoc) return Collections.emptyList();
 
         ZoneId zone = ZoneId.systemDefault();
         LocalDateTime now = LocalDateTime.now(zone);
@@ -501,10 +506,10 @@ public class ChargingManagementService {
 
         int missing = requiredPeriods - existing.size();
         if (missing > 0) {
-            LogFilter.logInfo(ChargingManagementService.class,
-                    "Missing {} charging period(s). RSOC={}%, target={}%, requiredPeriods={}, existing={}, totalPeriods={}.",
-                    missing, currentRsoc, targetStateOfCharge, requiredPeriods, existing.size(), totalPeriods);
-            addAdditionalChargingPeriods(marketPrices, missing, existing, dynamicMaxPrice, requiredCapacity);
+                    LogFilter.logInfo(ChargingManagementService.class,
+                            "Missing {} charging period(s). RSOC={}%, target={}%, requiredPeriods={}, existing={}, totalPeriods={}.",
+                    missing, currentRsoc, currentTargetStateOfCharge(), requiredPeriods, existing.size(), totalPeriods);
+                    addAdditionalChargingPeriods(marketPrices, missing, existing, dynamicMaxPrice, requiredCapacity);
         }
     }
 
@@ -969,5 +974,9 @@ public class ChargingManagementService {
 
         long nightEndTs = nightEnd.atZone(zone).toInstant().toEpochMilli();
         return nightEndTs - Math.max(0, nightLatestStartOffsetMinutes) * 60_000L;
+    }
+
+    private int currentTargetStateOfCharge() {
+        return seasonalTargetStateOfChargeService.getCurrentTargetStateOfCharge();
     }
 }

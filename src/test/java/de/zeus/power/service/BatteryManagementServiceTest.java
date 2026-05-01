@@ -23,15 +23,19 @@ class BatteryManagementServiceTest {
 
     private BatteryCommandService commandService;
     private ChargingScheduleRepository chargingScheduleRepository;
+    private SeasonalTargetStateOfChargeService seasonalTargetStateOfChargeService;
     private BatteryManagementService service;
 
     @BeforeEach
     void setUp() {
         commandService = mock(BatteryCommandService.class);
         chargingScheduleRepository = mock(ChargingScheduleRepository.class);
+        seasonalTargetStateOfChargeService = mock(SeasonalTargetStateOfChargeService.class);
         when(chargingScheduleRepository.findAll()).thenReturn(Collections.emptyList());
+        when(seasonalTargetStateOfChargeService.getCurrentTargetStateOfCharge()).thenReturn(90);
 
         service = new BatteryManagementService(commandService, chargingScheduleRepository);
+        setField("seasonalTargetStateOfChargeService", seasonalTargetStateOfChargeService);
 
         // Inject @Value defaults
         setField("manualHoldMs", 900_000L);
@@ -41,7 +45,6 @@ class BatteryManagementServiceTest {
         setField("gridImportLimitWatt", 4600);
         setField("inverterMaxWattConfigured", 4600);
         setField("nightPauseWatts", 1);
-        setField("targetStateOfCharge", 90);
         setField("cacheDurationInSeconds", 60);
         setField("maxHistorySize", 24);
         setField("nightChargingIdle", true);

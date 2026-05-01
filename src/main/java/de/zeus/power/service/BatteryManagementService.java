@@ -3,9 +3,11 @@ package de.zeus.power.service;
 import de.zeus.power.config.LogFilter;
 import de.zeus.power.entity.ChargingSchedule;
 import de.zeus.power.model.ApiResponse;
+import de.zeus.power.model.BatteryStatusSample;
 import de.zeus.power.model.BatteryStatusResponse;
 import de.zeus.power.repository.ChargingScheduleRepository;
 import de.zeus.power.util.ChargingUtils;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -104,8 +106,8 @@ public class BatteryManagementService {
     private final boolean batteryNotConfigured;
 
     // Config
-    @Value("${battery.target.stateOfCharge:90}")
-    private int targetStateOfCharge;
+    @Autowired
+    private SeasonalTargetStateOfChargeService seasonalTargetStateOfChargeService;
 
     @Value("${battery.status.cache.duration.seconds:10}")
     private int cacheDurationInSeconds;
@@ -125,6 +127,7 @@ public class BatteryManagementService {
     private volatile boolean nightIdleActive = false;
     private int lastSetpointW;
     private final Queue<Map.Entry<Long, Integer>> rsocHistory = new ConcurrentLinkedQueue<>();
+    private final Queue<BatteryStatusSample> batteryStatusHistory = new ConcurrentLinkedQueue<>();
 
     public BatteryManagementService(BatteryCommandService commandService,
                                     ChargingScheduleRepository chargingScheduleRepository) {
@@ -189,6 +192,23 @@ public class BatteryManagementService {
         while (rsocHistory.size() > maxHistorySize) rsocHistory.poll();
     }
 
+    public void updateBatteryStatusHistory(long currentTime, BatteryStatusResponse status) {
+        if (status == null) return;
+        int currentRsoc = status.getRsoc();
+        if (currentRsoc < 0 || currentRsoc > 100) return;
+
+        Integer remainingCapacityWh = status.getRemainingCapacityWh() >= 0 ? status.getRemainingCapacityWh() : null;
+        batteryStatusHistory.add(new BatteryStatusSample(
+                currentTime,
+                currentRsoc,
+                remainingCapacityWh,
+                status.getPacTotalW(),
+                status.isBatteryCharging(),
+                status.isBatteryDischarging()
+        ));
+        while (batteryStatusHistory.size() > maxHistorySize) batteryStatusHistory.poll();
+    }
+
     public synchronized List<Map.Entry<Long, Integer>> getRsocHistory() {
         if (rsocHistory.size() < 2) return Collections.emptyList();
         List<Map.Entry<Long, Integer>> history = new ArrayList<>(rsocHistory);
@@ -199,6 +219,20 @@ public class BatteryManagementService {
                 return Collections.emptyList();
             }
             lastTs = e.getKey();
+        }
+        return history;
+    }
+
+    public synchronized List<BatteryStatusSample> getBatteryStatusHistory() {
+        if (batteryStatusHistory.size() < 2) return Collections.emptyList();
+        List<BatteryStatusSample> history = new ArrayList<>(batteryStatusHistory);
+        long lastTs = 0;
+        for (BatteryStatusSample sample : history) {
+            if (sample == null || sample.timestamp() < lastTs) {
+                batteryStatusHistory.clear();
+                return Collections.emptyList();
+            }
+            lastTs = sample.timestamp();
         }
         return history;
     }
@@ -222,8 +256,9 @@ public class BatteryManagementService {
         }
 
         int rsoc = getRelativeStateOfCharge();
-        if (rsoc >= targetStateOfCharge) {
-            LogFilter.logInfo(BatteryManagementService.class, "Skip start: RSOC {}% >= target {}%.", rsoc, targetStateOfCharge);
+        int targetRsoc = currentTargetStateOfCharge();
+        if (rsoc >= targetRsoc) {
+            LogFilter.logInfo(BatteryManagementService.class, "Skip start: RSOC {}% >= target {}%.", rsoc, targetRsoc);
             resetForcedCharging();
             return false;
         }
@@ -466,7 +501,8 @@ public class BatteryManagementService {
         }
 
         // RSOC cap
-        if (rsoc >= targetStateOfCharge) {
+        int targetRsoc = currentTargetStateOfCharge();
+        if (rsoc >= targetRsoc) {
             boolean night = ChargingUtils.isNight(now); // static util call
             if (night && this.nightChargingIdle) {
                 // Night-idle exception: hold ~1W until night end (keep control)
@@ -476,14 +512,14 @@ public class BatteryManagementService {
                 acquireOwnerUntil(scheduledWindow ? ControlOwner.SCHEDULE : ControlOwner.MANUAL, nightEnd);
                 LogFilter.logInfo(BatteryManagementService.class,
                         "RSOC {}% >= target {}% @night -> hold {}W until {}.",
-                        rsoc, targetStateOfCharge, Math.max(1, nightPauseWatts), Instant.ofEpochMilli(nightEnd));
+                        rsoc, targetRsoc, Math.max(1, nightPauseWatts), Instant.ofEpochMilli(nightEnd));
                 return true; // keep holding until night end
             } else {
                 // Default case: hand back to EM immediately, do not keep control
                 boolean ok = resetToAutomaticMode(true);
                 LogFilter.log(BatteryManagementService.class,
                         ok ? LogFilter.LOG_LEVEL_INFO : LogFilter.LOG_LEVEL_WARN,
-                        "RSOC {}% >= target {}% -> hand back to EM (0W).", rsoc, targetStateOfCharge);
+                        "RSOC {}% >= target {}% -> hand back to EM (0W).", rsoc, targetRsoc);
                 return false; // end hold
             }
         }
@@ -541,6 +577,10 @@ public class BatteryManagementService {
         if (start < 0 || start > 23 || end < 0 || end > 23) {
             throw new IllegalArgumentException("Invalid night hours: " + start + " to " + end);
         }
+    }
+
+    private int currentTargetStateOfCharge() {
+        return seasonalTargetStateOfChargeService.getCurrentTargetStateOfCharge();
     }
 
 }
