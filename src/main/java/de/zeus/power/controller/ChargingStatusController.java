@@ -1,20 +1,25 @@
 package de.zeus.power.controller;
 
+import jakarta.servlet.http.HttpServletRequest;
 import de.zeus.power.entity.ChargingSchedule;
 import de.zeus.power.entity.MarketPrice;
 import de.zeus.power.model.ApiResponse;
+import de.zeus.power.model.BatteryCapacitySnapshot;
+import de.zeus.power.model.BatteryStatusMetrics;
 import de.zeus.power.model.BatteryStatusResponse;
 import de.zeus.power.model.PriceBreakdown;
 import de.zeus.power.service.BatteryManagementService;
+import de.zeus.power.service.BatteryCapacityService;
+import de.zeus.power.service.BatteryStatusMetricsService;
 import de.zeus.power.service.ChargingManagementService;
 import de.zeus.power.service.MarketPriceService;
 import de.zeus.power.service.PriceDisplayService;
+import de.zeus.power.service.SeasonalTargetStateOfChargeService;
 import de.zeus.power.util.ChargingUtils;
 import de.zeus.power.util.NightConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.MessageSource;
 import org.springframework.context.i18n.LocaleContextHolder;
 import org.springframework.http.HttpStatus;
@@ -22,7 +27,6 @@ import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.*;
 
-import javax.servlet.http.HttpServletRequest;
 import java.math.BigDecimal;
 import java.util.*;
 
@@ -48,12 +52,9 @@ public class ChargingStatusController {
     @Autowired private ChargingUtils chargingUtils;
     @Autowired private MessageSource messageSource;
     @Autowired private PriceDisplayService priceDisplayService;
-
-    @Value("${battery.target.stateOfCharge}")
-    private int targetStateOfCharge;
-
-    @Value("${battery.inverter.max.watts:4600}")
-    private int chargingPointInWatt;
+    @Autowired private SeasonalTargetStateOfChargeService seasonalTargetStateOfChargeService;
+    @Autowired private BatteryStatusMetricsService batteryStatusMetricsService;
+    @Autowired private BatteryCapacityService batteryCapacityService;
 
     @GetMapping("/charging-status")
     public String getChargingStatus(HttpServletRequest request, @RequestParam(name = "lang", required = false) String lang, Model model) {
@@ -66,6 +67,7 @@ public class ChargingStatusController {
                 .toList();
 
         BatteryStatusResponse batteryStatus = batteryManagementService.getCurrentBatteryStatus();
+        BatteryCapacitySnapshot batteryCapacity = batteryCapacityService.calculateSnapshot(batteryStatus);
 
         List<MarketPrice> cheapestPeriods = marketPrices.stream()
                 .filter(price -> price.getStartTimestamp() > System.currentTimeMillis())
@@ -94,19 +96,25 @@ public class ChargingStatusController {
 
         model.addAttribute("marketPrices", marketPrices);
         model.addAttribute("batteryStatus", batteryStatus);
+        model.addAttribute("batteryCapacity", batteryCapacity);
         model.addAttribute("cheapestPeriods", cheapestPeriods);
         model.addAttribute("scheduledChargingPeriods", scheduledChargingPeriods);
         model.addAttribute("cheapestPrice", cheapestPrice);
-        model.addAttribute("targetStateOfCharge", targetStateOfCharge);
+        model.addAttribute("targetStateOfCharge", currentTargetStateOfCharge());
+        model.addAttribute("activeSeasonLabel", resolveActiveSeasonLabel(locale));
+        model.addAttribute("capacityTooltip", buildCapacityTooltip(batteryCapacity, locale));
+        model.addAttribute("dropRateTooltip", messageSource.getMessage("dropRateTooltip", null, locale));
+        model.addAttribute("estimatedTimeToTargetTooltip", messageSource.getMessage("estimatedTimeToTargetTooltip", null, locale));
         model.addAttribute("modeTooltip", messageSource.getMessage("modeTooltip", null, LocaleContextHolder.getLocale()));
         model.addAttribute("nightIdleTooltip", messageSource.getMessage("nightIdleTooltip", null, LocaleContextHolder.getLocale()));
         model.addAttribute("batteryNotConfigured", batteryManagementService.isBatteryNotConfigured());
         model.addAttribute("nightChargingIdle", chargingUtils.isNightChargingIdle());
         model.addAttribute("nightIdleActive", batteryManagementService.isNightIdleActive());
 
-        Double dropRate = calculateDropRate();
+        BatteryStatusMetrics batteryStatusMetrics = batteryStatusMetricsService.calculateCurrentMetrics();
+        Double dropRate = batteryStatusMetrics.dropRatePerHour();
         Double currentPrice = marketPriceService.getCurrentlyValidPrice();
-        Double estimatedTimeToTarget = calculateEstimatedTimeToTarget();
+        Double estimatedTimeToTarget = batteryStatusMetrics.estimatedTimeToTargetHours();
         model.addAttribute("dropRate", dropRate);
         model.addAttribute("currentPrice", currentPrice);
         model.addAttribute("estimatedTimeToTarget", estimatedTimeToTarget);
@@ -263,6 +271,8 @@ public class ChargingStatusController {
     public Map<String, Object> getCurrentStatus() {
         Map<String, Object> status = new HashMap<>();
         boolean manualIdle = batteryManagementService.isManualIdleActive();
+        BatteryStatusResponse batteryStatus = batteryManagementService.getCurrentBatteryStatus();
+        BatteryCapacitySnapshot batteryCapacity = batteryCapacityService.calculateSnapshot(batteryStatus);
 
         status.put("currentMode", manualIdle ? "idle" : "standard"); // mirror mode for UI
         status.put("manualIdleActive", manualIdle);                   // explicit flag for UI polling
@@ -270,7 +280,11 @@ public class ChargingStatusController {
         status.put("nightIdleActive", batteryManagementService.isNightIdleActive());
         status.put("isCharging", batteryManagementService.isForcedChargingActive());
         status.put("currentPrice", marketPriceService.getCurrentlyValidPrice());
-        status.put("dropRate", calculateDropRate());
+        BatteryStatusMetrics batteryStatusMetrics = batteryStatusMetricsService.calculateCurrentMetrics();
+        status.put("dropRate", batteryStatusMetrics.dropRatePerHour());
+        status.put("estimatedTimeToTarget", batteryStatusMetrics.estimatedTimeToTargetHours());
+        status.put("stateOfCharge", batteryCapacity.stateOfChargePercent());
+        status.put("remainingCapacityWh", batteryCapacity.remainingCapacityWh());
         status.put("lastSetpointW", batteryManagementService.getLastSetpointW());
         status.put("nightStartHour", NightConfig.getNightStartHour());
         status.put("nightEndHour", NightConfig.getNightEndHour());
@@ -297,6 +311,9 @@ public class ChargingStatusController {
                         return new ApiResponse<>(true, HttpStatus.OK, "Already in idle mode", null);
                     }
 
+                    // User-selected idle must override any active charging state.
+                    batteryManagementService.setForcedChargingActive(false);
+
                     // No-op retained for compatibility
                     batteryManagementService.activateManualOperatingMode();
 
@@ -312,16 +329,16 @@ public class ChargingStatusController {
                     }
                 }
                 case "standard": {
-                    boolean force = Boolean.parseBoolean(String.valueOf(request.getOrDefault("force", "false")));
+                    // Frontend requests must always take priority over active holds.
+                    boolean force = true;
                     boolean ok = batteryManagementService.resetToAutomaticMode(force);
                     if (ok) {
                         batteryManagementService.setManualIdleActive(false);
                         log.info("Switched to standard mode (EM control) force={}", force);
                         return new ApiResponse<>(true, HttpStatus.OK, "Switched to standard mode (EM control)", null);
                     } else {
-                        // If owner protection blocks and force=false, return 409 so UI can retry with force=true
-                        log.warn("Switch to standard blocked (likely owner protection). force={}", force);
-                        return new ApiResponse<>(false, HttpStatus.CONFLICT, "Blocked by active hold (confirm with force=true)", null);
+                        log.warn("Switch to standard failed (EM hand-back failed). force={}", force);
+                        return new ApiResponse<>(false, HttpStatus.BAD_GATEWAY, "Failed to return to EM", null);
                     }
                 }
                 default:
@@ -372,6 +389,7 @@ public class ChargingStatusController {
                     // Explicit user stop -> always force=true
                     boolean ok = batteryManagementService.resetToAutomaticMode(true);
                     if (ok) {
+                        batteryManagementService.setManualIdleActive(false);
                         log.info("Charging stopped (handed back to EM, setpoint=1W)");
                         return new ApiResponse<>(true, HttpStatus.OK, "Charging stopped (EM control)", null);
                     } else {
@@ -392,22 +410,20 @@ public class ChargingStatusController {
         }
     }
 
-    private Double calculateDropRate() {
-        List<Map.Entry<Long, Integer>> history = batteryManagementService.getRsocHistory();
-        if (history.size() < 2) return null;
-        Map.Entry<Long, Integer> oldest = history.get(0);
-        Map.Entry<Long, Integer> latest = history.get(history.size() - 1);
-        long timeDiffMinutes = (latest.getKey() - oldest.getKey()) / 60000;
-        if (timeDiffMinutes <= 0) return null;
-        return (double) (oldest.getValue() - latest.getValue()) / (timeDiffMinutes / 60.0);
+    private int currentTargetStateOfCharge() {
+        return seasonalTargetStateOfChargeService.getCurrentTargetStateOfCharge();
     }
 
-    private Double calculateEstimatedTimeToTarget() {
-        int currentRsoc = batteryManagementService.getRelativeStateOfCharge();
-        if (currentRsoc >= targetStateOfCharge) return null;
-        double requiredCapacity = chargingUtils.calculateRequiredCapacity(currentRsoc);
-        if (requiredCapacity <= 0 || chargingPointInWatt <= 0) return null;
-        return requiredCapacity / chargingPointInWatt;
+    private String resolveActiveSeasonLabel(Locale locale) {
+        return messageSource.getMessage(seasonalTargetStateOfChargeService.getCurrentSeasonMessageKey(), null, locale);
+    }
+
+    private String buildCapacityTooltip(BatteryCapacitySnapshot batteryCapacity, Locale locale) {
+        return messageSource.getMessage(
+                "capacityTooltip",
+                new Object[]{batteryCapacity.installedModules(), batteryCapacity.totalCapacityWh()},
+                locale
+        );
     }
 
     private String buildGridChargingTooltip(Double currentPrice, Double dropRate, Double estimatedTimeToTarget, Locale locale) {
