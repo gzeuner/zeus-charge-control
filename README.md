@@ -35,10 +35,14 @@ Dieses Projekt wird **bewusst ohne vorkompilierte Binaries oder Releases** berei
 Die Anwendung ist ausschließlich als **Quellcode** verfügbar und muss lokal gebaut werden:
 
 ```bash
-mvn clean package
-mvn test
+mvn clean verify
 mvn spring-boot:run
 ```
+
+Voraussetzungen für den Build:
+
+- Java 21
+- Maven 3.9+
 
 Alternativ nach dem Build:
 
@@ -54,8 +58,8 @@ Die Verantwortung für Build, Konfiguration und Betrieb liegt vollständig beim 
 
 ### Backend
 
-- Java 17
-- Spring Boot 2.7.18
+- Java 21
+- Spring Boot 3.5.11
 - Spring Web
 - Spring Scheduling
 - Spring Retry
@@ -103,6 +107,7 @@ version:    3.0-RELEASE
 - Night-Idle
 - Manuelles Start/Stop
 - Rückgabe an Energy Manager
+- Frontend-Eingaben haben Vorrang (z. B. Wechsel auf `standard`/`stop` übersteuert aktive Holds)
 
 ### Preislogik
 
@@ -179,6 +184,10 @@ version:    3.0-RELEASE
 - `POST /toggle-night-charging`
 - `POST /night-charging-window`
 
+Hinweis:
+- Für Frontend-Aktionen gilt Vorrang vor aktiven Holds.
+- Der Wechsel auf `standard` über `/toggle-mode` führt intern ein erzwungenes Handback an den Energy Manager aus.
+
 ---
 
 ## Beispielkonfiguration
@@ -244,6 +253,10 @@ Vorhandene Unit-Tests u. a.:
 - `ChargingManagementServiceTest`
 - `BatteryManagementServiceTest`
 - `PriceDisplayServiceTest`
+- `BatteryCapacityServiceTest`
+- `BatteryStatusMetricsServiceTest`
+- `SeasonalTargetStateOfChargeServiceTest`
+- `BatteryPropertiesBindingTest`
 
 `mvn test` läuft erfolgreich (Stand aktueller Code).
 
