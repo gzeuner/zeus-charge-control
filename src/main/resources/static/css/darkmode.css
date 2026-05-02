@@ -1458,6 +1458,13 @@ body.is-loading [data-ui-action='true'] {
   }
 }
 
+@media (min-width: 992px) and (max-width: 1199px) {
+  .topbar-actions > .toolbar-link,
+  .topbar-actions .dropdown > .toolbar-link {
+    min-width: 188px;
+  }
+}
+
 @media (max-width: 991px) {
   .app-shell {
     width: min(100%, calc(100% - 24px));
@@ -1484,6 +1491,10 @@ body.is-loading [data-ui-action='true'] {
 
   .topbar-actions .dropdown,
   .topbar-actions .dropdown > .toolbar-link {
+    width: 100%;
+  }
+
+  .topbar-actions > .toolbar-link {
     width: 100%;
   }
 
