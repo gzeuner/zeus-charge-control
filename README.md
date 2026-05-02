@@ -1,285 +1,126 @@
-# Zeus Charge Control / Zeus Ladeoptimierung
+# ⚡ Zeus Charge Control
 
-Zeus Charge Control ist eine **Java / Spring Boot** Anwendung zur preis-, zustands- und optional wetterbasierten Steuerung eines PV-Batteriespeichers über die **Sonnen API v2**.
+![Java](https://img.shields.io/badge/Java-21-blue)
+![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.5.11-brightgreen)
+![Maven](https://img.shields.io/badge/Maven-Build-orange)
+![License](https://img.shields.io/badge/License-Apache%202.0-blue)
+![Status](https://img.shields.io/badge/Status-Experimental-orange)
+![Last Commit](https://img.shields.io/github/last-commit/gzeuner/zeus-charge-control)
+
+**Intelligente Ladeplanung für PV-Batteriespeicher – automatisch zum besten Preis.**
+
+---
+
+![Zeus Charge Control Showcase](./images/zeus-charge-control-showcase.png)
+
+> 💡 Dynamische Strompreise, automatische Ladeplanung und moderne UI – alles in einer Anwendung.
+
+---
+
+> ⚠️ **Hinweis:**  
+> Unterstützt aktuell ausschließlich **PV-Batteriespeicher mit Sonnen API v2**
+
+---
+
+## 🧠 Was ist Zeus Charge Control?
+
+**Zeus Charge Control** ist eine **Java / Spring Boot** Anwendung zur intelligenten Steuerung eines PV-Batteriespeichers basierend auf:
+
+- aktuellen Strompreisen  
+- Batteriezustand (RSOC = aktueller Ladezustand in %)  
+- optionalen Wetterdaten  
 
 Die Anwendung:
 
-- lädt Marktpreise (aWATTar oder Tibber mit bidirektionaler Fallback-Logik)
-- plant Ladefenster dynamisch anhand RSOC, Preisparametern und optionaler Wetterprognose
-- optimiert Ladepläne kontinuierlich (Event-basiert + zeitgesteuert)
-- bietet eine Web-UI zur manuellen Steuerung
-- bleibt bei API-Ausfällen robust und protokolliert Fehler
+- 📊 lädt Marktpreise (aWATTar / Tibber mit Fallback)
+- ⚡ plant automatisch optimale Ladezeitpunkte
+- 🔁 optimiert kontinuierlich (Event + Scheduler)
+- 🖥️ stellt eine moderne Web-UI bereit
+- 🛡️ bleibt stabil bei API-Ausfällen
 
 ---
 
-## ⚠️ Status: Experimental / Private Use
+## ⚠️ Status
 
-Dieses Projekt befindet sich in einem **experimentellen Entwicklungsstadium** und ist primär für:
-
-- private Nutzung
-- Tests
-- Lern- und Evaluationszwecke
-
-gedacht.
-
-Es ist **nicht für den produktiven Dauerbetrieb in sicherheitskritischen oder kommerziellen Umgebungen vorgesehen**.
-
-Automatisierte Ladeentscheidungen erfolgen daten- und konfigurationsbasiert und sollten vor produktivem Einsatz sorgfältig geprüft werden.
+👉 Produktiver Einsatz ist möglich.  
+Die Nutzung erfolgt eigenverantwortlich.  
+Konfiguration, Betrieb und Bewertung der automatisierten Ladeentscheidungen liegen beim jeweiligen Betreiber der Installation.
 
 ---
 
-## 📦 Distribution & Build
+## 🚀 Features
 
-Dieses Projekt wird **bewusst ohne vorkompilierte Binaries oder Releases** bereitgestellt.
+- ⚡ Dynamische Ladeplanung
+- 📉 Optimierung nach Marktpreisen
+- 🌤️ Optionale Wetterintegration
+- 🎛️ Manuelle Steuerung via Web-UI
+- 🎨 Mehrere moderne Themes
+- 🔄 Event- & zeitgesteuerte Re-Optimierung
+- 🛡️ Fehlertolerant & robust
 
-Die Anwendung ist ausschließlich als **Quellcode** verfügbar und muss lokal gebaut werden:
+---
+
+## 🔧 Batterie-Konfiguration (wichtig!)
+
+Die Anwendung muss an deine reale Batterie angepasst werden:
+
+```properties
+battery.url=${BATTERY_URL:}
+battery.authToken=${BATTERY_AUTH_TOKEN:}
+
+battery.inverter.max.watts=${BATTERY_INVERTER_MAX_WATTS:4600}
+battery.max.capacity.wh=${BATTERY_MAX_CAPACITY_WH:10000}
+```
+
+👉 Diese Werte müssen korrekt gesetzt sein, sonst arbeitet Zeus nicht zuverlässig.
+
+---
+
+## 📦 Build & Start
 
 ```bash
 mvn clean verify
 mvn spring-boot:run
 ```
 
-Voraussetzungen für den Build:
-
-- Java 21
-- Maven 3.9+
-
-Alternativ nach dem Build:
+oder:
 
 ```bash
 java -jar target/zeus-power-control-3.0-RELEASE.jar
 ```
 
-Die Verantwortung für Build, Konfiguration und Betrieb liegt vollständig beim Nutzer.
+### Voraussetzungen
+
+- Java 21  
+- Maven 3.9+
 
 ---
 
-## Technologie-Stack
+## ⚙️ Kernlogik
 
-### Backend
+### 🔋 Dynamische Ladeplanung
 
-- Java 21
-- Spring Boot 3.5.11
-- Spring Web
-- Spring Scheduling
-- Spring Retry
-- Spring Data JPA
-- H2 (In-Memory, Standard)
-
-### Frontend
-
-- Bootstrap 5
-- Chart.js
-- jQuery
-- Luxon
-- Thymeleaf
-
-### Projektkoordinaten
-
-```
-groupId:    de.zeus.power
-artifactId: zeus-power-control
-version:    3.0-RELEASE
-```
+- Auswahl der günstigsten Zeiträume
+- Steuerung basierend auf RSOC
+- automatische Beendigung von Ladevorgängen,
+  sobald der Ziel-Ladezustand erreicht ist
 
 ---
 
-## Kernfunktionen
+### 🔁 Re-Optimierung
 
-### Dynamische Ladeplanung
-
-- Nacht- und Tagesfenster
-- Auswahl günstigster Perioden im konfigurierbaren Toleranzbereich
-- Maximalperioden im Nachtfenster
-- Catch-up-Start innerhalb aktiver Fenster bei RSOC-Abfall
-- Automatische Entfernung von Ladeplänen bei Ziel-RSOC-Erreichung
-
-### Laufende Re-Optimierung
-
-- Bei `MarketPricesUpdatedEvent`
-- Stündlich per Scheduler
-- Bei RSOC-/Modusänderungen
-
-### Modi
-
-- Standard (automatisch)
-- Idle
-- Night-Idle
-- Manuelles Start/Stop
-- Rückgabe an Energy Manager
-- Frontend-Eingaben haben Vorrang (z. B. Wechsel auf `standard`/`stop` übersteuert aktive Holds)
-
-### Preislogik
-
-- Netto- und Bruttoanzeige
-- Konfigurierbare Zuschläge (YAML)
-- Flexibilitätsschwelle (`marketdata.price.flexibility.threshold`)
-- Maximal akzeptabler Preis
-
-### Wetter-Integration (optional)
-
-- Open-Meteo API
-- Wolkendeckungs-Schwellenwert (`weather.sunny-threshold`)
-- Optionales Deferring bei hoher Sonnenerwartung
-
-### Fehlertoleranz
-
-- Retry-Mechanismen
-- Logging bei Batterie-/API-Ausfällen
-- App bleibt lauffähig bei temporärer Nichterreichbarkeit
+- bei Preisupdates
+- stündlich per Scheduler
+- bei Zustandsänderungen
 
 ---
 
-## Scheduler-Verhalten
+## 🔌 Unterstützte Systeme
 
-### Preisupdate + Persistenz
-
-- Beim Start (`ApplicationReadyEvent`)
-- Per Cron (`scheduled.job.cron`, Default: `0 15 14,22,2 * * *`)
-
-### Optimierung
-
-- Bei Preisupdate-Event
-- Stündlich (`0 0 * * * ?`)
-
-### RSOC-/Modusüberwachung
-
-- Fixed Rate (`battery.automatic.mode.check.interval`, Default 15000 ms)
+- ✅ Sonnen API v2 kompatible PV-Speicher
 
 ---
 
-## API-Integrationen
+## 📄 Lizenz
 
-### Batterie
-- Sonnen API v2 (`/status`, `/setpoint/...`)
-
-### Marktpreise
-- aWATTar
-- Tibber
-- Bidirektionale Fallback-Logik
-
-### Wetter
-- Open-Meteo (optional)
-
----
-
-## Verfügbare HTTP-Endpunkte
-
-### UI
-
-- `GET /charging-status`
-- `GET /license?lang=de|en`
-
-### Status
-
-- `GET /current-status`
-
-### Steuerung
-
-- `POST /toggle-mode` (`idle|standard`)
-- `POST /toggle-charging` (`start|stop`)
-- `POST /start-charging`
-- `POST /reset-automatic?force=true|false`
-- `POST /reset-idle`
-- `POST /toggle-night-charging`
-- `POST /night-charging-window`
-
-Hinweis:
-- Für Frontend-Aktionen gilt Vorrang vor aktiven Holds.
-- Der Wechsel auf `standard` über `/toggle-mode` führt intern ein erzwungenes Handback an den Energy Manager aus.
-
----
-
-## Beispielkonfiguration
-
-### Minimal Batterie
-
-```properties
-battery.url=http://<sonnen-ip>/api/v2
-battery.authToken=<token>
-```
-
-Ohne diese Werte startet die App, Batteriesteuerung ist jedoch deaktiviert.
-
----
-
-### Wichtige Properties (Auszug)
-
-```properties
-server.port=8080
-
-marketdata.source=awattar
-marketdata.acceptable.price.cents=15
-marketdata.max.acceptable.price.cents=15
-marketdata.price.flexibility.threshold=2
-
-battery.target.stateOfCharge=90
-battery.inverter.max.watts=4600
-battery.grid.import.limit.watts=4600
-battery.pv.only.enabled=true
-
-night.start=19
-night.end=6
-battery.nightChargingIdle=false
-
-weather.api.enabled=true
-weather.api.latitude=52.52
-weather.api.longitude=13.405
-weather.sunny-threshold=40
-
-battery.max.capacity.wh=10000
-BATTERY_MAX_CAPACITY=10000
-```
-
----
-
-## Lokale Datenhaltung
-
-Standard:
-
-```properties
-spring.datasource.url=jdbc:h2:mem:testdb
-```
-
-Optional mit H2-Konsole (`/h2-console`).
-
----
-
-## Tests
-
-Vorhandene Unit-Tests u. a.:
-
-- `ChargingUtilsTest`
-- `ChargingManagementServiceTest`
-- `BatteryManagementServiceTest`
-- `PriceDisplayServiceTest`
-- `BatteryCapacityServiceTest`
-- `BatteryStatusMetricsServiceTest`
-- `SeasonalTargetStateOfChargeServiceTest`
-- `BatteryPropertiesBindingTest`
-
-`mvn test` läuft erfolgreich (Stand aktueller Code).
-
----
-
-## Disclaimer & Haftungsausschluss
-
-### Keine Verbindung zur Sonnen GmbH
-
-Dieses Projekt steht in keiner Verbindung zur Sonnen GmbH.  
-Die Software wurde nicht von der Sonnen GmbH entwickelt, bereitgestellt oder unterstützt.
-
-### Haftungsausschluss
-
-Die Nutzung erfolgt auf eigenes Risiko.  
-Die Software wird ohne jegliche Gewährleistung bereitgestellt.  
-
-Eine Haftung für Schäden, die aus der Nutzung der Software entstehen, ist – soweit gesetzlich zulässig – ausgeschlossen.  
-Insbesondere wird keine Gewähr für die Richtigkeit von Marktdaten, die Verfügbarkeit externer APIs oder die Eignung für einen bestimmten Zweck übernommen.
-
----
-
-## Lizenz
-
-Apache License 2.0  
-(siehe `LICENSE`)
+Apache License 2.0

@@ -4,7 +4,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>de.zeus.power</groupId>
-    <artifactId>zeus-power-control</artifactId>
+    <artifactId>zeus-charge-control</artifactId>
     <version>3.0-RELEASE</version>
 
     <properties>
