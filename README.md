@@ -45,7 +45,7 @@ Aktuell unterstützt:
 
 - ✅ PV-Batteriespeicher mit **Sonnen API v2**
 
-Nicht offiziell unterstützt:
+Nicht unterstützt:
 
 - ❌ andere Batteriespeicher ohne Sonnen API v2
 - ❌ universelle Wechselrichtersteuerung
@@ -178,7 +178,7 @@ mvn spring-boot:run
 ### Start als JAR
 
 ```bash
-java -jar target/zeus-power-control-3.0-RELEASE.jar
+java -jar target/zeus-charge-control-3.0-RELEASE.jar
 ```
 
 ---
@@ -298,12 +298,6 @@ Gesetzlich zwingende Haftungstatbestände bleiben unberührt.
 Zeus Charge Control ist **nicht für sicherheitskritische, medizinische, netzrelevante oder anderweitig kritische Anwendungen geeignet**.
 
 Die Anwendung dient der privaten beziehungsweise eigenverantwortlichen Optimierung eines unterstützten PV-Batteriespeichers. Sie ersetzt keine zertifizierte Steuerung, kein Energiemanagementsystem mit Sicherheitsfunktion und keine fachliche Prüfung durch qualifizierte Personen.
-
----
-
-### Kein Rechtsrat
-
-Dieser Disclaimer ist ein allgemeiner Hinweistext und stellt keine Rechtsberatung dar. Für eine verbindliche rechtliche Bewertung sollte eine entsprechend qualifizierte Rechtsberatung eingeholt werden.
 
 ---
 
