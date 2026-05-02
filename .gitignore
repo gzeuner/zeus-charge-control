@@ -53,7 +53,7 @@ out/
 bin/
 dist/
 logs/
-images/
+
 
 ########################################
 # Test output
