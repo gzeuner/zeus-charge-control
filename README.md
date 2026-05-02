@@ -21,7 +21,7 @@
 
 **Zeus Charge Control unterstützt aktuell ausschließlich PV-Batteriespeicher mit Sonnen API v2.**
 
-Andere Batteriespeicher, Wechselrichter oder Energiemanagementsysteme werden derzeit nicht offiziell unterstützt.
+Andere Batteriespeicher, Wechselrichter oder Energiemanagementsysteme werden derzeit nicht unterstützt.
 
 👉 **Produktiver Einsatz ist möglich, erfolgt aber eigenverantwortlich.**  
 Konfiguration, Monitoring und Bewertung der automatisierten Ladeentscheidungen liegen beim jeweiligen Betreiber der Installation.
