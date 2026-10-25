@@ -80,6 +80,26 @@ class BatteryManagementServiceTest {
     }
 
     @Test
+    void rejectedForcedStartPreservesManualPauseAndControlFlags() {
+        service.setManualIdleActive(true);
+        when(commandService.setChargePoint(anyInt())).thenReturn(new ApiResponse<>(false, HttpStatus.BAD_GATEWAY, "offline", null));
+
+        assertFalse(service.initCharging(true));
+        assertTrue(service.isManualIdleActive());
+        assertFalse(service.isForcedChargingActive());
+    }
+
+    @Test
+    void targetAlreadyReachedDoesNotClearManualPause() {
+        service.setManualIdleActive(true);
+        when(seasonalTargetStateOfChargeService.getCurrentTargetStateOfCharge()).thenReturn(40);
+
+        assertFalse(service.initCharging(true));
+        assertTrue(service.isManualIdleActive());
+        verify(commandService, never()).setChargePoint(anyInt());
+    }
+
+    @Test
     void computeGridOptimizedChargeTarget_usesConservativeFallbackWhenStatusMissing() {
         setField("cachedBatteryStatus", null);
         when(commandService.getStatus()).thenReturn(new ApiResponse<>(false, HttpStatus.INTERNAL_SERVER_ERROR, "fail", null));
