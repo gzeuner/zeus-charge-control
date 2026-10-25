@@ -171,8 +171,11 @@ test("grid charging requires explicit confirmation, stays open and supports canc
   await expect(page.locator("#chargingBtn")).toBeFocused();
   expect(starts).toBe(0);
   await page.locator("#chargingBtn").click();
+  await expect(dialog).toBeVisible();
+  await expect(page.locator("#cancelStart")).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
+  await expect(page.locator("#chargingBtn")).toBeFocused();
   await page.locator("#chargingBtn").click();
   await page.locator("#confirmStart").click();
   await expect(page.locator("#modeStatus")).toHaveText("Lädt");
@@ -389,10 +392,8 @@ test("layout fits narrow phones, tablets and desktop without page overflow", asy
   await openDashboard(page);
   for (const width of [320, 390, 768, 1024, 1440]) {
     await page.setViewportSize({ width, height: 1000 });
-    const size = await page.evaluate(() => ({
-      scroll: document.documentElement.scrollWidth,
-      width: innerWidth,
-    }));
-    expect(size.scroll, `viewport ${width}`).toBeLessThanOrEqual(size.width);
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth))
+      .toBeLessThanOrEqual(width);
   }
 });
