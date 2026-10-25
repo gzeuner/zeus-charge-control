@@ -240,18 +240,15 @@ public class BatteryManagementService {
     // ------------ main ops
 
     public boolean initCharging(boolean forceCharging) {
-        // User willfully starts charging: override any idle mode/state and give control to us
-        setManualIdleActive(false);
-        this.forcedChargingActive = forceCharging;
+        // Publish control state only after the battery acknowledges the new setpoint.
         invalidateBatteryCache();
 
-        if (!checkPreconditions()) { resetForcedCharging(); return false; }
+        if (!checkPreconditions()) return false;
 
         long now = System.currentTimeMillis();
         Optional<ChargingSchedule> activeSchedule = findActiveSchedule(now);
         if (activeSchedule.isEmpty() && !forceCharging) {
             LogFilter.logInfo(BatteryManagementService.class, "No active charging schedule. Skip.");
-            resetForcedCharging();
             return false;
         }
 
@@ -259,14 +256,12 @@ public class BatteryManagementService {
         int targetRsoc = currentTargetStateOfCharge();
         if (rsoc >= targetRsoc) {
             LogFilter.logInfo(BatteryManagementService.class, "Skip start: RSOC {}% >= target {}%.", rsoc, targetRsoc);
-            resetForcedCharging();
             return false;
         }
 
         ApiResponse<?> modeResponse = activateManualOperatingMode();
         if (!modeResponse.success()) {
             LogFilter.logError(BatteryManagementService.class, "Manual mode activation failed: {}", modeResponse.message());
-            resetForcedCharging();
             return false;
         }
 
@@ -274,10 +269,11 @@ public class BatteryManagementService {
                 : computeGridOptimizedChargeTarget();
         if (!setChargeWatts(targetWatts)) {
             LogFilter.logError(BatteryManagementService.class, "Failed to set setpoint to {} W.", targetWatts);
-            resetForcedCharging();
             return false;
         }
 
+        setManualIdleActive(false);
+        this.forcedChargingActive = forceCharging;
         // Acquire owner for hold (blocks /reset-automatic unless force=true)
         acquireOwner(forceCharging ? ControlOwner.MANUAL : ControlOwner.SCHEDULE,
                 forceCharging ? manualHoldMs : scheduleHoldMs);

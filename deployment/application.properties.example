@@ -1,0 +1,55 @@
+# Copy to config/application.properties before starting the distribution.
+# Values here override the defaults inside the JAR. Environment placeholders remain supported.
+
+# UI: localhost by default. Choose a deliberate LAN/reverse-proxy binding when needed.
+server.address=${SERVER_ADDRESS:127.0.0.1}
+server.port=${SERVER_PORT:8080}
+spring.h2.console.enabled=false
+spring.thymeleaf.cache=true
+
+# Persistent storage, relative to the extracted package (the launchers set the working directory).
+# Stop the application before backing up data/. Review existing database migrations separately.
+spring.datasource.url=${SPRING_DATASOURCE_URL:jdbc:h2:file:./data/zeus-charge-control;DB_CLOSE_ON_EXIT=FALSE}
+spring.datasource.username=${SPRING_DATASOURCE_USERNAME:sa}
+spring.datasource.password=${SPRING_DATASOURCE_PASSWORD:}
+spring.jpa.hibernate.ddl-auto=update
+
+# Sonnen API v2. Leave blank for an unconfigured, non-controlling installation.
+# Example URL format: http://192.168.1.100/api/v2 (do not copy somebody else's address/token).
+battery.url=${BATTERY_URL:}
+battery.authToken=${BATTERY_AUTH_TOKEN:}
+battery.inverter.max.watts=${BATTERY_INVERTER_MAX_WATTS:4600}
+battery.grid.import.limit.watts=${BATTERY_GRID_IMPORT_LIMIT_WATTS:4600}
+battery.max.capacity.wh=${BATTERY_MAX_CAPACITY_WH:10000}
+battery.capacity.installed-modules=${BATTERY_CAPACITY_INSTALLED_MODULES:2}
+battery.capacity.module-usable-capacity-wh=${BATTERY_CAPACITY_MODULE_USABLE_CAPACITY_WH:5000}
+battery.season.summer.target-state-of-charge=${BATTERY_SEASON_SUMMER_TARGET_STATE_OF_CHARGE:70}
+battery.season.winter.target-state-of-charge=${BATTERY_SEASON_WINTER_TARGET_STATE_OF_CHARGE:90}
+
+marketdata.source=${MARKETDATA_SOURCE:awattar}
+awattar.authToken=${AWATTAR_AUTH_TOKEN:}
+tibber.authToken=${TIBBER_AUTH_TOKEN:}
+
+night.start=${NIGHT_START:19}
+night.end=${NIGHT_END:6}
+battery.nightChargingIdle=${BATTERY_NIGHT_CHARGING_IDLE:false}
+
+# Enable weather only after setting the coordinates of your installation.
+weather.api.enabled=${WEATHER_API_ENABLED:false}
+weather.api.latitude=${WEATHER_API_LATITUDE:52.52}
+weather.api.longitude=${WEATHER_API_LONGITUDE:13.405}
+
+# Display-only tariff example. Replace with the charges for your actual contract.
+price.display.vat-rate=0.19
+price.display.surcharges.procurement=1.81
+price.display.surcharges.grid=7.58
+price.display.surcharges.concession=1.59
+price.display.surcharges.electricity-tax=2.05
+price.display.surcharges.offshore=0.941
+price.display.surcharges.kwk=0.446
+price.display.surcharges.stromnev19=1.56
+
+logging.file.name=${LOGGING_FILE_NAME:logs/power.log}
+logging.logback.rollingpolicy.max-file-size=${LOGGING_FILE_MAX_SIZE:10MB}
+logging.logback.rollingpolicy.max-history=${LOGGING_FILE_MAX_HISTORY:10}
+logging.logback.rollingpolicy.total-size-cap=${LOGGING_FILE_TOTAL_SIZE_CAP:100MB}
