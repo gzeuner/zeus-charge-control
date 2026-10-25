@@ -3,6 +3,7 @@ package de.zeus.power.config;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
+import org.springframework.boot.test.context.TestComponent;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.SpringBootTest;
 
@@ -41,6 +42,7 @@ class BatteryPropertiesBindingTest {
     }
 
     @SpringBootConfiguration
+    @TestComponent
     @EnableConfigurationProperties(BatteryProperties.class)
     static class TestConfig {
     }

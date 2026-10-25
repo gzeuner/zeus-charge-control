@@ -30,8 +30,9 @@ import org.springframework.web.bind.annotation.*;
 import java.math.BigDecimal;
 import java.util.*;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Copyright 2025 Guido Zeuner - https://tiny-tool.de
@@ -56,9 +57,14 @@ public class ChargingStatusController {
     @Autowired private BatteryStatusMetricsService batteryStatusMetricsService;
     @Autowired private BatteryCapacityService batteryCapacityService;
 
+    @GetMapping("/")
+    public String home() {
+        return "redirect:/charging-status";
+    }
+
     @GetMapping("/charging-status")
     public String getChargingStatus(HttpServletRequest request, @RequestParam(name = "lang", required = false) String lang, Model model) {
-        Locale locale = lang != null && !lang.isEmpty() ? Locale.forLanguageTag(lang) : request.getLocale();
+        Locale locale = LocaleContextHolder.getLocale();
         model.addAttribute("lang", locale.getLanguage());
 
         List<MarketPrice> marketPrices = marketPriceService.getAllMarketPrices()
@@ -77,17 +83,18 @@ public class ChargingStatusController {
                 .toList();
 
         MarketPrice cheapestPrice = marketPrices.stream()
+                .filter(price -> price.getEndTimestamp() > System.currentTimeMillis())
                 .min(Comparator.comparingDouble(MarketPrice::getMarketPrice))
                 .orElse(null);
 
         List<ChargingSchedule> scheduledChargingPeriods = chargingManagementService.getSortedChargingSchedules();
 
-        ObjectMapper mapper = new ObjectMapper();
+        ObjectMapper mapper = JsonMapper.builder().build();
         try {
             model.addAttribute("marketPricesJson", mapper.writeValueAsString(toDisplayMarketPriceList(marketPrices)));
             model.addAttribute("cheapestPeriodsJson", mapper.writeValueAsString(toDisplayMarketPriceList(cheapestPeriods)));
             model.addAttribute("scheduledChargingPeriodsJson", mapper.writeValueAsString(toDisplayChargingScheduleList(scheduledChargingPeriods)));
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             log.error("Fehler bei der JSON-Serialisierung", e);
             model.addAttribute("marketPricesJson", "[]");
             model.addAttribute("cheapestPeriodsJson", "[]");
@@ -108,6 +115,7 @@ public class ChargingStatusController {
         model.addAttribute("modeTooltip", messageSource.getMessage("modeTooltip", null, LocaleContextHolder.getLocale()));
         model.addAttribute("nightIdleTooltip", messageSource.getMessage("nightIdleTooltip", null, LocaleContextHolder.getLocale()));
         model.addAttribute("batteryNotConfigured", batteryManagementService.isBatteryNotConfigured());
+        model.addAttribute("batteryAvailable", batteryStatus != null && !batteryManagementService.isBatteryNotConfigured());
         model.addAttribute("nightChargingIdle", chargingUtils.isNightChargingIdle());
         model.addAttribute("nightIdleActive", batteryManagementService.isNightIdleActive());
 
@@ -151,9 +159,9 @@ public class ChargingStatusController {
     @ResponseBody
     public ApiResponse<Void> resetToAutomaticMode(@RequestParam(name = "force", defaultValue = "false") boolean force) {
         try {
-            batteryManagementService.setManualIdleActive(false); // UI state toggle
             boolean ok = batteryManagementService.resetToAutomaticMode(force); // Setpoint=0W + flags
             if (ok) {
+                batteryManagementService.setManualIdleActive(false);
                 log.info("Handed back to Energy Manager (setpoint=0W)");
                 return new ApiResponse<>(true, HttpStatus.OK, "Returned to EM (setpoint=0W)", null);
             } else {
@@ -173,8 +181,9 @@ public class ChargingStatusController {
             // Idle = manual control + 1 W setpoint + UI flag
             batteryManagementService.activateManualOperatingMode(); // No-op kept for backward compatibility
             boolean ok = batteryManagementService.pauseWithTinySetpoint(); // neutralizes setpoint
-            batteryManagementService.setManualIdleActive(true);
             if (ok) {
+                batteryManagementService.setManualIdleActive(true);
+                batteryManagementService.startManualIdleHold();
                 log.info("Reset to idle mode.");
                 return new ApiResponse<>(true, HttpStatus.OK, "Reset to idle mode (0W)", null);
             } else {
@@ -191,9 +200,17 @@ public class ChargingStatusController {
     @ResponseBody
     public ApiResponse<Void> toggleNightCharging(@RequestBody Map<String, Object> request) {
         try {
-            boolean nightChargingIdle = Boolean.parseBoolean(String.valueOf(request.getOrDefault("nightChargingIdle", true)));
+            if (!(request.get("nightChargingIdle") instanceof Boolean)) {
+                return new ApiResponse<>(false, HttpStatus.BAD_REQUEST, "nightChargingIdle must be a boolean", null);
+            }
+            boolean nightChargingIdle = (Boolean) request.get("nightChargingIdle");
             Integer startHour = request.containsKey("startHour") ? parseHour(request.get("startHour")) : null;
             Integer endHour = request.containsKey("endHour") ? parseHour(request.get("endHour")) : null;
+
+            if ((request.containsKey("startHour") || request.containsKey("endHour"))
+                    && (startHour == null || endHour == null || startHour.equals(endHour))) {
+                return new ApiResponse<>(false, HttpStatus.BAD_REQUEST, "Provide distinct whole start and end hours between 0 and 23", null);
+            }
 
             if (startHour != null && endHour != null) {
                 NightConfig.updateNightHours(startHour, endHour);
@@ -215,6 +232,9 @@ public class ChargingStatusController {
                 batteryManagementService.setNightIdleActive(false);
                 boolean ok = batteryManagementService.resetToAutomaticMode(true);
                 log.info("Night idle deactivated by user. Handback to EM success={}", ok);
+                if (!ok) {
+                    return new ApiResponse<>(false, HttpStatus.BAD_GATEWAY, "Night idle disabled; return to automatic control failed", null);
+                }
             }
 
             return new ApiResponse<>(true, HttpStatus.OK, "Night charging behavior updated", null);
@@ -231,9 +251,9 @@ public class ChargingStatusController {
             Integer startHour = parseHour(request.get("startHour"));
             Integer endHour = parseHour(request.get("endHour"));
 
-            if (startHour == null || endHour == null) {
+            if (startHour == null || endHour == null || startHour.equals(endHour)) {
                 log.warn("Invalid night window values received: startHour={}, endHour={}", request.get("startHour"), request.get("endHour"));
-                return new ApiResponse<>(false, HttpStatus.BAD_REQUEST, "Start and end hours must be between 0 and 23", null);
+                return new ApiResponse<>(false, HttpStatus.BAD_REQUEST, "Provide distinct whole start and end hours between 0 and 23", null);
             }
 
             NightConfig.updateNightHours(startHour, endHour);
@@ -258,7 +278,7 @@ public class ChargingStatusController {
         if (obj == null) return null;
         try {
             String s = obj.toString().trim();
-            if (s.contains(":")) s = s.split(":")[0];
+            if (!s.matches("\\d{1,2}")) return null;
             int h = Integer.parseInt(s);
             return (h >= 0 && h <= 23) ? h : null;
         } catch (Exception e) {
@@ -279,16 +299,37 @@ public class ChargingStatusController {
         status.put("nightChargingIdle", chargingUtils.isNightChargingIdle());
         status.put("nightIdleActive", batteryManagementService.isNightIdleActive());
         status.put("isCharging", batteryManagementService.isForcedChargingActive());
-        status.put("currentPrice", marketPriceService.getCurrentlyValidPrice());
+        Double currentPrice = marketPriceService.getCurrentlyValidPrice();
+        status.put("currentPrice", currentPrice);
         BatteryStatusMetrics batteryStatusMetrics = batteryStatusMetricsService.calculateCurrentMetrics();
         status.put("dropRate", batteryStatusMetrics.dropRatePerHour());
         status.put("estimatedTimeToTarget", batteryStatusMetrics.estimatedTimeToTargetHours());
-        status.put("stateOfCharge", batteryCapacity.stateOfChargePercent());
-        status.put("remainingCapacityWh", batteryCapacity.remainingCapacityWh());
+        status.put("batteryAvailable", batteryStatus != null && !batteryManagementService.isBatteryNotConfigured());
+        status.put("batteryNotConfigured", batteryManagementService.isBatteryNotConfigured());
+        status.put("stateOfCharge", batteryStatus != null ? batteryCapacity.stateOfChargePercent() : null);
+        status.put("remainingCapacityWh", batteryStatus != null ? batteryCapacity.remainingCapacityWh() : null);
+        status.put("totalCapacityWh", batteryCapacity.totalCapacityWh());
+        status.put("batteryCharging", batteryStatus != null ? batteryStatus.isBatteryCharging() : null);
+        status.put("batteryDischarging", batteryStatus != null ? batteryStatus.isBatteryDischarging() : null);
+        status.put("batteryPowerW", batteryStatus != null ? batteryStatus.getPacTotalW() : null);
+        status.put("productionW", batteryStatus != null ? batteryStatus.getProductionW() : null);
+        status.put("consumptionW", batteryStatus != null ? batteryStatus.getConsumptionW() : null);
+        status.put("targetStateOfCharge", currentTargetStateOfCharge());
+        status.put("activeSeasonLabel", resolveActiveSeasonLabel(LocaleContextHolder.getLocale()));
         status.put("lastSetpointW", batteryManagementService.getLastSetpointW());
         status.put("nightStartHour", NightConfig.getNightStartHour());
         status.put("nightEndHour", NightConfig.getNightEndHour());
-        addDisplayPrices(status, marketPriceService.getCurrentlyValidPrice());
+        List<MarketPrice> prices = marketPriceService.getAllMarketPrices().stream()
+                .sorted(Comparator.comparingLong(MarketPrice::getStartTimestamp)).toList();
+        status.put("marketPrices", toDisplayMarketPriceList(prices));
+        status.put("cheapestPeriods", toDisplayMarketPriceList(prices.stream()
+                .filter(price -> price.getStartTimestamp() > System.currentTimeMillis())
+                .sorted(Comparator.comparingDouble(MarketPrice::getMarketPrice)
+                        .thenComparingLong(MarketPrice::getStartTimestamp)).limit(5).toList()));
+        status.put("scheduledChargingPeriods", toDisplayChargingScheduleList(chargingManagementService.getSortedChargingSchedules()));
+        status.put("serverTime", System.currentTimeMillis());
+        status.put("timeZone", java.time.ZoneId.systemDefault().getId());
+        addDisplayPrices(status, currentPrice);
         return status;
     }
 
@@ -312,13 +353,12 @@ public class ChargingStatusController {
                     }
 
                     // User-selected idle must override any active charging state.
-                    batteryManagementService.setForcedChargingActive(false);
-
                     // No-op retained for compatibility
                     batteryManagementService.activateManualOperatingMode();
 
                     boolean ok = batteryManagementService.pauseWithTinySetpoint();
                     if (ok) {
+                        batteryManagementService.setForcedChargingActive(false);
                         batteryManagementService.setManualIdleActive(true);
                         batteryManagementService.startManualIdleHold();
                         log.info("Switched to idle mode (pause ~1W, manual hold active).");
@@ -372,10 +412,9 @@ public class ChargingStatusController {
                     }
 
                     // Explicit user start should override idle/other modes (if RSOC < target)
-                    batteryManagementService.setManualIdleActive(false);
-
                     boolean ok = batteryManagementService.initCharging(true);
                     if (ok) {
+                        batteryManagementService.setManualIdleActive(false);
                         log.info("Charging started");
                         return new ApiResponse<>(true, HttpStatus.OK, "Charging started", null);
                     } else {

@@ -1,900 +1,672 @@
-const LAST_ACTION_KEY = 'tt_last_action_ts';
-const LAST_MODE_KEY = 'tt_last_mode';
-const PRICE_MODE_KEY = 'priceMode';
-const PRICE_MODE_NETTO = 'NETTO';
-const PRICE_MODE_BRUTTO = 'BRUTTO';
-const THEME_KEY = 'chargeControlTheme';
-const UI_STATE_KEY = 'chargeControlUiState';
-const USER_ACTION_SUPPRESS_MS = 5000;
-const DEFAULT_DATA_TAB = 'scheduled-charging-periods';
-const VALID_DATA_TABS = ['scheduled-charging-periods', 'cheapest-periods', 'market-prices'];
+"use strict";
 
-const translations = window.AppData?.translations || {};
-const cheapestPeriods = window.AppData?.cheapestPeriods || [];
-const marketPrices = window.AppData?.marketPrices || [];
-const scheduledChargingPeriods = window.AppData?.scheduledChargingPeriods || [];
+const app = window.AppData || {};
+const t = app.translations || {};
+const locale = document.documentElement.lang === "de" ? "de-DE" : "en-GB";
+const themes = ["default", "dark", "energy", "solar", "ember"];
+const tabs = [
+  "market-prices",
+  "scheduled-charging-periods",
+  "cheapest-periods",
+];
+const views = [
+  {
+    key: "market-prices",
+    prefix: "marketPrices",
+    toggle: "toggleMarketPrices",
+    type: "line",
+  },
+  {
+    key: "scheduled-charging-periods",
+    prefix: "chargingSchedule",
+    toggle: "toggleChargingSchedule",
+    type: "bar",
+  },
+  {
+    key: "cheapest-periods",
+    prefix: "cheapestPeriods",
+    toggle: "toggleCheapestPeriods",
+    type: "bar",
+  },
+];
+const charts = new Map();
+let datasets = {
+  "market-prices": Array.isArray(app.marketPrices) ? app.marketPrices : [],
+  "scheduled-charging-periods": Array.isArray(app.scheduledChargingPeriods)
+    ? app.scheduledChargingPeriods
+    : [],
+  "cheapest-periods": Array.isArray(app.cheapestPeriods)
+    ? app.cheapestPeriods
+    : [],
+};
+let statusData = null;
+let actionBusy = false;
+let connected = false;
+let dirtyHours = false;
+let activeTab = "market-prices";
+let statusRequest = null;
+let requestGeneration = 0;
+let priceMode = readStorage("priceMode") === "BRUTTO" ? "BRUTTO" : "NETTO";
+let timeZone;
 
-let priceMode = PRICE_MODE_NETTO;
-let nightIdleEnabled = window.AppData?.nightChargingIdle ?? false;
-let nightIdleActive = window.AppData?.nightIdleActive ?? false;
-let nightStartHour = window.AppData?.nightStartHour ?? 22;
-let nightEndHour = window.AppData?.nightEndHour ?? 6;
-let lastStatusData = null;
-
-const createdCharts = {};
-
-function nowMs() {
-  return Date.now();
-}
-
-function setLastAction(mode) {
+function readStorage(key) {
   try {
-    localStorage.setItem(LAST_ACTION_KEY, String(nowMs()));
-    if (mode) localStorage.setItem(LAST_MODE_KEY, mode);
-  } catch (error) {
-    console.debug('Could not persist last action', error);
+    return localStorage.getItem(key);
+  } catch (_) {
+    return null;
   }
 }
-
-function getLastActionAgeMs() {
+function writeStorage(key, value) {
   try {
-    const timestamp = Number(localStorage.getItem(LAST_ACTION_KEY) || '0');
-    return timestamp > 0 ? nowMs() - timestamp : Number.POSITIVE_INFINITY;
-  } catch (error) {
-    return Number.POSITIVE_INFINITY;
+    localStorage.setItem(key, value);
+  } catch (_) {
+    /* Preferences are optional. */
   }
 }
-
-function safeUpdateButtonState(id, isOn, activeIcon, inactiveIcon, activeText, inactiveText) {
-  if (getLastActionAgeMs() < USER_ACTION_SUPPRESS_MS) return;
-  updateButtonState(id, isOn, activeIcon, inactiveIcon, activeText, inactiveText);
-}
-
-function normalizeNumber(value) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
-}
-
-function getStoredPriceMode() {
+function readUiState() {
   try {
-    const stored = (localStorage.getItem(PRICE_MODE_KEY) || '').toUpperCase();
-    return stored === PRICE_MODE_BRUTTO ? PRICE_MODE_BRUTTO : PRICE_MODE_NETTO;
-  } catch (error) {
-    return PRICE_MODE_NETTO;
-  }
-}
-
-function getStoredTheme() {
-  try {
-    const stored = localStorage.getItem(THEME_KEY);
-    return ['default', 'dark', 'energy', 'solar', 'ember'].includes(stored) ? stored : 'default';
-  } catch (error) {
-    return 'default';
-  }
-}
-
-function getStoredUiState() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(UI_STATE_KEY) || '{}');
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch (error) {
+    const value = JSON.parse(readStorage("chargeControlUiState") || "{}");
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? value
+      : {};
+  } catch (_) {
     return {};
   }
 }
-
-function setStoredUiState(nextState) {
-  try {
-    localStorage.setItem(UI_STATE_KEY, JSON.stringify(nextState));
-  } catch (error) {
-    console.debug('Could not persist UI state', error);
-  }
+function saveUiState(patch) {
+  writeStorage(
+    "chargeControlUiState",
+    JSON.stringify({ ...readUiState(), ...patch }),
+  );
 }
-
-function getStoredActiveTab() {
-  const storedTab = getStoredUiState().activeTab;
-  return VALID_DATA_TABS.includes(storedTab) ? storedTab : DEFAULT_DATA_TAB;
+function number(value) {
+  if (
+    value == null ||
+    typeof value === "boolean" ||
+    (typeof value === "string" && value.trim() === "")
+  )
+    return null;
+  const result = Number(value);
+  return Number.isFinite(result) ? result : null;
 }
-
-function persistActiveTab(tabId) {
-  if (!VALID_DATA_TABS.includes(tabId)) return;
-  const currentState = getStoredUiState();
-  const nextState = {
-    ...currentState,
-    activeTab: tabId,
-    viewModes: currentState.viewModes && typeof currentState.viewModes === 'object'
-      ? currentState.viewModes
-      : {}
-  };
-  setStoredUiState(nextState);
+function format(value, decimals = 2) {
+  const parsed = number(value);
+  return parsed == null
+    ? "—"
+    : new Intl.NumberFormat(locale, {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals,
+      }).format(parsed);
 }
-
-function getStoredViewMode(viewKey) {
-  const viewModes = getStoredUiState().viewModes;
-  const storedMode = viewModes && typeof viewModes === 'object' ? viewModes[viewKey] : null;
-  return storedMode === 'chart' ? 'chart' : 'table';
+function text(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
 }
-
-function persistViewMode(viewKey, mode) {
-  if (!viewKey) return;
-  const resolvedMode = mode === 'chart' ? 'chart' : 'table';
-  const currentState = getStoredUiState();
-  const currentViewModes = currentState.viewModes && typeof currentState.viewModes === 'object'
-    ? currentState.viewModes
-    : {};
-  const nextState = {
-    ...currentState,
-    viewModes: {
-      ...currentViewModes,
-      [viewKey]: resolvedMode
-    }
-  };
-  setStoredUiState(nextState);
+function css(name) {
+  return getComputedStyle(document.documentElement)
+    .getPropertyValue(name)
+    .trim();
 }
-
-function applyTheme(theme, persist = true) {
-  const resolvedTheme = ['default', 'dark', 'energy', 'solar', 'ember'].includes(theme) ? theme : 'default';
-  document.documentElement.setAttribute('data-theme', resolvedTheme);
-  if (persist) {
-    try {
-      localStorage.setItem(THEME_KEY, resolvedTheme);
-    } catch (error) {
-      console.debug('Could not persist theme', error);
-    }
-  }
-
-  const selector = document.getElementById('themeSelector');
-  if (selector) selector.value = resolvedTheme;
-  syncThemeDropdownUI(resolvedTheme);
-  refreshChartsForTheme();
+function dateTime(value, withDate = true) {
+  const timestamp = number(value);
+  if (timestamp == null) return "—";
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime())
+    ? "—"
+    : new Intl.DateTimeFormat(locale, {
+        ...(withDate ? { day: "2-digit", month: "2-digit" } : {}),
+        hour: "2-digit",
+        minute: "2-digit",
+        ...(timeZone ? { timeZone } : {}),
+      }).format(date);
 }
-
-function syncThemeDropdownUI(theme) {
-  const selector = document.getElementById('themeSelector');
-  const label = document.getElementById('themeDropdownLabel');
-
-  if (selector) {
-    selector.value = theme;
-    const selectedOption = selector.options[selector.selectedIndex];
-    if (label) label.textContent = selectedOption ? selectedOption.textContent.trim() : theme;
-  } else if (label) {
-    label.textContent = theme;
-  }
-
-  document.querySelectorAll('[data-theme-option]').forEach(button => {
-    const isActive = button.getAttribute('data-theme-option') === theme;
-    button.classList.toggle('active', isActive);
-    button.setAttribute('aria-pressed', String(isActive));
+function displayedPrice(item) {
+  if (!item) return null;
+  // A missing total must stay unavailable; a net price must never be presented as a total.
+  return priceMode === "BRUTTO"
+    ? number(item.displayPriceBruttoCt)
+    : number(
+        item.displayPriceNettoCt ??
+          item.marketPrice ??
+          item.price ??
+          item.currentPrice,
+      );
+}
+function basis() {
+  return priceMode === "BRUTTO" ? t.totalBasis : t.marketBasis;
+}
+function notice(message, error = false) {
+  const el = document.getElementById("actionNotice");
+  el.hidden = false;
+  el.classList.toggle("notice-error", error);
+  el.setAttribute("role", error ? "alert" : "status");
+  el.textContent = message;
+}
+function setControls() {
+  const unavailable = !connected || !statusData?.batteryAvailable;
+  document.querySelectorAll("[data-ui-action]").forEach((el) => {
+    el.disabled = actionBusy || unavailable;
   });
+  document.querySelectorAll("#nightWindowForm input").forEach((el) => {
+    el.disabled = actionBusy || unavailable;
+  });
+  document.body.classList.toggle("is-busy", actionBusy);
+  document
+    .getElementById("controlPanelTitle")
+    .closest("section")
+    .setAttribute("aria-busy", String(actionBusy));
 }
-
-function getCssVar(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+function connection(ok) {
+  connected = ok;
+  document.getElementById("connectionNotice").hidden = ok;
+  document.getElementById("connectionState").classList.toggle("stale", !ok);
+  document.body.classList.toggle("is-stale", !ok);
+  text(
+    "connectionLabel",
+    ok
+      ? statusData?.batteryAvailable
+        ? t.connected
+        : t.batteryUnavailable
+      : t.stale,
+  );
+  setControls();
 }
-
-function getChartPalette(type) {
-  return {
-    backgroundColor: type === 'line' ? getCssVar('--chart-fill') : getCssVar('--chart-fill'),
-    borderColor: getCssVar('--chart-line'),
-    tickColor: getCssVar('--chart-text'),
-    gridColor: getCssVar('--chart-grid')
-  };
+function selectAction(id, selected) {
+  const button = document.getElementById(id);
+  button.classList.toggle("selected", selected);
+  button.setAttribute("aria-pressed", String(selected));
 }
-
+function renderStatus() {
+  if (!statusData) return;
+  const s = statusData;
+  const available = s.batteryAvailable === true;
+  const paused = s.currentMode === "idle";
+  const forced = s.isCharging === true;
+  selectAction("automaticBtn", !paused && !forced && available);
+  selectAction("modeBtn", paused && available);
+  selectAction("chargingBtn", forced && available);
+  text(
+    "modeStatus",
+    available
+      ? forced
+        ? t.charging
+        : paused
+          ? t.idle
+          : t.automatic
+      : t.unknown,
+  );
+  text(
+    "activityValue",
+    !available
+      ? t.unknown
+      : s.batteryCharging
+        ? t.charging
+        : s.batteryDischarging
+          ? t.discharging
+          : t.standby,
+  );
+  text("capacityPercentValue", available ? format(s.stateOfCharge, 0) : "—");
+  text(
+    "capacityKwhValue",
+    available && number(s.remainingCapacityWh) != null
+      ? format(s.remainingCapacityWh / 1000, 1)
+      : "—",
+  );
+  text(
+    "totalCapacityKwh",
+    number(s.totalCapacityWh) != null
+      ? format(s.totalCapacityWh / 1000, 1)
+      : "—",
+  );
+  text("productionValue", available ? format(s.productionW, 0) : "—");
+  text("consumptionValue", available ? format(s.consumptionW, 0) : "—");
+  text("batteryPowerValue", available ? format(s.batteryPowerW, 0) : "—");
+  text("setpointValue", available ? format(s.lastSetpointW, 0) : "—");
+  text("targetValue", format(s.targetStateOfCharge, 0));
+  text("seasonLabel", s.activeSeasonLabel || "—");
+  const soc = available ? number(s.stateOfCharge) : null;
+  const ring = document.getElementById("chargeRing");
+  ring.style.setProperty(
+    "--charge",
+    soc == null ? 0 : Math.max(0, Math.min(100, soc)),
+  );
+  if (soc == null) {
+    ring.removeAttribute("aria-valuenow");
+    ring.setAttribute("aria-valuetext", t.unknown);
+  } else {
+    ring.setAttribute("aria-valuenow", String(Math.max(0, Math.min(100, soc))));
+    ring.removeAttribute("aria-valuetext");
+  }
+  document.getElementById("targetProgress").style.width =
+    `${Math.max(0, Math.min(100, number(s.targetStateOfCharge) ?? 0))}%`;
+  text("dropRateValue", available ? format(s.dropRate) : "—");
+  text(
+    "estimatedTimeToTargetValue",
+    available ? format(s.estimatedTimeToTarget) : "—",
+  );
+  document.querySelector("#modeBtn [data-role=label]").textContent = paused
+    ? t.resume
+    : t.pause;
+  document.querySelector("#chargingBtn [data-role=label]").textContent = forced
+    ? t.stopCharging
+    : t.startCharging;
+  document
+    .getElementById("nightChargingBtn")
+    .setAttribute("aria-checked", String(s.nightChargingIdle === true));
+  text(
+    "nightState",
+    s.nightIdleActive
+      ? t.nightActive
+      : s.nightChargingIdle
+        ? t.nightEnabled
+        : t.nightDisabled,
+  );
+  if (!dirtyHours) {
+    document.getElementById("nightStartInput").value = s.nightStartHour;
+    document.getElementById("nightEndInput").value = s.nightEndHour;
+  }
+  document.getElementById("batteryWarning").hidden = available;
+  text(
+    "batteryWarningText",
+    s.batteryNotConfigured ? t.configured : t.batteryUnavailable,
+  );
+  renderPriceSummary();
+  setControls();
+}
+function renderPriceSummary() {
+  document.querySelectorAll(".price-basis").forEach((el) => {
+    el.textContent = basis();
+  });
+  text("currentPriceValue", format(displayedPrice(statusData)));
+  text("confirmationPrice", format(displayedPrice(statusData)));
+  const upcoming = datasets["market-prices"].filter(
+    (item) =>
+      number(item.endTimestamp) > Date.now() &&
+      number(item.marketPrice) != null,
+  );
+  const cheapest = upcoming.reduce(
+    (best, item) =>
+      !best || item.marketPrice < best.marketPrice ? item : best,
+    null,
+  );
+  text("cheapestPriceValue", format(displayedPrice(cheapest)));
+  text(
+    "cheapestWindow",
+    cheapest
+      ? `${dateTime(cheapest.startTimestamp)} – ${dateTime(cheapest.endTimestamp)}`
+      : t.noOpportunity,
+  );
+}
 function buildChartOptions() {
-  const palette = getChartPalette('line');
   return {
     responsive: true,
     maintainAspectRatio: false,
+    animation: false,
+    interaction: { mode: "index", intersect: false },
     plugins: {
-      legend: {
-        labels: {
-          color: palette.tickColor
-        }
-      },
+      legend: { display: false },
       tooltip: {
-        backgroundColor: getCssVar('--surface-strong'),
-        titleColor: getCssVar('--heading'),
-        bodyColor: getCssVar('--text')
-      }
+        backgroundColor: css("--surface"),
+        titleColor: css("--text"),
+        bodyColor: css("--text"),
+        borderColor: css("--border"),
+        borderWidth: 1,
+        padding: 12,
+        callbacks: {
+          label: (context) =>
+            `${format(context.parsed.y)} ${t.unit} · ${basis()}`,
+        },
+      },
     },
     scales: {
       x: {
-        type: 'time',
+        type: "time",
+        adapters: { date: { locale, ...(timeZone ? { zone: timeZone } : {}) } },
         time: {
-          unit: 'hour',
-          tooltipFormat: 'dd LLLL HH:mm',
-          displayFormats: { hour: 'dd LLLL HH:mm' }
+          unit: "hour",
+          displayFormats: { hour: "HH:mm" },
+          tooltipFormat: "dd.MM. HH:mm",
         },
-        title: {
-          display: true,
-          text: translations.startTime || 'Start Time',
-          color: palette.tickColor
+        grid: { display: false },
+        border: { display: false },
+        ticks: {
+          color: css("--chart-text"),
+          maxTicksLimit: 9,
+          font: { size: 10 },
+          maxRotation: 0,
         },
-        ticks: { color: palette.tickColor },
-        grid: { color: palette.gridColor }
       },
       y: {
         beginAtZero: true,
-        title: {
-          display: true,
-          text: getYAxisTitle(),
-          color: palette.tickColor
+        border: { display: false },
+        grid: { color: css("--chart-grid"), drawTicks: false },
+        ticks: {
+          color: css("--chart-text"),
+          maxTicksLimit: 6,
+          padding: 12,
+          font: { size: 10 },
         },
-        ticks: { color: palette.tickColor },
-        grid: { color: palette.gridColor }
-      }
-    }
-  };
-}
-
-function refreshChartsForTheme() {
-  Object.values(createdCharts).forEach(chart => {
-    const palette = getChartPalette(chart.config.type);
-    chart.data.datasets[0].backgroundColor = palette.backgroundColor;
-    chart.data.datasets[0].borderColor = palette.borderColor;
-    chart.options.plugins.legend.labels.color = palette.tickColor;
-    chart.options.plugins.tooltip.backgroundColor = getCssVar('--surface-strong');
-    chart.options.plugins.tooltip.titleColor = getCssVar('--heading');
-    chart.options.plugins.tooltip.bodyColor = getCssVar('--text');
-    chart.options.scales.x.title.color = palette.tickColor;
-    chart.options.scales.x.ticks.color = palette.tickColor;
-    chart.options.scales.x.grid.color = palette.gridColor;
-    chart.options.scales.y.title.color = palette.tickColor;
-    chart.options.scales.y.title.text = getYAxisTitle();
-    chart.options.scales.y.ticks.color = palette.tickColor;
-    chart.options.scales.y.grid.color = palette.gridColor;
-    chart.update();
-  });
-}
-
-function setPriceMode(mode, persist = true) {
-  priceMode = mode === PRICE_MODE_BRUTTO ? PRICE_MODE_BRUTTO : PRICE_MODE_NETTO;
-  if (persist) {
-    try {
-      localStorage.setItem(PRICE_MODE_KEY, priceMode);
-    } catch (error) {
-      console.debug('Could not persist price mode', error);
-    }
-  }
-  const toggle = document.getElementById('priceModeToggle');
-  if (toggle) toggle.checked = priceMode === PRICE_MODE_BRUTTO;
-  renderAllPrices();
-}
-
-function getDisplayedPrice(item) {
-  if (!item) return null;
-  const brutto = normalizeNumber(item.displayPriceBruttoCt);
-  const netto = normalizeNumber(item.displayPriceNettoCt);
-  const fallback = normalizeNumber(item.marketPrice ?? item.price);
-  return priceMode === PRICE_MODE_BRUTTO
-    ? (brutto ?? fallback ?? netto)
-    : (netto ?? fallback ?? brutto);
-}
-
-function formatPrice(value) {
-  return value != null ? value.toFixed(2) : 'N/A';
-}
-
-function formatDateTime(timestamp) {
-  if (!timestamp) return 'N/A';
-  try {
-    if (window.luxon?.DateTime) {
-      const dateTime = luxon.DateTime.fromMillis(timestamp);
-      return dateTime.isValid ? dateTime.toFormat('dd.MM.yyyy HH:mm:ss') : 'N/A';
-    }
-  } catch (error) {
-    console.debug('Could not format time via luxon', error);
-  }
-  return new Date(timestamp).toLocaleString();
-}
-
-function getCheapestMarketPrice() {
-  let cheapest = null;
-  let cheapestValue = null;
-  marketPrices.forEach(item => {
-    const value = normalizeNumber(item.marketPrice);
-    if (value == null) return;
-    if (cheapestValue == null || value < cheapestValue) {
-      cheapestValue = value;
-      cheapest = item;
-    }
-  });
-  return cheapest;
-}
-
-function renderCheapestPriceCard() {
-  const cheapest = getCheapestMarketPrice();
-  if (!cheapest) return;
-
-  const startEl = document.getElementById('cheapestStartTime');
-  const endEl = document.getElementById('cheapestEndTime');
-  const priceEl = document.getElementById('cheapestPriceValue');
-  const unitEl = document.getElementById('cheapestPriceUnit');
-
-  if (startEl) startEl.textContent = formatDateTime(cheapest.startTimestamp);
-  if (endEl) endEl.textContent = formatDateTime(cheapest.endTimestamp);
-  if (priceEl) priceEl.textContent = formatPrice(getDisplayedPrice(cheapest));
-  if (unitEl) unitEl.textContent = translations.centPerKwh || 'cent/kWh';
-}
-
-function renderTable(tbodyId, data, highlightCurrent = false) {
-  const tbody = document.getElementById(tbodyId);
-  if (!tbody) return;
-
-  const now = Date.now();
-  const rows = (data || []).map(item => {
-    const highlight = highlightCurrent
-      && item.startTimestamp != null
-      && item.endTimestamp != null
-      && item.startTimestamp <= now
-      && item.endTimestamp >= now;
-    return `<tr${highlight ? ' class="highlight"' : ''}>
-      <td>${formatDateTime(item.startTimestamp)}</td>
-      <td>${formatDateTime(item.endTimestamp)}</td>
-      <td>${formatPrice(getDisplayedPrice(item))}</td>
-    </tr>`;
-  }).join('');
-
-  tbody.innerHTML = rows;
-}
-
-function getYAxisTitle() {
-  const base = translations.price || 'Price';
-  const modeLabel = priceMode === PRICE_MODE_BRUTTO
-    ? (translations.priceModeBruttoLabel || 'Total')
-    : (translations.priceModeNettoLabel || 'Market');
-  return `${base} - ${modeLabel}`;
-}
-
-function createChartOnce(id, type, labels, data) {
-  if (createdCharts[id]) return createdCharts[id];
-
-  const canvas = document.getElementById(id);
-  if (!canvas) return null;
-
-  const palette = getChartPalette(type);
-  const chart = new Chart(canvas.getContext('2d'), {
-    type,
-    data: {
-      labels,
-      datasets: [{
-        label: translations.centPerKwh || 'cent/kWh',
-        data,
-        backgroundColor: palette.backgroundColor,
-        borderColor: palette.borderColor,
-        borderWidth: 2,
-        fill: type === 'line',
-        tension: type === 'line' ? 0.25 : 0
-      }]
+      },
     },
-    options: buildChartOptions()
-  });
-
-  createdCharts[id] = chart;
-  return chart;
-}
-
-function parseHourInput(inputEl, fallback) {
-  if (!inputEl) return fallback;
-  const value = parseInt((inputEl.value || '').trim(), 10);
-  return Number.isFinite(value) && value >= 0 && value <= 23 ? value : fallback;
-}
-
-function isHourValid(value) {
-  return Number.isFinite(value) && value >= 0 && value <= 23;
-}
-
-function updateNightWindowStatus(message, isError = false) {
-  const statusEl = document.getElementById('nightWindowStatus');
-  if (!statusEl) return;
-  statusEl.textContent = message;
-  statusEl.classList.toggle('text-danger', isError);
-  statusEl.classList.toggle('text-success', !isError);
-}
-
-function getNightWindowFromInputs() {
-  const startInput = document.getElementById('nightStartInput');
-  const endInput = document.getElementById('nightEndInput');
-  return {
-    startHour: parseHourInput(startInput, nightStartHour),
-    endHour: parseHourInput(endInput, nightEndHour)
   };
 }
-
-function getValidatedNightWindow() {
-  const startInput = document.getElementById('nightStartInput');
-  const endInput = document.getElementById('nightEndInput');
-  const rawStart = parseInt((startInput?.value || '').trim(), 10);
-  const rawEnd = parseInt((endInput?.value || '').trim(), 10);
-
-  if (!isHourValid(rawStart) || !isHourValid(rawEnd)) {
-    updateNightWindowStatus(translations.nightWindowInvalidHours || 'Please enter hours between 0 and 23.', true);
+function drawChart(view) {
+  if (view.key !== activeTab) return;
+  const container = document.getElementById(`${view.prefix}ChartContainer`);
+  if (container.hidden) return;
+  const data = datasets[view.key].map((item) => ({
+    x: item.startTimestamp,
+    y: displayedPrice(item),
+  }));
+  let chart = charts.get(view.key);
+  const dataset = {
+    data,
+    label: basis(),
+    borderColor: css("--chart-line"),
+    backgroundColor: css("--chart-fill"),
+    borderWidth: 2,
+    pointRadius: 0,
+    pointHitRadius: 15,
+    pointHoverRadius: 4,
+    tension: 0,
+    stepped: view.type === "line" ? "after" : false,
+    fill: view.type === "line",
+    borderRadius: view.type === "bar" ? 5 : 0,
+    maxBarThickness: 45,
+  };
+  if (!chart) {
+    chart = new Chart(document.getElementById(`${view.prefix}Chart`), {
+      type: view.type,
+      data: { datasets: [dataset] },
+      options: buildChartOptions(),
+    });
+    charts.set(view.key, chart);
+  } else {
+    chart.data.datasets[0] = dataset;
+    chart.options = buildChartOptions();
+    chart.update("none");
+    chart.resize();
+  }
+}
+function viewMode(key) {
+  return readUiState().viewModes?.[key] === "table" ? "table" : "chart";
+}
+function renderData(view) {
+  const data = datasets[view.key];
+  const empty = data.length === 0;
+  const tableMode = viewMode(view.key) === "table";
+  const table = document.getElementById(`${view.prefix}Table`);
+  const tbody = document.getElementById(`${view.prefix}Tbody`);
+  const emptyEl = document.getElementById(`${view.prefix}Empty`);
+  emptyEl.hidden = !empty;
+  emptyEl.textContent =
+    view.key === "scheduled-charging-periods" ? t.emptyPlan : t.empty;
+  table.hidden = empty || !tableMode;
+  document.getElementById(`${view.prefix}ChartContainer`).hidden =
+    empty || tableMode;
+  const button = document.getElementById(view.toggle);
+  button.hidden = empty;
+  button.setAttribute("aria-pressed", String(tableMode));
+  button.querySelector("span").textContent = tableMode ? t.chart : t.table;
+  button.querySelector("i").className =
+    `fas ${tableMode ? "fa-chart-simple" : "fa-table"}`;
+  tbody.replaceChildren(
+    ...data.map((item) => {
+      const row = document.createElement("tr");
+      if (item.startTimestamp <= Date.now() && item.endTimestamp > Date.now())
+        row.className = "highlight";
+      for (const value of [
+        dateTime(item.startTimestamp),
+        dateTime(item.endTimestamp),
+        format(displayedPrice(item)),
+      ]) {
+        const cell = document.createElement("td");
+        cell.textContent = value;
+        row.append(cell);
+      }
+      return row;
+    }),
+  );
+  if (!empty && !tableMode) drawChart(view);
+}
+function renderAllData() {
+  renderPriceSummary();
+  views.forEach(renderData);
+}
+function applyTheme(theme) {
+  const resolved = themes.includes(theme) ? theme : "default";
+  document.documentElement.dataset.theme = resolved;
+  document.getElementById("themeSelector").value = resolved;
+  writeStorage("chargeControlTheme", resolved);
+  renderAllData();
+}
+function validHours() {
+  const inputs = ["nightStartInput", "nightEndInput"].map((id) =>
+    document.getElementById(id),
+  );
+  const values = inputs.map((input) =>
+    /^\d{1,2}$/.test(input.value) ? Number(input.value) : NaN,
+  );
+  const valid =
+    values.every(
+      (value) => Number.isInteger(value) && value >= 0 && value <= 23,
+    ) && values[0] !== values[1];
+  inputs.forEach((input) => input.setAttribute("aria-invalid", String(!valid)));
+  if (!valid) {
+    text("nightWindowStatus", t.invalidHours);
+    document.getElementById("nightWindowStatus").classList.add("error");
+    inputs
+      .find(
+        (_, i) =>
+          !Number.isInteger(values[i]) || values[i] < 0 || values[i] > 23,
+      )
+      ?.focus();
     return null;
   }
-
-  return getNightWindowFromInputs();
+  return { startHour: values[0], endHour: values[1] };
 }
-
-function updateToggleButton(button, chartVisible) {
-  if (!button) return;
-  const label = button.querySelector('span');
-  const icon = button.querySelector('i');
-  if (label) label.textContent = chartVisible ? (translations.table || 'Table') : (translations.chart || 'Chart');
-  if (icon) {
-    icon.classList.remove('fa-chart-column', 'fa-chart-line', 'fa-table');
-    icon.classList.add(chartVisible ? 'fa-table' : 'fa-chart-column');
-  }
-}
-
-function applyToggleViewState(button, table, chartContainer, chartId, chartType, dataSet, showChart) {
-  table.style.display = showChart ? 'none' : 'block';
-  chartContainer.style.display = showChart ? 'block' : 'none';
-  updateToggleButton(button, showChart);
-
-  if (showChart) {
-    const labels = dataSet.map(item => new Date(item.startTimestamp));
-    const data = dataSet.map(item => getDisplayedPrice(item));
-    createChartOnce(chartId, chartType, labels, data);
-    updateChart(chartId, dataSet);
-  }
-}
-
-function toggleView(buttonId, tableId, chartContainerId, chartId, chartType, dataSet, viewKey) {
-  const button = document.getElementById(buttonId);
-  const table = document.getElementById(tableId);
-  const chartContainer = document.getElementById(chartContainerId);
-  if (!button || !table || !chartContainer) return;
-
-  const initialShowChart = getStoredViewMode(viewKey) === 'chart';
-  applyToggleViewState(button, table, chartContainer, chartId, chartType, dataSet, initialShowChart);
-
-  button.addEventListener('click', () => {
-    const showChart = chartContainer.style.display === 'none';
-    applyToggleViewState(button, table, chartContainer, chartId, chartType, dataSet, showChart);
-    persistViewMode(viewKey, showChart ? 'chart' : 'table');
+async function jsonRequest(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    signal: options.signal || AbortSignal.timeout(8000),
+    cache: "no-store",
   });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
 }
-
-function getDisplayedStatusPrice(status) {
-  if (!status) return null;
-  const brutto = normalizeNumber(status.displayPriceBruttoCt);
-  const netto = normalizeNumber(status.displayPriceNettoCt);
-  const fallback = normalizeNumber(status.currentPrice);
-  return priceMode === PRICE_MODE_BRUTTO
-    ? (brutto ?? fallback ?? netto)
-    : (netto ?? fallback ?? brutto);
-}
-
-function updateCurrentPriceTooltip() {
-  const chargingBtn = document.getElementById('chargingBtn');
-  if (!chargingBtn || !lastStatusData) return;
-
-  const currentPriceValue = getDisplayedStatusPrice(lastStatusData);
-  const currentPrice = currentPriceValue != null
-    ? `${currentPriceValue.toFixed(2)} ${(translations.centPerKwh || 'cent/kWh')}`
-    : translations.noCurrentPriceInfo;
-  const dropRate = lastStatusData.dropRate != null ? `${lastStatusData.dropRate.toFixed(2)} %/h` : 'N/A';
-  const estimatedTimeToTarget = lastStatusData.estimatedTimeToTarget != null
-    ? `${lastStatusData.estimatedTimeToTarget.toFixed(2)} h`
-    : 'N/A';
-  const tooltipText = `${translations.chargingButtonTooltip}<br><strong>${translations.currentPriceLabel}:</strong> ${currentPrice}<br><strong>${translations.dropRateLabel}:</strong> ${dropRate}<br><strong>${translations.estimatedTimeToTargetLabel || 'Estimated Time to Target'}:</strong> ${estimatedTimeToTarget}`;
-
-  chargingBtn.setAttribute('data-bs-title', tooltipText);
-  const tooltip = bootstrap.Tooltip.getInstance(chargingBtn);
-  if (tooltip) tooltip.dispose();
-  bootstrap.Tooltip.getOrCreateInstance(chargingBtn);
-}
-
-function updateMetricValue(valueId, unitId, value, unitText) {
-  const valueEl = document.getElementById(valueId);
-  const unitEl = document.getElementById(unitId);
-  if (!valueEl) return;
-
-  if (value == null) {
-    valueEl.textContent = 'N/A';
-    if (unitEl) unitEl.style.display = 'none';
-    return;
+async function fetchStatus(force = false) {
+  if (document.hidden && !force) return;
+  if (statusRequest) {
+    if (!force) return;
+    statusRequest.abort();
   }
-
-  valueEl.textContent = value.toFixed(2);
-  if (unitEl) {
-    if (unitText) unitEl.textContent = unitText;
-    unitEl.style.display = '';
+  const controller = new AbortController();
+  const generation = ++requestGeneration;
+  statusRequest = controller;
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  const refresh = document.getElementById("refreshStatus");
+  refresh.disabled = true;
+  try {
+    const data = await jsonRequest("/current-status", {
+      signal: controller.signal,
+    });
+    if (generation !== requestGeneration) return;
+    if (
+      !data ||
+      typeof data.batteryAvailable !== "boolean" ||
+      typeof data.currentMode !== "string"
+    )
+      throw new Error("Invalid status payload");
+    statusData = data;
+    timeZone = data.timeZone;
+    for (const view of views) {
+      const key =
+        view.key === "market-prices"
+          ? "marketPrices"
+          : view.key === "cheapest-periods"
+            ? "cheapestPeriods"
+            : "scheduledChargingPeriods";
+      if (Array.isArray(data[key])) datasets[view.key] = data[key];
+    }
+    connection(true);
+    renderStatus();
+    renderAllData();
+    text("lastUpdated", `${t.lastUpdated} ${dateTime(Date.now(), false)}`);
+  } catch (error) {
+    if (generation === requestGeneration) connection(false);
+  } finally {
+    clearTimeout(timeout);
+    if (generation === requestGeneration) {
+      statusRequest = null;
+      refresh.disabled = false;
+    }
   }
 }
-
-function updateWholeNumberValue(valueId, value) {
-  const valueEl = document.getElementById(valueId);
-  if (!valueEl) return;
-  if (value == null) {
-    valueEl.textContent = 'N/A';
-    return;
+async function executeAction(url, body, onSuccess) {
+  if (actionBusy || !connected || !statusData?.batteryAvailable) return;
+  actionBusy = true;
+  // Retire any earlier status request so it cannot overwrite the acknowledged result.
+  ++requestGeneration;
+  statusRequest?.abort();
+  statusRequest = null;
+  setControls();
+  try {
+    const result = await jsonRequest(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (result.success !== true)
+      throw new Error("Action rejected by battery service");
+    if (onSuccess) onSuccess();
+    notice(t.actionSuccess);
+  } catch (error) {
+    notice(t.actionFailed, true);
+  } finally {
+    actionBusy = false;
+    await fetchStatus(true);
+    setControls();
   }
-  valueEl.textContent = String(Math.round(value));
 }
-
-function updateStatusMetricCards() {
-  if (!lastStatusData) return;
-
-  const currentPriceValue = getDisplayedStatusPrice(lastStatusData);
-  updateMetricValue('currentPriceValue', 'currentPriceUnit', currentPriceValue, translations.centPerKwh || 'cent/kWh');
-  updateMetricValue('dropRateValue', 'dropRateUnit', normalizeNumber(lastStatusData.dropRate), '%/h');
-  updateMetricValue(
-    'estimatedTimeToTargetValue',
-    'estimatedTimeToTargetUnit',
-    normalizeNumber(lastStatusData.estimatedTimeToTarget),
-    'h'
+document.addEventListener("DOMContentLoaded", () => {
+  const stored = readUiState();
+  activeTab = tabs.includes(stored.activeTab)
+    ? stored.activeTab
+    : "market-prices";
+  document
+    .getElementById("themeSelector")
+    .addEventListener("change", (event) => applyTheme(event.target.value));
+  document
+    .getElementById("languageSelector")
+    .addEventListener("change", (event) => {
+      const url = new URL(window.location.href);
+      url.searchParams.set("lang", event.target.value);
+      window.location.assign(url);
+    });
+  const priceToggle = document.getElementById("priceModeToggle");
+  priceToggle.checked = priceMode === "BRUTTO";
+  priceToggle.addEventListener("change", () => {
+    priceMode = priceToggle.checked ? "BRUTTO" : "NETTO";
+    writeStorage("priceMode", priceMode);
+    renderAllData();
+  });
+  document
+    .getElementById("refreshStatus")
+    .addEventListener("click", () => fetchStatus(true));
+  document
+    .getElementById("retryStatus")
+    .addEventListener("click", () => fetchStatus(true));
+  document
+    .getElementById("automaticBtn")
+    .addEventListener("click", () =>
+      executeAction("/toggle-mode", { mode: "standard" }),
+    );
+  document.getElementById("modeBtn").addEventListener("click", () =>
+    executeAction("/toggle-mode", {
+      mode: statusData?.currentMode === "idle" ? "standard" : "idle",
+    }),
   );
-  updateWholeNumberValue('capacityPercentValue', normalizeNumber(lastStatusData.stateOfCharge));
-  updateWholeNumberValue('capacityRemainingWhValue', normalizeNumber(lastStatusData.remainingCapacityWh));
-}
-
-function updateChart(chartId, dataSet) {
-  const chart = createdCharts[chartId];
-  if (!chart) return;
-
-  chart.data.labels = dataSet.map(item => new Date(item.startTimestamp));
-  chart.data.datasets[0].data = dataSet.map(item => getDisplayedPrice(item));
-  chart.data.datasets[0].label = translations.centPerKwh || 'cent/kWh';
-  chart.options.scales.y.title.text = getYAxisTitle();
-  chart.update();
-}
-
-function renderAllPrices() {
-  renderCheapestPriceCard();
-  renderTable('cheapestPeriodsTbody', cheapestPeriods, true);
-  renderTable('marketPricesTbody', marketPrices, false);
-  renderTable('chargingScheduleTbody', scheduledChargingPeriods, false);
-  updateChart('cheapestPeriodsChart', cheapestPeriods);
-  updateChart('marketPricesChart', marketPrices);
-  updateChart('chargingScheduleChart', scheduledChargingPeriods);
-  updateStatusMetricCards();
-  updateCurrentPriceTooltip();
-}
-
-function updateButtonState(buttonId, isActive, activeIcon, inactiveIcon, activeText, inactiveText) {
-  const button = document.getElementById(buttonId);
-  if (!button) return;
-
-  const icon = button.querySelector('i');
-  const label = button.querySelector('[data-role="label"]');
-  const indicator = button.querySelector('.status-indicator');
-
-  button.classList.toggle('on', isActive);
-  button.classList.toggle('off', !isActive);
-  button.setAttribute('aria-pressed', String(isActive));
-
-  if (icon) {
-    icon.classList.remove(activeIcon, inactiveIcon);
-    icon.classList.add(isActive ? activeIcon : inactiveIcon);
-  }
-
-  if (label) label.textContent = isActive ? activeText : inactiveText;
-  if (indicator) {
-    indicator.classList.toggle('active', isActive);
-    indicator.classList.toggle('inactive', !isActive);
-    indicator.classList.remove('enabled');
-  }
-}
-
-function updateNightIdleState(enabled, active) {
-  const button = document.getElementById('nightChargingBtn');
-  if (!button) return;
-
-  const indicator = button.querySelector('.status-indicator');
-  const label = button.querySelector('[data-role="label"]');
-
-  button.classList.toggle('on', active);
-  button.classList.toggle('off', !active);
-  button.setAttribute('aria-pressed', String(active));
-
-  if (label) label.textContent = translations.nightIdle || 'Night Idle';
-  if (indicator) {
-    indicator.classList.remove('active', 'enabled', 'inactive');
-    indicator.classList.add(active ? 'active' : (enabled ? 'enabled' : 'inactive'));
-  }
-}
-
-function setExclusiveModeUI(mode) {
-  const modeBtn = document.getElementById('modeBtn');
-  const chargingBtn = document.getElementById('chargingBtn');
-
-  if (mode === 'idle') {
-    if (chargingBtn?.classList.contains('on')) {
-      updateButtonState('chargingBtn', false, 'fa-stop', 'fa-bolt', translations.charging, translations.stopped);
+  const modalEl = document.getElementById("confirmationModal");
+  const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+  document.getElementById("chargingBtn").addEventListener("click", () => {
+    if (statusData?.isCharging)
+      executeAction("/toggle-charging", { charging: "stop" });
+    else if (!actionBusy) {
+      text("confirmationPrice", format(displayedPrice(statusData)));
+      modal.show();
     }
-    if (modeBtn && !modeBtn.classList.contains('on')) {
-      updateButtonState('modeBtn', true, 'fa-pause', 'fa-play', translations.idle, translations.automatic);
-    }
-  } else if (mode === 'forced') {
-    if (modeBtn?.classList.contains('on')) {
-      updateButtonState('modeBtn', false, 'fa-pause', 'fa-play', translations.idle, translations.automatic);
-    }
-    if (chargingBtn && !chargingBtn.classList.contains('on')) {
-      updateButtonState('chargingBtn', true, 'fa-stop', 'fa-bolt', translations.charging, translations.stopped);
-    }
-  } else if (mode === 'standard') {
-    if (modeBtn?.classList.contains('on')) {
-      updateButtonState('modeBtn', false, 'fa-pause', 'fa-play', translations.idle, translations.automatic);
-    }
-    if (chargingBtn?.classList.contains('on')) {
-      updateButtonState('chargingBtn', false, 'fa-stop', 'fa-bolt', translations.charging, translations.stopped);
-    }
-  }
-}
-
-function setBusyState(isBusy) {
-  document.body.classList.toggle('is-loading', isBusy);
-  document.querySelectorAll('[data-ui-action="true"]').forEach(element => {
-    element.disabled = isBusy;
   });
-}
-
-function showLoader(text) {
-  const overlay = document.getElementById('loaderOverlay');
-  const loaderText = document.getElementById('loaderText');
-  if (loaderText && text) loaderText.textContent = text;
-  if (overlay) overlay.classList.add('show');
-}
-
-function hideLoader() {
-  const overlay = document.getElementById('loaderOverlay');
-  if (overlay) overlay.classList.remove('show');
-}
-
-function executeJsonAction(url, method, body = null, options = {}) {
-  const {
-    onSuccess = null,
-    onFailure = null,
-    reloadOnSuccess = true,
-    successDelayMs = 6000
-  } = options;
-
-  setBusyState(true);
-  showLoader();
-
-  fetch(url, {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : null
-  })
-    .then(response => response.json())
-    .then(data => {
-      if (!data.success) {
-        if (typeof onFailure === 'function') onFailure(data);
-        alert(`Aktion fehlgeschlagen: ${data.message}`);
-        setBusyState(false);
-        hideLoader();
-        return;
-      }
-
-      if (typeof onSuccess === 'function') onSuccess(data);
-
-      if (reloadOnSuccess) {
-        setTimeout(() => window.location.reload(), successDelayMs);
-        return;
-      }
-
-      setBusyState(false);
-      hideLoader();
-    })
-    .catch(error => {
-      console.error('Action failed', error);
-      if (typeof onFailure === 'function') onFailure({ success: false, message: error?.message });
-      alert('Fehler bei der Ausfuehrung der Aktion');
-      setBusyState(false);
-      hideLoader();
-    });
-}
-
-function fetchCurrentStatus() {
-  fetch('/current-status', { method: 'GET' })
-    .then(response => response.json())
-    .then(data => {
-      lastStatusData = data;
-      safeUpdateButtonState('modeBtn', data.currentMode === 'idle', 'fa-pause', 'fa-play', translations.idle, translations.automatic);
-      safeUpdateButtonState('chargingBtn', data.isCharging, 'fa-stop', 'fa-bolt', translations.charging, translations.stopped);
-
-      if (typeof data.nightChargingIdle === 'boolean') nightIdleEnabled = data.nightChargingIdle;
-      if (typeof data.nightIdleActive === 'boolean') nightIdleActive = data.nightIdleActive;
-      updateNightIdleState(nightIdleEnabled, nightIdleActive);
-
-      if (typeof data.nightStartHour === 'number') {
-        nightStartHour = data.nightStartHour;
-        const startInput = document.getElementById('nightStartInput');
-        if (startInput && document.activeElement !== startInput) startInput.value = data.nightStartHour;
-      }
-      if (typeof data.nightEndHour === 'number') {
-        nightEndHour = data.nightEndHour;
-        const endInput = document.getElementById('nightEndInput');
-        if (endInput && document.activeElement !== endInput) endInput.value = data.nightEndHour;
-      }
-
-      updateStatusMetricCards();
-      updateCurrentPriceTooltip();
-    })
-    .catch(error => console.error('Status polling failed', error));
-}
-
-function confirmStartCharging() {
-  const modalElement = document.getElementById('confirmationModal');
-  if (!modalElement) {
-    executeJsonAction('/toggle-charging', 'POST', { charging: 'start' });
-    return;
-  }
-
-  const modal = new bootstrap.Modal(modalElement);
-  modal.show();
-  const timeout = setTimeout(() => modal.hide(), 5000);
-  let confirmed = false;
-
-  document.getElementById('confirmStart').onclick = () => {
-    clearTimeout(timeout);
-    confirmed = true;
+  modalEl.addEventListener("shown.bs.modal", () =>
+    document.getElementById("cancelStart").focus(),
+  );
+  modalEl.addEventListener("hidden.bs.modal", () =>
+    document.getElementById("chargingBtn").focus(),
+  );
+  document.getElementById("confirmStart").addEventListener("click", () => {
     modal.hide();
-    executeJsonAction('/toggle-charging', 'POST', { charging: 'start' });
-  };
-
-  document.getElementById('cancelStart').onclick = () => {
-    clearTimeout(timeout);
-    modal.hide();
-    setExclusiveModeUI('standard');
-    hideLoader();
-  };
-
-  modalElement.addEventListener('hidden.bs.modal', () => {
-    if (!confirmed) {
-      setExclusiveModeUI('standard');
-    }
-  }, { once: true });
-}
-
-function showTab(tabId) {
-  const resolvedTabId = VALID_DATA_TABS.includes(tabId) ? tabId : DEFAULT_DATA_TAB;
-  const targetButton = document.querySelector(`[data-bs-target="#${resolvedTabId}"]`);
-  if (targetButton) {
-    bootstrap.Tab.getOrCreateInstance(targetButton).show();
-  }
-
-  const select = document.getElementById('dataTabSelect');
-  if (select) select.value = resolvedTabId;
-  persistActiveTab(resolvedTabId);
-}
-
-function bindTabSync() {
-  const select = document.getElementById('dataTabSelect');
-  document.querySelectorAll('#priceTabs [data-bs-toggle="tab"]').forEach(button => {
-    button.addEventListener('shown.bs.tab', event => {
-      const targetId = event.target.getAttribute('data-bs-target')?.replace('#', '');
-      if (select && targetId) select.value = targetId;
-      if (targetId) persistActiveTab(targetId);
+    executeAction("/toggle-charging", { charging: "start" });
+  });
+  ["nightStartInput", "nightEndInput"].forEach((id) => {
+    document.getElementById(id).addEventListener("input", (event) => {
+      dirtyHours = true;
+      text("nightWindowStatus", t.unsaved);
+      document.getElementById("nightWindowStatus").classList.remove("error");
+      event.target.removeAttribute("aria-invalid");
     });
   });
-}
-
-function debounce(fn, wait) {
-  let timeout;
-  return function debounced(...args) {
-    clearTimeout(timeout);
-    timeout = setTimeout(() => fn.apply(this, args), wait);
+  const savedHours = () => {
+    dirtyHours = false;
+    text("nightWindowStatus", t.saved);
+    document.getElementById("nightWindowStatus").classList.remove("error");
   };
-}
-
-const debouncedToggleMode = debounce(() => {
-  const button = document.getElementById('modeBtn');
-  if (!button) return;
-
-  const nextMode = button.classList.contains('on') ? 'standard' : 'idle';
-  setLastAction(nextMode);
-  setExclusiveModeUI(nextMode);
-  executeJsonAction('/toggle-mode', 'POST', {
-    mode: nextMode,
-    force: button.classList.contains('on')
-  });
-}, 300);
-
-const debouncedToggleNightCharging = debounce(() => {
-  const windowValues = getValidatedNightWindow();
-  if (!windowValues) return;
-
-  const next = !nightIdleEnabled;
-  setLastAction(next ? 'nightIdle' : 'standard');
-  if (!next) nightIdleActive = false;
-  updateNightIdleState(next, nightIdleActive);
-
-  executeJsonAction('/toggle-night-charging', 'POST', { nightChargingIdle: next, ...windowValues }, {
-    onSuccess: () => {
-      nightIdleEnabled = next;
-      updateNightWindowStatus(`${translations.nightWindowStatusSaved || 'Saved'}: ${String(windowValues.startHour).padStart(2, '0')}:00 - ${String(windowValues.endHour).padStart(2, '0')}:00`);
-    }
-  });
-}, 300);
-
-const debouncedToggleCharging = debounce(() => {
-  const button = document.getElementById('chargingBtn');
-  if (!button) return;
-
-  if (!button.classList.contains('on')) {
-    setLastAction('forced');
-    setExclusiveModeUI('forced');
-    confirmStartCharging();
-    return;
-  }
-
-  setLastAction('standard');
-  setExclusiveModeUI('standard');
-  executeJsonAction('/toggle-charging', 'POST', { charging: 'stop' });
-}, 300);
-
-window.debouncedToggleMode = debouncedToggleMode;
-window.debouncedToggleNightCharging = debouncedToggleNightCharging;
-window.debouncedToggleCharging = debouncedToggleCharging;
-window.hideLoader = hideLoader;
-window.showTab = showTab;
-
-document.addEventListener('DOMContentLoaded', () => {
-  priceMode = getStoredPriceMode();
-  setPriceMode(priceMode, false);
-  applyTheme(getStoredTheme(), false);
-
-  const themeSelector = document.getElementById('themeSelector');
-  if (themeSelector) {
-    themeSelector.addEventListener('change', event => applyTheme(event.target.value));
-  }
-
-  document.querySelectorAll('[data-theme-option]').forEach(button => {
-    button.addEventListener('click', () => {
-      const nextTheme = button.getAttribute('data-theme-option');
-      if (nextTheme) applyTheme(nextTheme);
+  document
+    .getElementById("nightWindowForm")
+    .addEventListener("submit", (event) => {
+      event.preventDefault();
+      const hours = validHours();
+      if (hours) executeAction("/night-charging-window", hours, savedHours);
     });
+  document.getElementById("nightChargingBtn").addEventListener("click", () => {
+    const next = !statusData?.nightChargingIdle;
+    const hours = next ? validHours() : {};
+    if (hours)
+      executeAction(
+        "/toggle-night-charging",
+        { nightChargingIdle: next, ...hours },
+        next ? savedHours : null,
+      );
   });
-
-  const priceModeToggle = document.getElementById('priceModeToggle');
-  if (priceModeToggle) {
-    priceModeToggle.checked = priceMode === PRICE_MODE_BRUTTO;
-    priceModeToggle.addEventListener('change', () => {
-      setPriceMode(priceModeToggle.checked ? PRICE_MODE_BRUTTO : PRICE_MODE_NETTO);
-    });
-  }
-
-  const saveNightWindowBtn = document.getElementById('saveNightWindowBtn');
-  if (saveNightWindowBtn) {
-    saveNightWindowBtn.addEventListener('click', () => {
-      const windowValues = getValidatedNightWindow();
-      if (!windowValues) return;
-
-      executeJsonAction('/night-charging-window', 'POST', windowValues, {
-        reloadOnSuccess: false,
-        onSuccess: () => {
-          nightStartHour = windowValues.startHour;
-          nightEndHour = windowValues.endHour;
-          updateNightWindowStatus(`${translations.nightWindowStatusSaved || 'Saved'}: ${String(windowValues.startHour).padStart(2, '0')}:00 - ${String(windowValues.endHour).padStart(2, '0')}:00`);
+  views.forEach((view) => {
+    bootstrap.Tab.getOrCreateInstance(
+      document.getElementById(`${view.key}-tab`),
+    );
+    document.getElementById(view.toggle).addEventListener("click", () => {
+      saveUiState({
+        viewModes: {
+          ...(readUiState().viewModes || {}),
+          [view.key]: viewMode(view.key) === "chart" ? "table" : "chart",
         },
-        onFailure: () => updateNightWindowStatus(translations.nightWindowSaveError || 'Saving night window failed', true)
       });
+      renderData(view);
     });
-  }
-
-  document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(element => {
-    bootstrap.Tooltip.getOrCreateInstance(element);
+    document
+      .getElementById(`${view.key}-tab`)
+      .addEventListener("shown.bs.tab", () => {
+        activeTab = view.key;
+        saveUiState({ activeTab });
+        renderData(view);
+      });
   });
-
-  toggleView('toggleCheapestPeriods', 'cheapestPeriodsTable', 'cheapestPeriodsChartContainer', 'cheapestPeriodsChart', 'bar', cheapestPeriods, 'cheapest-periods');
-  toggleView('toggleMarketPrices', 'marketPricesTable', 'marketPricesChartContainer', 'marketPricesChart', 'line', marketPrices, 'market-prices');
-  toggleView('toggleChargingSchedule', 'chargingScheduleTable', 'chargingScheduleChartContainer', 'chargingScheduleChart', 'bar', scheduledChargingPeriods, 'scheduled-charging-periods');
-  bindTabSync();
-  showTab(getStoredActiveTab());
-
-  const startInput = document.getElementById('nightStartInput');
-  const endInput = document.getElementById('nightEndInput');
-  if (startInput && endInput) {
-    startInput.value = nightStartHour;
-    endInput.value = nightEndHour;
-  }
-
-  updateNightIdleState(nightIdleEnabled, nightIdleActive);
-  fetchCurrentStatus();
-  setInterval(fetchCurrentStatus, 10000);
-  setInterval(() => window.location.reload(), 65000);
-  renderAllPrices();
+  applyTheme(readStorage("chargeControlTheme"));
+  bootstrap.Tab.getOrCreateInstance(
+    document.getElementById(`${activeTab}-tab`),
+  ).show();
+  setControls();
+  fetchStatus(true);
+  setInterval(() => {
+    if (!actionBusy) fetchStatus();
+  }, 10000);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && !actionBusy) fetchStatus(true);
+  });
 });

@@ -1,7 +1,8 @@
 package de.zeus.power.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import de.zeus.power.config.LogFilter;
 import de.zeus.power.util.ChargingUtils;
 import de.zeus.power.util.NightConfig;
@@ -53,7 +54,7 @@ public class WeatherForecastService {
     @Autowired
     private RestTemplate restTemplate;
 
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = JsonMapper.builder().build();
 
     public boolean isEnabled() { return enabled; }
 
