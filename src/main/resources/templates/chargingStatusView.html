@@ -1,116 +1,196 @@
-<!DOCTYPE html>
-<html lang="en" xmlns:th="http://www.thymeleaf.org" th:lang="${lang}">
-<head>
-    <meta charset="UTF-8">
-    <title th:text="#{title}">ChargeControl V3.0</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
+<!doctype html>
+<html lang="de" xmlns:th="http://www.thymeleaf.org" th:lang="${lang}">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      name="description"
+      content="Zeus Charge Control — energy, battery and intelligent charging at a glance."
+    />
+    <title>Zeus Charge Control · 4.0</title>
     <script>
-        (function () {
-            const key = 'chargeControlTheme';
-            const allowedThemes = ['default', 'dark', 'energy', 'solar', 'ember'];
-            let theme = 'default';
-            try {
-                const stored = localStorage.getItem(key);
-                if (allowedThemes.includes(stored)) theme = stored;
-            } catch (error) {
-                theme = 'default';
-            }
-            document.documentElement.setAttribute('data-theme', theme);
-        })();
+      try {
+        const theme = localStorage.getItem("chargeControlTheme");
+        document.documentElement.dataset.theme = [
+          "default",
+          "dark",
+          "energy",
+          "solar",
+          "ember",
+        ].includes(theme)
+          ? theme
+          : "default";
+      } catch (_) {
+        document.documentElement.dataset.theme = "default";
+      }
     </script>
-
-    <link rel="stylesheet" th:href="@{/css/bootstrap.min.css}">
-    <link rel="stylesheet" th:href="@{/css/all.min.css}">
-    <link rel="stylesheet" th:href="@{/css/darkmode.css}">
-
-    <script th:src="@{/js/jquery.slim.min.js}"></script>
-    <script th:src="@{/js/bootstrap.bundle.min.js}"></script>
-    <script th:src="@{/js/chart.min.js}"></script>
-    <script th:src="@{/js/luxon.min.js}"></script>
-    <script th:src="@{/js/chartjs-adapter-luxon.umd.js}"></script>
-
+    <link rel="icon" th:href="@{/favicon.ico}" />
+    <link rel="stylesheet" th:href="@{/css/bootstrap.min.css}" />
+    <link rel="stylesheet" th:href="@{/css/all.min.css}" />
+    <link rel="stylesheet" th:href="@{/css/darkmode.css}" />
+    <script th:src="@{/js/bootstrap.bundle.min.js}" defer></script>
+    <script th:src="@{/js/chart.min.js}" defer></script>
+    <script th:src="@{/js/luxon.min.js}" defer></script>
+    <script th:src="@{/js/chartjs-adapter-luxon.umd.js}" defer></script>
     <script th:inline="javascript">
-        /*<![CDATA[*/
-        window.AppData = {
-          translations: {
-            idle: /*[[#{idle}]]*/ 'Idle',
-            automatic: /*[[#{automatic}]]*/ 'Automatic',
-            nightIdle: /*[[#{nightIdle}]]*/ 'Night Idle',
-            nightWindowKicker: /*[[#{nightWindowKicker}]]*/ 'Night idle window',
-            nightWindowTitle: /*[[#{nightWindowTitle}]]*/ 'Set quiet hours',
-            nightWindowStartLabel: /*[[#{nightWindowStartLabel}]]*/ 'Start',
-            nightWindowEndLabel: /*[[#{nightWindowEndLabel}]]*/ 'End',
-            nightWindowSave: /*[[#{nightWindowSave}]]*/ 'Save',
-            nightWindowStatusDefault: /*[[#{nightWindowStatusDefault}]]*/ 'Default values apply until saved.',
-            nightWindowStatusSaved: /*[[#{nightWindowStatusSaved}]]*/ 'Saved',
-            nightWindowInvalidHours: /*[[#{nightWindowInvalidHours}]]*/ 'Please enter hours between 0 and 23.',
-            nightWindowSaveError: /*[[#{nightWindowSaveError}]]*/ 'Saving night window failed',
-            on: /*[[#{on}]]*/ 'On',
-            off: /*[[#{off}]]*/ 'Off',
-            charging: /*[[#{charging}]]*/ 'Charging',
-            stopped: /*[[#{stopped}]]*/ 'Stopped',
-            chargingButtonTooltip: /*[[#{chargingButtonTooltip}]]*/ 'Starts or stops charging from the grid.',
-            currentPriceLabel: /*[[#{currentPriceLabel}]]*/ 'Current Price',
-            dropRateLabel: /*[[#{dropRateLabel}]]*/ 'Drop Rate',
-            estimatedTimeToTargetLabel: /*[[#{estimatedTimeToTargetLabel}]]*/ 'Estimated Time to Target',
-            noCurrentPriceInfo: /*[[#{noCurrentPriceInfo}]]*/ 'No current price available',
-            chart: /*[[#{chart}]]*/ 'Chart',
-            table: /*[[#{table}]]*/ 'Table',
-            startTime: /*[[#{startTime}]]*/ 'Start Time',
-            price: /*[[#{price}]]*/ 'Price',
-            priceModeNettoLabel: /*[[#{priceModeNettoLabel}]]*/ 'Market',
-            priceModeBruttoLabel: /*[[#{priceModeBruttoLabel}]]*/ 'Total',
-            centPerKwh: /*[[#{centPerKwh}]]*/ 'cent/kWh'
-          },
-          cheapestPeriods: JSON.parse(/*[[${cheapestPeriodsJson}]]*/ "[]"),
-          marketPrices: JSON.parse(/*[[${marketPricesJson}]]*/ "[]"),
-          scheduledChargingPeriods: JSON.parse(/*[[${scheduledChargingPeriodsJson}]]*/ "[]"),
-          nightChargingIdle: /*[[${nightChargingIdle}]]*/ false,
-          nightIdleActive: /*[[${nightIdleActive}]]*/ false,
-          nightStartHour: /*[[${nightStartHour}]]*/ 22,
-          nightEndHour: /*[[${nightEndHour}]]*/ 6,
-          currentTime: /*[[${currentTime}]]*/ 0
-        };
-        /*]]>*/
+      window.AppData = {
+        translations: {
+          automatic: /*[[#{ui.automatic}]]*/ "Automatic",
+          idle: /*[[#{ui.paused}]]*/ "Paused",
+          charging: /*[[#{ui.charging}]]*/ "Charging",
+          discharging: /*[[#{ui.discharging}]]*/ "Discharging",
+          standby: /*[[#{ui.standby}]]*/ "Standby",
+          pause: /*[[#{ui.pauseAction}]]*/ "Pause battery",
+          resume: /*[[#{ui.resumeAction}]]*/ "Resume automatic control",
+          startCharging: /*[[#{ui.startAction}]]*/ "Start grid charging",
+          stopCharging: /*[[#{ui.stopAction}]]*/ "Stop grid charging",
+          chart: /*[[#{chart}]]*/ "Chart",
+          table: /*[[#{table}]]*/ "Table",
+          price: /*[[#{price}]]*/ "Price",
+          startTime: /*[[#{startTime}]]*/ "Start",
+          marketBasis: /*[[#{ui.marketBasis}]]*/ "Market · net",
+          totalBasis: /*[[#{ui.totalBasis}]]*/ "Total · incl. VAT",
+          unit: /*[[#{centPerKwh}]]*/ "ct/kWh",
+          empty: /*[[#{ui.empty}]]*/ "No data available yet.",
+          emptyPlan:
+            /*[[#{ui.emptyPlan}]]*/ "No charging windows planned. The schedule updates automatically when charging is needed.",
+          noOpportunity:
+            /*[[#{ui.noOpportunity}]]*/ "No upcoming prices available.",
+          unknown: /*[[#{ui.unknown}]]*/ "Unavailable",
+          connected: /*[[#{ui.connected}]]*/ "Up to date",
+          stale:
+            /*[[#{ui.stale}]]*/ "Connection interrupted · values may be outdated",
+          batteryUnavailable:
+            /*[[#{ui.batteryUnavailable}]]*/ "Battery unavailable",
+          actionSuccess: /*[[#{ui.actionSuccess}]]*/ "Setting applied.",
+          actionFailed:
+            /*[[#{ui.actionFailed}]]*/ "The action could not be completed. Check the battery connection and charging target, then try again.",
+          saved: /*[[#{ui.saved}]]*/ "Quiet hours saved for this session.",
+          invalidHours:
+            /*[[#{ui.invalidHours}]]*/ "Enter distinct whole hours between 0 and 23.",
+          unsaved: /*[[#{ui.unsaved}]]*/ "Unsaved changes",
+          nightEnabled: /*[[#{ui.nightEnabled}]]*/ "Enabled",
+          nightDisabled: /*[[#{ui.nightDisabled}]]*/ "Disabled",
+          nightActive: /*[[#{ui.nightActive}]]*/ "Active now",
+          now: /*[[#{ui.now}]]*/ "Now",
+          lastUpdated: /*[[#{ui.lastUpdated}]]*/ "Updated",
+          configured:
+            /*[[#{batteryNotConfiguredMessage}]]*/ "Configure the battery connection.",
+        },
+        marketPrices: JSON.parse(/*[[${marketPricesJson}]]*/ "[]"),
+        cheapestPeriods: JSON.parse(/*[[${cheapestPeriodsJson}]]*/ "[]"),
+        scheduledChargingPeriods: JSON.parse(
+          /*[[${scheduledChargingPeriodsJson}]]*/ "[]",
+        ),
+        nightStartHour: /*[[${nightStartHour}]]*/ 19,
+        nightEndHour: /*[[${nightEndHour}]]*/ 6,
+      };
     </script>
-
     <script th:src="@{/js/main.js}" defer></script>
-    <script>
-        function toggleLanguage(lang) {
-          window.location.href = '/charging-status?lang=' + lang;
-        }
-    </script>
-</head>
-
-<body class="status-page">
-<div class="app-shell"
-     th:with="chargingText=#{charging}, dischargingText=#{discharging}, idleText=#{idle}, manualText=#{manual}, automaticText=#{automatic}">
-    <header th:replace="~{fragments/charging-status :: topbar}"></header>
-
-    <main class="app-main">
-        <section th:replace="~{fragments/charging-status :: hero}"></section>
-
-        <section class="panel error-panel" th:if="${batteryNotConfigured}" aria-labelledby="batteryConfigErrorTitle">
-            <div class="panel-header">
-                <div>
-                    <p class="eyebrow" th:text="#{summarySectionKicker}">System overview</p>
-                    <h2 class="panel-title" id="batteryConfigErrorTitle" th:text="#{batteryNotConfiguredTitle}">Battery Configuration Error</h2>
-                </div>
-            </div>
-            <p class="error-text" th:text="#{batteryNotConfiguredMessage}">The battery is not configured properly.</p>
-        </section>
-
-        <div class="app-grid" th:unless="${batteryNotConfigured}">
-            <section th:replace="~{fragments/charging-status :: batterySummary}"></section>
-            <aside th:replace="~{fragments/charging-status :: controlSidebar}"></aside>
+  </head>
+  <body class="status-page">
+    <a class="skip-link" href="#main" th:text="#{ui.skip}">Skip to content</a>
+    <nav class="app-rail" th:attr="aria-label=#{ui.navigation}">
+      <a class="rail-logo" href="#main" aria-label="Zeus"
+        ><i class="fas fa-bolt" aria-hidden="true"></i
+      ></a>
+      <a
+        class="rail-link active"
+        href="#main"
+        th:attr="aria-label=#{ui.overview}"
+        ><i class="fas fa-house" aria-hidden="true"></i
+      ></a>
+      <a
+        class="rail-link"
+        href="#dataSectionTitle"
+        th:attr="aria-label=#{ui.prices}"
+        ><i class="fas fa-chart-simple" aria-hidden="true"></i
+      ></a>
+      <a
+        class="rail-link"
+        href="#controlPanelTitle"
+        th:attr="aria-label=#{ui.controls}"
+        ><i class="fas fa-sliders" aria-hidden="true"></i
+      ></a>
+      <span class="rail-bottom">Z<span>4.0</span></span>
+    </nav>
+    <div class="app-shell">
+      <header th:replace="~{fragments/charging-status :: topbar}"></header>
+      <main class="app-main" id="main" tabindex="-1">
+        <div
+          class="sample-banner"
+          th:if="${sampleData == true}"
+          th:text="#{ui.sampleData}"
+        >
+          Demo · Sample data · No battery connected
         </div>
-
-        <section th:replace="~{fragments/charging-status :: dataSection}"></section>
-    </main>
-
+        <noscript
+          ><p class="notice notice-error" th:text="#{ui.javascript}">
+            Enable JavaScript to use live status and battery controls.
+          </p></noscript
+        >
+        <section th:replace="~{fragments/charging-status :: hero}"></section>
+        <div
+          id="actionNotice"
+          class="notice"
+          role="status"
+          aria-live="polite"
+          hidden
+        ></div>
+        <div
+          id="connectionNotice"
+          class="notice notice-error"
+          role="status"
+          hidden
+        >
+          <span th:text="#{ui.stale}"
+            >Connection interrupted · values may be outdated</span
+          >
+          <button
+            class="text-button"
+            id="retryStatus"
+            type="button"
+            th:text="#{ui.retry}"
+          >
+            Try again
+          </button>
+        </div>
+        <section
+          class="notice notice-error"
+          id="batteryWarning"
+          th:hidden="${batteryAvailable}"
+          aria-labelledby="batteryWarningTitle"
+        >
+          <strong id="batteryWarningTitle" th:text="#{ui.batteryUnavailable}"
+            >Battery unavailable</strong
+          >
+          <span
+            id="batteryWarningText"
+            th:text="${batteryNotConfigured} ? #{batteryNotConfiguredMessage} : #{ui.batteryConnectionHelp}"
+          ></span>
+        </section>
+        <div class="app-grid">
+          <section
+            th:replace="~{fragments/charging-status :: batterySummary}"
+          ></section>
+          <aside
+            th:replace="~{fragments/charging-status :: controlSidebar}"
+          ></aside>
+        </div>
+        <section
+          th:replace="~{fragments/charging-status :: dataSection}"
+        ></section>
+      </main>
+      <footer class="app-footer">
+        <span>ZEUS CHARGE CONTROL <b>4.0.0</b></span
+        ><span th:text="#{ui.footer}"
+          >Intelligent energy. Simply in control.</span
+        ><a th:href="@{/license(lang=${lang})}" th:text="#{licenseTerms}"
+          >License</a
+        >
+      </footer>
+    </div>
     <div th:replace="~{fragments/charging-status :: confirmationModal}"></div>
-    <div th:replace="~{fragments/charging-status :: loaderOverlay}"></div>
-</div>
-</body>
+  </body>
 </html>
