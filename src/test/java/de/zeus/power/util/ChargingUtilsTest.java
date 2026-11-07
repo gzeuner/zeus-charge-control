@@ -49,6 +49,25 @@ class ChargingUtilsTest {
     }
 
     @Test
+    void calculatesHourlyPeriodsFromWattHoursAndChargingPower() {
+        assertEquals(8000, utils.calculateRequiredCapacity(10));
+        assertEquals(2, utils.calculateRequiredPeriods(8000, 24));
+        assertEquals(1, utils.calculateRequiredPeriods(4600, 24));
+        assertEquals(0, utils.calculateRequiredPeriods(0, 24));
+        assertEquals(1, utils.calculateRequiredPeriods(8000, 1));
+        assertEquals(2, utils.calculateDynamicMaxChargingPeriods(8, 1.0, 0));
+    }
+
+    @Test
+    void retainsEqualPriceWindowsAndDoesNotRejectExpensiveSchedules() {
+        long now = System.currentTimeMillis();
+        ChargingSchedule first = schedule(now + 60_000, now + 3_659_000, 40.0);
+        ChargingSchedule second = schedule(now + 3_660_000, now + 7_259_000, 40.0);
+        assertEquals(2, utils.validateSchedulesForCheaperOptions(java.util.Set.of(first, second)).size());
+        assertTrue(utils.isValidSchedule(first, now, java.util.Set.of(), List.of()));
+    }
+
+    @Test
     void shouldWaitForCheaperWindow_whenCheaperSoonAndRsocSafe() {
         long now = System.currentTimeMillis();
         ChargingSchedule current = schedule(now + 10_000, now + 3_610_000, 13.0);

@@ -1,6 +1,9 @@
 package de.zeus.power.service;
 
 import de.zeus.power.entity.ChargingSchedule;
+import de.zeus.power.entity.MarketPrice;
+import de.zeus.power.event.MarketPricesUpdatedEvent;
+import de.zeus.power.repository.MarketPriceRepository;
 import de.zeus.power.repository.ChargingScheduleRepository;
 import de.zeus.power.util.ChargingUtils;
 import de.zeus.power.util.NightConfig;
@@ -10,11 +13,14 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.scheduling.TaskScheduler;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.Date;
 import java.util.concurrent.ScheduledFuture;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
@@ -119,6 +125,68 @@ class ChargingManagementServiceTest {
         service.activateNightIdleIfInWindow();
 
         verifyNoInteractions(bms);
+    }
+
+    @Test
+    void recalculationKeepsEnoughWindowsEvenWhenAllPricesAreHighAndEqual() {
+        int originalStart = NightConfig.getNightStartHour();
+        int originalEnd = NightConfig.getNightEndHour();
+        try {
+            NightConfig.updateNightHours(0, 0);
+            BatteryCapacityService capacity = mock(BatteryCapacityService.class);
+            when(capacity.resolveTotalCapacityWh()).thenReturn(10_000);
+            when(bms.getRelativeStateOfCharge()).thenReturn(10);
+            when(bms.getRsocHistory()).thenReturn(List.of());
+            ChargingUtils actualUtils = new ChargingUtils();
+            inject(actualUtils, "batteryManagementService", bms);
+            inject(actualUtils, "batteryCapacityService", capacity);
+            inject(actualUtils, "seasonalTargetStateOfChargeService", seasonalTargetStateOfChargeService);
+            inject(actualUtils, "chargingPointInWatt", 4600);
+            inject(service, "chargingUtils", actualUtils);
+            inject(service, "maxNighttimePeriods", 1);
+            inject(service, "daytimeLookaheadHours", 12);
+            inject(service, "additionAlphaCtPerMin", 0.02);
+
+            long start = System.currentTimeMillis() + 60_000;
+            MarketPrice first = price(start, 30.0);
+            MarketPrice second = price(start + 3_600_000, 30.0);
+            MarketPriceRepository prices = mock(MarketPriceRepository.class);
+            when(prices.findAll()).thenReturn(List.of(first, second));
+            inject(service, "marketPriceRepository", prices);
+
+            List<ChargingSchedule> stored = new ArrayList<>();
+            when(scheduleRepo.findAll()).thenAnswer(call -> new ArrayList<>(stored));
+            when(scheduleRepo.save(any(ChargingSchedule.class))).thenAnswer(call -> {
+                ChargingSchedule schedule = call.getArgument(0);
+                schedule.setId((long) (stored.size() + 1));
+                stored.add(schedule);
+                return schedule;
+            });
+            doAnswer(call -> { stored.remove(call.getArgument(0)); return null; }).when(scheduleRepo).delete(any(ChargingSchedule.class));
+            when(scheduleRepo.existsByStartEndAndPrice(anyLong(), anyLong(), anyDouble())).thenAnswer(call -> stored.stream().anyMatch(s ->
+                    s.getStartTimestamp().equals(call.getArgument(0)) && s.getEndTimestamp().equals(call.getArgument(1))
+                            && s.getPrice().equals(call.getArgument(2))));
+            when(taskScheduler.schedule(any(Runnable.class), any(Date.class))).thenReturn(mock(ScheduledFuture.class));
+
+            service.onMarketPricesUpdated(new MarketPricesUpdatedEvent(this));
+            assertEquals(2, stored.size());
+            assertEquals(List.of(first.getStartTimestamp(), second.getStartTimestamp()),
+                    stored.stream().map(ChargingSchedule::getStartTimestamp).sorted().toList());
+            service.onMarketPricesUpdated(new MarketPricesUpdatedEvent(this));
+            assertEquals(2, stored.size());
+            assertEquals(List.of(first.getStartTimestamp(), second.getStartTimestamp()),
+                    stored.stream().map(ChargingSchedule::getStartTimestamp).sorted().toList());
+        } finally {
+            NightConfig.updateNightHours(originalStart, originalEnd);
+        }
+    }
+
+    private static MarketPrice price(long start, double value) {
+        MarketPrice price = new MarketPrice();
+        price.setStartTimestamp(start);
+        price.setEndTimestamp(start + 3_599_000);
+        price.setMarketPrice(value);
+        return price;
     }
 
     private static void inject(Object target, String field, Object value) {
