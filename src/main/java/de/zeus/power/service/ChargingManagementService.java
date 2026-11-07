@@ -54,12 +54,6 @@ public class ChargingManagementService {
     @Autowired private WeatherForecastService weatherForecastService;
     @Autowired private SeasonalTargetStateOfChargeService seasonalTargetStateOfChargeService;
 
-    @Value("${marketdata.acceptable.price.cents:15}")
-    private int maxAcceptableMarketPriceInCent;
-
-    @Value("${marketdata.price.flexibility.threshold:10}")
-    private double priceFlexibilityThreshold;
-
     @Value("${nighttime.max.periods:2}")
     private int maxNighttimePeriods;
 
@@ -279,10 +273,11 @@ public class ChargingManagementService {
             return;
         }
 
-        double dynamicMaxPrice = calculateDynamicMaxPrice(marketPrices);
-        adjustChargingPeriodsDynamically(currentRsoc, marketPrices.size(), marketPrices, dynamicMaxPrice);
         bufferDaytimeCharging(marketPrices);
         optimizeChargingSchedule();
+        adjustChargingPeriodsDynamically(currentRsoc, marketPrices.size(), marketPrices);
+        schedulePlannedCharging();
+        scheduleStopPlannedCharging();
         scheduleEndOfNightResetTask();
     }
 
@@ -294,16 +289,10 @@ public class ChargingManagementService {
         daytimeBuffer.clear();
         if (daytimePeriods.isEmpty()) return;
 
-        double dynamicMaxPrice = calculateDynamicMaxPrice(marketPrices);
-        double threshold = chargingUtils.calculateDynamicThreshold(daytimePeriods, priceFlexibilityThreshold);
-        double maxAcceptablePrice = Math.min(dynamicMaxPrice,
-                chargingUtils.calculateMaxAcceptablePrice(batteryManagementService.getRelativeStateOfCharge(), maxAcceptableMarketPriceInCent));
-
         int dynamicMaxPeriods = chargingUtils.calculateDynamicMaxChargingPeriods(daytimePeriods.size(),
                 chargingUtils.calculatePriceRange(daytimePeriods), batteryManagementService.getRelativeStateOfCharge());
 
         Set<ChargingSchedule> validated = daytimePeriods.stream()
-                .filter(p -> p.getPriceInCentPerKWh() <= threshold && p.getPriceInCentPerKWh() <= maxAcceptablePrice)
                 .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
                 .limit(dynamicMaxPeriods)
                 .map(chargingUtils::convertToChargingSchedule)
@@ -311,13 +300,6 @@ public class ChargingManagementService {
                 .collect(Collectors.toSet());
 
         daytimeBuffer.addAll(validated);
-    }
-
-    private double calculateDynamicMaxPrice(List<MarketPrice> marketPrices) {
-        if (marketPrices == null || marketPrices.isEmpty()) return maxAcceptableMarketPriceInCent;
-        double median = marketPrices.stream().mapToDouble(MarketPrice::getPriceInCentPerKWh).sorted()
-                .skip(marketPrices.size() / 2).findFirst().orElse(maxAcceptableMarketPriceInCent);
-        return Math.min(median * 1.2, maxAcceptableMarketPriceInCent);
     }
 
     private List<MarketPrice> getDaytimePeriods(long currentTime) {
@@ -364,6 +346,7 @@ public class ChargingManagementService {
         toRemove.forEach(s -> {
             cancelHoldForSchedule(s.getId());
             chargingUtils.cancelTask(s.getId(), scheduledTasks);
+            chargingUtils.cancelTask(s.getEndTimestamp(), scheduledTasks);
             catchupAttempts.remove(s.getId());
             chargingScheduleRepository.delete(s);
             LogFilter.logInfo(ChargingManagementService.class,
@@ -394,10 +377,6 @@ public class ChargingManagementService {
                 .collect(Collectors.toList());
         if (day.isEmpty()) return Collections.emptyList();
 
-        double threshold = chargingUtils.calculateDynamicThreshold(day, priceFlexibilityThreshold);
-        double maxAcceptablePrice = chargingUtils.calculateMaxAcceptablePrice(
-                batteryManagementService.getRelativeStateOfCharge(), maxAcceptableMarketPriceInCent);
-
         int dynamicMaxPeriods = chargingUtils.calculateDynamicMaxChargingPeriods(day.size(),
                 chargingUtils.calculatePriceRange(day), batteryManagementService.getRelativeStateOfCharge());
 
@@ -405,9 +384,7 @@ public class ChargingManagementService {
         long toleranceWindow = now + (daytimeLookaheadHours * 60L * 60L * 1000L);
 
         return day.stream()
-                .filter(p -> p.getPriceInCentPerKWh() <= threshold && p.getPriceInCentPerKWh() <= maxAcceptablePrice)
                 .filter(p -> p.getStartTimestamp() <= toleranceWindow)
-                .filter(p -> chargingUtils.findCheaperFuturePeriod(p, day).isEmpty())
                 .limit(dynamicMaxPeriods)
                 .map(chargingUtils::convertToChargingSchedule)
                 .collect(Collectors.toList());
@@ -453,7 +430,6 @@ public class ChargingManagementService {
                 .collect(Collectors.toList());
         if (night.isEmpty()) return Collections.emptyList();
 
-        double dynamicMaxPrice = calculateDynamicMaxPrice(all);
         int requiredPeriods = chargingUtils.calculateRequiredPeriods(
                 chargingUtils.calculateRequiredCapacity(rsoc), all.size());
         int periodsToPlan = Math.min(Math.max(requiredPeriods, 1), maxNighttimePeriods);
@@ -463,7 +439,6 @@ public class ChargingManagementService {
                 .thenComparingLong(MarketPrice::getStartTimestamp);
 
         List<MarketPrice> preferred = night.stream()
-                .filter(p -> p.getPriceInCentPerKWh() <= dynamicMaxPrice)
                 .filter(p -> p.getStartTimestamp() <= latestAcceptableStart)
                 .sorted(comparator)
                 .limit(periodsToPlan)
@@ -471,7 +446,6 @@ public class ChargingManagementService {
 
         if (preferred.isEmpty()) { // fallback: allow late starts if nothing else fits
             preferred = night.stream()
-                    .filter(p -> p.getPriceInCentPerKWh() <= dynamicMaxPrice)
                     .filter(p -> p.getStartTimestamp() < nightEndTimestamp)
                     .sorted(comparator)
                     .limit(periodsToPlan)
@@ -492,7 +466,7 @@ public class ChargingManagementService {
     }
 
     private void adjustChargingPeriodsDynamically(int currentRsoc, int totalPeriods,
-                                                  List<MarketPrice> marketPrices, double dynamicMaxPrice) {
+                                                  List<MarketPrice> marketPrices) {
         double requiredCapacity = chargingUtils.calculateRequiredCapacity(currentRsoc);
         if (requiredCapacity <= 0) { removeAllPlannedChargingPeriods(); return; }
 
@@ -509,19 +483,18 @@ public class ChargingManagementService {
                     LogFilter.logInfo(ChargingManagementService.class,
                             "Missing {} charging period(s). RSOC={}%, target={}%, requiredPeriods={}, existing={}, totalPeriods={}.",
                     missing, currentRsoc, currentTargetStateOfCharge(), requiredPeriods, existing.size(), totalPeriods);
-                    addAdditionalChargingPeriods(marketPrices, missing, existing, dynamicMaxPrice, requiredCapacity);
+                    addAdditionalChargingPeriods(marketPrices, missing, existing, requiredCapacity);
         }
     }
 
     private void addAdditionalChargingPeriods(List<MarketPrice> marketPrices, int periodsToAdd,
-                                              List<ChargingSchedule> existingSchedules, double dynamicMaxPrice,
+                                              List<ChargingSchedule> existingSchedules,
                                               double requiredCapacityWh) {
         long currentTime = System.currentTimeMillis();
         long toleranceWindow = currentTime + (daytimeLookaheadHours * 60L * 60L * 1000L);
 
         List<MarketPrice> candidates = marketPrices.stream()
                 .filter(p -> p.getStartTimestamp() > currentTime && p.getStartTimestamp() <= toleranceWindow)
-                .filter(p -> p.getPriceInCentPerKWh() <= dynamicMaxPrice)
                 .filter(p -> existingSchedules.stream().noneMatch(s -> Objects.equals(s.getStartTimestamp(), p.getStartTimestamp())))
                 .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
                 .collect(Collectors.toList());
@@ -553,9 +526,8 @@ public class ChargingManagementService {
         }
 
         LogFilter.logInfo(ChargingManagementService.class,
-                "Add additional periods: requested={}, selected={}, horizonHours={}, dynamicMaxPrice={} ct/kWh, smallNeedKwh={}, alphaCtPerMin={}.",
+                "Add additional periods: requested={}, selected={}, horizonHours={}, smallNeedKwh={}, alphaCtPerMin={}.",
                 periodsToAdd, available.size(), daytimeLookaheadHours,
-                String.format(Locale.ROOT, "%.2f", dynamicMaxPrice),
                 String.format(Locale.ROOT, "%.2f", additionSmallNeedKwh),
                 String.format(Locale.ROOT, "%.3f", additionAlphaCtPerMin));
         if (!available.isEmpty()) {
@@ -890,6 +862,7 @@ public class ChargingManagementService {
                 .forEach(s -> {
                     cancelHoldForSchedule(s.getId());
                     chargingUtils.cancelTask(s.getId(), scheduledTasks);
+                    chargingUtils.cancelTask(s.getEndTimestamp(), scheduledTasks);
                     catchupAttempts.remove(s.getId());
                     chargingScheduleRepository.delete(s);
                     LogFilter.logInfo(ChargingManagementService.class,
@@ -900,9 +873,6 @@ public class ChargingManagementService {
 
         removeOutdatedSchedules(existingSchedules, validatedNew);
         saveChargingSchedule(validatedNew, marketPrices);
-
-        schedulePlannedCharging();
-        scheduleStopPlannedCharging();
     }
 
     private void removeOutdatedSchedules(List<ChargingSchedule> existing, Set<ChargingSchedule> news) {
@@ -912,6 +882,7 @@ public class ChargingManagementService {
             if (cheaper) {
                 cancelHoldForSchedule(e.getId());
                 chargingUtils.cancelTask(e.getId(), scheduledTasks);
+                chargingUtils.cancelTask(e.getEndTimestamp(), scheduledTasks);
                 catchupAttempts.remove(e.getId());
                 chargingScheduleRepository.delete(e);
                 LogFilter.logInfo(ChargingManagementService.class,
