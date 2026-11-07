@@ -21,7 +21,6 @@ import java.util.*;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 /**
@@ -37,17 +36,10 @@ import java.util.stream.Collectors;
 public class ChargingUtils {
     private static final DateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
     private static final double SECONDS_PER_HOUR = 3600.0;
-    private static final double MINIMUM_THRESHOLD_OFFSET = 0.05;
     private static final int MINIMUM_CHARGING_PERIODS = 2;
 
     @Value("${battery.inverter.max.watts:4600}")
     private int chargingPointInWatt;
-
-    @Value("${marketdata.price.flexibility.threshold:10}")
-    private double priceFlexibilityThreshold;
-
-    @Value("${marketdata.acceptable.price.cents:15}")
-    private int maxAcceptableMarketPriceInCent;
 
     @Value("${battery.nightChargingIdle:false}")
     private boolean nightChargingIdle;
@@ -89,12 +81,8 @@ public class ChargingUtils {
 
     public boolean isValidSchedule(ChargingSchedule schedule, long currentTime, Set<ChargingSchedule> validatedSchedules, List<MarketPrice> marketPrices) {
         if (isScheduleExpired(schedule, currentTime)) return false;
-        if (isScheduleOverpriced(schedule)) return false;
         if (isScheduleOverlapping(schedule, validatedSchedules)) return false;
 
-        // Allow night windows to pass even if they exceed the dynamic threshold slightly (we already filtered by dynamic max price)
-        boolean night = isNight(schedule.getStartTimestamp());
-        if (!night && exceedsDynamicThreshold(schedule, marketPrices)) return false;
         return true;
     }
 
@@ -107,7 +95,7 @@ public class ChargingUtils {
     }
 
     public int calculateRequiredPeriods(double requiredCapacity, int totalPeriods) {
-        int requiredPeriods = (int) Math.ceil(requiredCapacity / (chargingPointInWatt * SECONDS_PER_HOUR));
+        int requiredPeriods = (int) Math.ceil(requiredCapacity / chargingPointInWatt);
         return Math.min(requiredPeriods, totalPeriods);
     }
 
@@ -197,39 +185,6 @@ public class ChargingUtils {
                 .findFirst();
     }
 
-    public List<MarketPrice> findBestNightPeriods(List<MarketPrice> nighttimePeriods, int maxPeriods) {
-        if (nighttimePeriods.isEmpty()) return Collections.emptyList();
-        List<MarketPrice> sorted = nighttimePeriods.stream()
-                .sorted(Comparator.comparingDouble(MarketPrice::getPriceInCentPerKWh))
-                .collect(Collectors.toList());
-        double threshold = sorted.get(0).getPriceInCentPerKWh() + 3.0;
-        return sorted.stream().filter(p -> p.getPriceInCentPerKWh() <= threshold).limit(maxPeriods).collect(Collectors.toList());
-    }
-
-    public boolean exceedsDynamicThreshold(ChargingSchedule schedule, List<MarketPrice> marketPrices) {
-        double threshold = calculateDynamicThreshold(marketPrices, priceFlexibilityThreshold);
-        return schedule.getPrice() > threshold;
-    }
-
-    public double calculateDynamicThreshold(List<MarketPrice> prices, double defaultThreshold) {
-        if (prices == null || prices.isEmpty()) return defaultThreshold;
-        double medianPrice = calculateMedianPrice(prices);
-        double[] stats = calculatePriceStats(prices);
-        double range = stats[1] - stats[0];
-        double dynamicThreshold = medianPrice + defaultThreshold;
-
-        if (range < 0.5) dynamicThreshold += stats[2] * 0.1;
-        else if (range > 3.0) dynamicThreshold -= stats[2] * 0.1;
-
-        return Math.max(dynamicThreshold, stats[0] + MINIMUM_THRESHOLD_OFFSET);
-    }
-
-    public double calculateMaxAcceptablePrice(double currentRsoc, double basePrice) {
-        double rsocThreshold = currentTargetStateOfCharge() * 0.8;
-        double priceMultiplier = 1.2;
-        return currentRsoc < rsocThreshold ? basePrice * priceMultiplier : basePrice;
-    }
-
     public int calculateDynamicDaytimeThreshold() {
         List<Map.Entry<Long, Integer>> history = batteryManagementService.getRsocHistory();
         int targetRsoc = currentTargetStateOfCharge();
@@ -284,6 +239,7 @@ public class ChargingUtils {
         for (int i = 0; i < removeCount; i++) {
             ChargingSchedule s = existingSchedules.get(existingSchedules.size() - 1 - i);
             cancelTask(s.getId(), scheduledTasks);
+            cancelTask(s.getEndTimestamp(), scheduledTasks);
             repository.delete(s);
             LogFilter.logInfo(ChargingUtils.class, "Removed excess schedule: {} - {} ({} ct/kWh).",
                     DATE_FORMAT.format(new Date(s.getStartTimestamp())),
@@ -316,7 +272,7 @@ public class ChargingUtils {
         double requiredCapacity = calculateRequiredCapacity(currentRsoc);
         if (requiredCapacity <= 0) return 0;
 
-        int basePeriods = (int) Math.ceil(requiredCapacity / (chargingPointInWatt * SECONDS_PER_HOUR));
+        int basePeriods = (int) Math.ceil(requiredCapacity / chargingPointInWatt);
         basePeriods += priceRange < 0.5 ? 2 : (priceRange > 3.0 ? -1 : 0);
         basePeriods = totalPeriods <= 5 ? Math.min(basePeriods + 1, totalPeriods)
                 : totalPeriods > 10 ? Math.max(basePeriods - 1, MINIMUM_CHARGING_PERIODS) : basePeriods;
@@ -327,20 +283,14 @@ public class ChargingUtils {
     public Set<ChargingSchedule> validateSchedulesForCheaperOptions(Set<ChargingSchedule> schedules) {
         if (schedules == null || schedules.isEmpty()) return Collections.emptySet();
 
-        TreeSet<ChargingSchedule> validated = new TreeSet<>(Comparator.comparingDouble(ChargingSchedule::getPrice));
-        List<ChargingSchedule> sorted = schedules.stream()
-                .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice).thenComparingLong(ChargingSchedule::getStartTimestamp))
-                .collect(Collectors.toList());
-
-        AtomicReference<Double> cheapest = new AtomicReference<>(Double.MAX_VALUE);
-        validated.addAll(sorted.stream().filter(s -> isNight(s.getStartTimestamp())).limit(3).collect(Collectors.toList()));
-
-        sorted.stream()
-                .filter(s -> !isNight(s.getStartTimestamp()))
-                .filter(s -> s.getPrice() < cheapest.get())
-                .forEach(s -> { validated.add(s); cheapest.set(s.getPrice()); });
-
-        return validated;
+        // Keep distinct time windows, including windows with equal prices.
+        // Overlapping windows are checked when the schedules are saved.
+        return schedules.stream()
+                .collect(Collectors.toMap(
+                        s -> s.getStartTimestamp() + "-" + s.getEndTimestamp(),
+                        s -> s,
+                        (first, second) -> first.getPrice() <= second.getPrice() ? first : second))
+                .values().stream().collect(Collectors.toSet());
     }
 
     public boolean isTaskUpToDate(ScheduledFuture<?> task, ChargingSchedule schedule) {
@@ -497,25 +447,8 @@ public class ChargingUtils {
         }
     }
 
-    private double calculateMedianPrice(List<MarketPrice> prices) {
-        List<Double> sorted = prices.stream().map(MarketPrice::getPriceInCentPerKWh).sorted().toList();
-        int n = sorted.size();
-        return n % 2 == 0 ? (sorted.get(n / 2 - 1) + sorted.get(n / 2)) / 3.0 : sorted.get(n / 2);
-    }
-
-    private double[] calculatePriceStats(List<MarketPrice> prices) {
-        double min = prices.stream().mapToDouble(MarketPrice::getPriceInCentPerKWh).min().orElse(0.0);
-        double max = prices.stream().mapToDouble(MarketPrice::getPriceInCentPerKWh).max().orElse(0.0);
-        double avg = prices.stream().mapToDouble(MarketPrice::getPriceInCentPerKWh).average().orElse(0.0);
-        return new double[]{min, max, avg};
-    }
-
     private boolean isScheduleExpired(ChargingSchedule schedule, long currentTime) {
         return schedule.getEndTimestamp() < currentTime;
-    }
-
-    private boolean isScheduleOverpriced(ChargingSchedule schedule) {
-        return schedule.getPrice() > maxAcceptableMarketPriceInCent;
     }
 
     private boolean isScheduleOverlapping(ChargingSchedule schedule, Set<ChargingSchedule> validatedSchedules) {

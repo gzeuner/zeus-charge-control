@@ -174,6 +174,8 @@ Dabei werden unter anderem berücksichtigt:
 
 ### 🔁 Automatische Re-Optimierung
 
+Es gilt keine feste Preisobergrenze: Die Planung vergleicht verfügbare Preise und kann auch bei hohen Preisen Ladefenster auswählen.
+
 Die Ladeplanung wird regelmäßig neu bewertet, zum Beispiel:
 
 - bei neuen Preisupdates
@@ -543,6 +545,8 @@ Among other factors, the application considers:
 ---
 
 ### 🔁 Automatic Re-Optimization
+
+There is no fixed price cap: the planner compares available prices and can select charging windows even when prices are high.
 
 The charging plan is regularly re-evaluated, for example:
 
