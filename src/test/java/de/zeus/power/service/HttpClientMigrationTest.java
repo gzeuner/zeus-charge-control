@@ -13,6 +13,21 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 
 /** Exercises the actual Spring 7 HTTP converters against representative provider JSON. */
 class HttpClientMigrationTest {
+    @Test void operatingModeWritesAreRejectedWithoutContactingTheBattery() {
+        var service = new BatteryCommandService(new WebConfig().restTemplateBuilder());
+        ReflectionTestUtils.setField(service, "url", "http://battery.test/api/v2");
+        ReflectionTestUtils.setField(service, "authToken", "test-token");
+        service.init();
+        var server = MockRestServiceServer.createServer((RestTemplate) ReflectionTestUtils.getField(service, "restTemplate"));
+        for (String mode : java.util.List.of("1", "2", "10", "11")) {
+            var response = service.setConfiguration("EM_OperatingMode", mode);
+            assertThat(response.success()).isFalse();
+            assertThat(response.statusCode().value()).isEqualTo(403);
+        }
+        assertThat(service.setConfiguration("  em_operatingmode  ", "1").success()).isFalse();
+        server.verify();
+    }
+
     @Test void sonnenStatusPreservesCaseSensitiveJsonPropertiesAndAuthentication() {
         var service = new BatteryCommandService(new WebConfig().restTemplateBuilder());
         ReflectionTestUtils.setField(service, "url", "http://battery.test/api/v2");
@@ -33,6 +48,26 @@ class HttpClientMigrationTest {
         assertThat(response.data().isBatteryCharging()).isTrue();
         server.verify();
     }
+    @Test void acLimitPreservesOtherLimitsAndOnlyWritesTheInverterField() {
+        var service = new BatteryCommandService(new WebConfig().restTemplateBuilder());
+        ReflectionTestUtils.setField(service, "url", "http://battery.test/api/v2");
+        ReflectionTestUtils.setField(service, "authToken", "test-token");
+        service.init();
+        var client = (RestTemplate) ReflectionTestUtils.getField(service, "restTemplate");
+        var server = MockRestServiceServer.createServer(client);
+        String limits = "http://battery.test/api/v2/site/limits";
+        server.expect(requestTo(limits)).andRespond(withSuccess("{\"p_gcp_max_import_limit\":200}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo(limits)).andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo(limits)).andExpect(method(org.springframework.http.HttpMethod.PUT))
+                .andExpect(header("Auth-Token", "test-token"))
+                .andExpect(content().json("{\"duration\":\"PT15S\",\"p_bess_inv_max_import_limit\":0}",
+                        org.springframework.test.json.JsonCompareMode.STRICT))
+                .andRespond(withSuccess());
+        assertThat(service.limitAcCharging(15, false)).isFalse();
+        assertThat(service.limitAcCharging(15, false)).isTrue();
+        server.verify();
+    }
+
     @Test void awattarJsonAndEuroPerMWhConversionRemainCompatible() {
         var service = new MarketPriceService(new WebConfig().restTemplateBuilder());
         ReflectionTestUtils.setField(service, "marketDataSource", "awattar");

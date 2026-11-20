@@ -52,6 +52,7 @@ public class UiTestApplication {
         when(service.getLastSetpointW()).thenAnswer(call -> state.forced ? 4600 : state.paused ? 1 : 0);
         when(service.initCharging(anyBoolean())).thenAnswer(call -> { if (state.reject) return false; state.forced = true; state.paused = false; return true; });
         when(service.resetToAutomaticMode(anyBoolean())).thenAnswer(call -> { if (state.reject) return false; state.forced = false; state.paused = false; return true; });
+        when(service.disableNightIdleAndHandBack()).thenAnswer(call -> { state.nightActive = false; return !state.reject; });
         when(service.pauseWithTinySetpoint()).thenAnswer(call -> !state.reject);
         doAnswer(call -> { state.paused = call.getArgument(0); return null; }).when(service).setManualIdleActive(anyBoolean());
         doAnswer(call -> { state.forced = call.getArgument(0); return null; }).when(service).setForcedChargingActive(anyBoolean());
