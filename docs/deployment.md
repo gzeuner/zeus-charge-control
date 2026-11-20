@@ -105,3 +105,19 @@ Building requires Maven ≥ 3.9 and a JDK ≥ 21. `-Ui` additionally requires No
 Das Skript führt zuerst einen sauberen Build mit Java-Tests aus, prüft den JAR-Inhalt und erstellt das ZIP samt Prüfsumme unter `dist/`. Es kopiert ausschließlich explizit ausgewählte Dateien; lokale Tokens, `.env`, Datenbanken, Logs, JDKs, Node-Module und Demo-Endpunkte werden nicht ausgeliefert. Ein vorhandenes ZIP derselben Version wird erst nach erfolgreicher Erstellung des neuen Pakets ersetzt. Es findet kein Upload oder Zielsystem-Deployment statt.
 
 The script builds and tests first, validates the executable JAR and writes the ZIP and checksum to `dist/`. Its explicit file list excludes local credentials, databases, logs, toolchains, Node modules and demo endpoints. An existing archive is replaced only after the new package has passed its selected checks. It does not upload or install anything on a target system.
+## Ladeplanung mit vorhandener Konfiguration
+
+Eine bestehende `application.properties` kann weiterverwendet werden. Alle folgenden Einstellungen sind optional.
+
+| Einstellung | Standard | Bedeutung |
+|---|---|---|
+| `scheduling.grid-guard.mode` | `ACTIVE` | Erkennt bestätigte Netzladung entgegen der Ladeentscheidung und versucht ein kurzzeitiges AC-Ladelimit. `OBSERVE` protokolliert nur, `OFF` deaktiviert die Überwachung. Bestehende Site-Limits anderer Steuerungen werden nicht überschrieben; der Batteriebetriebsmodus wird nicht verändert. |
+| `battery.time-zone` | `Europe/Berlin` | Zeitzone für lokale Zeitstempel der Batterie. |
+| `scheduling.preview.pv-kwp` | `0` | Installierte PV-Leistung für die Vorschau des Netzladeziels. |
+| `scheduling.preview.household-watts` | `0` | Angenommene durchschnittliche Hauslast für dieselbe Vorschau. Beide Vorschauwerte müssen positiv sein. |
+
+Die Vorschau erscheint bei der Neuplanung im Log. Die konfigurierten Saisonziele steuern weiterhin den Ladevorgang. Für Wetterprognosen die vorhandenen Standortkoordinaten prüfen. Bei Ausfall von Open-Meteo verwendet Zeus eine passende Prognose bis zu drei Stunden nach dem letzten erfolgreichen Abruf. Danach entfällt die wetterbedingte Verschiebung.
+
+Vor der Aktivierung von `ACTIVE` die Logmeldungen im Beobachtungsmodus prüfen. Das Limit gilt für den AC-Eingang des Batterie-Wechselrichters und kann auch AC-gekoppelte PV betreffen. Zeus erneuert es bei gemessenem PV-Überschuss nicht. Jedes gesetzte Limit läuft nach spätestens 30 Sekunden auf dem Gerät aus. Bereits gesetzte fremde Site-Limits verhindern einen neuen Eingriff. Die Sonnen-API bietet dafür getrennte Lese- und Schreibaufrufe. Bei weiteren schreibenden Steuerungen den Beobachtungsmodus verwenden.
+
+Der GUI-Zustand des Nacht-Leerlaufs und eine ausstehende Rückgabe werden in `data/night-idle.state` gespeichert. Das Verzeichnis muss für den Dienst beschreibbar und über Neustarts und Updates hinweg erhalten bleiben. Der Pfad kann mit `BATTERY_NIGHT_STATE_PATH` angepasst werden. / The night idle selection and pending handback are stored in `data/night-idle.state`; keep this directory writable and persistent across restarts and upgrades. Override the path with `BATTERY_NIGHT_STATE_PATH`.

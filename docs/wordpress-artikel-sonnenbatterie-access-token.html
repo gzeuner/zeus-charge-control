@@ -1,0 +1,156 @@
+<article class="tt-article tt-article-premium tt-longform-article" lang="de-DE" aria-labelledby="sonnen-token-title">
+<header>
+<p class="tt-longform-kicker">SonnenBatterie · API v2 · Schritt-für-Schritt</p>
+
+<div class="tt-article-meta tt-editorial-meta"><span class="tt-update-badge tt-editorial-update">Stand · <time datetime="2026-10-25">25. Oktober 2026</time></span>
+<span class="tt-editorial-reading-time">Von Guido Zeuner · etwa 6 Minuten Lesezeit</span></div>
+
+<h1 id="sonnen-token-title">SonnenBatterie Access-Token finden und sicher für Zeus Charge Control einrichten</h1>
+<p class="tt-longform-subtitle">So findest du die lokale Batterieoberfläche, aktivierst die JSON API v2 und übernimmst den Token in die aktuelle Konfiguration von Zeus Charge Control.</p>
+</header>
+
+<figure id="sonnen-token-hero" class="tt-longform-media tt-article-hero"><img src="https://tiny-tool.de/wp-content/uploads/2026/10/sonnenbatterie-access-token-api-hero-blog.jpg" alt="Eine Heimbatterie ist über ein Laptop-Dashboard und ein leuchtendes digitales Schlüssel-Symbol mit einer lokalen API verbunden." width="1690" height="651" />
+<figcaption class="tt-longform-caption">Der API-Token ermöglicht einer berechtigten Anwendung den Zugriff auf die lokale Schnittstelle der Batterie. Symbolbild · tiny-tool.de.</figcaption></figure>
+
+<div class="tt-longform-intro">
+
+Ein Access-Token ist ein geheimer Zugangsschlüssel für API-Anfragen. Wenn du Zeus Charge Control mit deiner Batterie verbinden möchtest, brauchst du neben der erreichbaren Batterieadresse auch den passenden Token. Die Oberfläche und die verfügbaren API-Funktionen unterscheiden sich je nach Batteriemodell und Softwarestand.
+
+Die folgende Anleitung beschreibt den Zugriff über die lokale Weboberfläche und die JSON API v2. Wenn Menüs oder Anmeldeschritte bei deiner Anlage anders aussehen, orientiere dich an der Dokumentation im Batterie-Dashboard oder an den Unterlagen für dein Modell.
+
+<div class="zeus-warningbox">
+<h3>Token wie ein Passwort behandeln</h3>
+Teile den Token nicht in Chats, Screenshots, öffentlichen Repositories oder ungeschützten Logs. Er kann den Zugriff auf Batterieinformationen und – bei aktivierter Schreibfunktion – Steueraktionen ermöglichen. Nutze ihn nur für Anwendungen und Systeme, denen du vertraust.
+</div>
+</div>
+
+<section class="tt-longform-summary" aria-labelledby="sonnen-token-summary">
+<div class="tt-longform-summary-head"><h2 id="sonnen-token-summary">Das Wichtigste in einer Minute</h2></div>
+<ul class="tt-longform-summary-list">
+<li>Finde die lokale IP-Adresse deiner Batterie in der Geräteliste des Routers.</li>
+<li>Öffne die Batterieoberfläche aus demselben Heimnetz und melde dich mit den für dein Modell gültigen Zugangsdaten an.</li>
+<li>Aktiviere unter <strong>Software-Integration → JSON API</strong> die benötigten API-Rechte und kopiere den angezeigten Token.</li>
+<li>Hinterlege Batterieadresse und Token in der externen Zeus-Konfiguration oder über die vorgesehenen Umgebungsvariablen – nicht in einem öffentlichen Startskript.</li>
+</ul>
+</section>
+
+<nav class="zeus-toc tt-longform-toc" aria-label="Inhaltsverzeichnis">
+<h2>Direkt zum Thema</h2>
+<ul>
+<li><a href="#sonnen-token-voraussetzungen">Was du brauchst</a></li>
+<li><a href="#sonnen-token-ip">Lokale IP-Adresse finden</a></li>
+<li><a href="#sonnen-token-login">Bei der Batterie anmelden</a></li>
+<li><a href="#sonnen-token-api">JSON API v2 aktivieren</a></li>
+<li><a href="#sonnen-token-zeus">Token in Zeus Charge Control eintragen</a></li>
+<li><a href="#sonnen-token-fehler">Wenn es nicht funktioniert</a></li>
+<li><a href="#sonnen-token-faq">Häufige Fragen</a></li>
+</ul>
+</nav>
+
+<section id="sonnen-token-voraussetzungen">
+<h2>Was du brauchst</h2>
+<ul>
+<li>Eine sonnenBatterie mit erreichbarer lokaler Schnittstelle.</li>
+<li>Zugriff auf das Heimnetz und die Router-Geräteliste.</li>
+<li>Die für deine Anlage gültigen Zugangsdaten; bei einer Erstanmeldung kann das Initialpasswort auf dem Typenschild stehen.</li>
+<li>Ein Gerät im selben Netzwerk, zum Beispiel einen Computer oder ein Smartphone.</li>
+</ul>
+<p>Die Namen und Menüs können sich zwischen Batteriegenerationen und Firmwareständen unterscheiden. Sonnen weist in den Versionshinweisen außerdem auf aktualisierte Dokumentation zur Local REST API im Dashboard hin. Die dort angezeigten Hinweise für dein konkretes System haben Vorrang.</p>
+</section>
+
+<section id="sonnen-token-ip">
+<h2>1. Lokale IP-Adresse der Batterie finden</h2>
+<ol>
+<li><strong>Router öffnen:</strong> Melde dich an der Benutzeroberfläche deines Routers an.</li>
+<li><strong>Geräteliste ansehen:</strong> Suche in der Liste der verbundenen Geräte nach einem Eintrag, der beispielsweise mit <code>SB-</code> beginnt. Die angezeigte Bezeichnung kann abweichen.</li>
+<li><strong>Adresse notieren:</strong> Übernimm die lokale IP-Adresse, zum Beispiel <code>192.168.178.42</code>. Das ist nur ein Beispiel; verwende die Adresse aus deinem Netzwerk.</li>
+</ol>
+<p>Falls du die Batterie nicht erkennst, prüfe in der Router-Geräteliste auch kabelgebundene Geräte oder verbundene Netzwerkkomponenten. Die Batterie und dein Browsergerät müssen sich gegenseitig im Heimnetz erreichen können.</p>
+</section>
+
+<section id="sonnen-token-login">
+<h2>2. Lokale Oberfläche öffnen und anmelden</h2>
+<ol>
+<li>Verbinde Computer oder Smartphone mit demselben Heimnetz wie die Batterie.</li>
+<li>Gib die IP-Adresse in die Adresszeile des Browsers ein, zum Beispiel <code>http://192.168.178.42</code>.</li>
+<li>Wenn die lokale Anmeldeseite eine Rollenwahl anbietet, wähle die zu deinem Zugang passende Rolle. In manchen Anleitungen oder Systemen wird hierfür <strong>User</strong> angezeigt.</li>
+<li>Bei der ersten Anmeldung kann das Initialpasswort vom Typenschild der Batterie verlangt werden. Wenn dein System bereits eingerichtet ist, verwende stattdessen das von dir gesetzte Passwort.</li>
+</ol>
+<p>Die Anmeldemaske ist nicht bei jeder Batteriegeneration identisch. Wird kein lokaler Login angeboten oder akzeptiert das Gerät die beschriebenen Zugangsdaten nicht, verwende die aktuelle Modell-Dokumentation oder wende dich an den Installationsbetrieb beziehungsweise den Sonnen-Support.</p>
+</section>
+
+<section id="sonnen-token-api">
+<h2>3. JSON API v2 aktivieren und Token kopieren</h2>
+<ol>
+<li>Öffne in der Batterieoberfläche den Menüpunkt <strong>Software-Integration</strong>.</li>
+<li>Wechsle zum Bereich oder Reiter <strong>JSON API</strong>.</li>
+<li>Aktiviere <strong>Read API</strong>, wenn die Anwendung Batteriedaten lesen soll.</li>
+<li>Aktiviere <strong>Write API</strong> nur, wenn du die Steuerfunktionen einer Anwendung wie Zeus Charge Control nutzen möchtest und die Funktion für dein System verfügbar ist.</li>
+<li>Kopiere den angezeigten <strong>Auth.-Token</strong> und bewahre ihn geschützt auf.</li>
+</ol>
+
+<div class="zeus-warningbox">
+<h3>Die Write API ist nicht überall verfügbar</h3>
+Die Freigabe hängt vom System und den aktiven Diensten ab. Sonnen weist in seinen Versionshinweisen darauf hin, dass externe Steuerung über die Write API für bestimmte Kunden mit sonnenVPP, Preisoptimierung oder Direktvermarktung nicht verfügbar ist. Umgehe solche Einschränkungen nicht. Prüfe die Hinweise im Dashboard oder kläre die Freigabe mit Sonnen beziehungsweise deinem Installationsbetrieb.
+</div>
+
+<p>Im September 2026 hat sonnen für Software-Version 1.40 zusätzliche Funktionen der Local REST API und eine aktualisierte Dokumentation im Dashboard angekündigt. Details findest du in den <a href="https://www.sonnen.de/rln-sb">offiziellen Versionshinweisen von sonnen</a>.</p>
+</section>
+
+<section id="sonnen-token-zeus">
+<h2>4. Access-Token in Zeus Charge Control hinterlegen</h2>
+<p>Die aktuelle Version von Zeus Charge Control erwartet den Token in der Anwendungskonfiguration. Du musst ihn nicht in ein Startskript hineinschreiben. Für das ZIP-Paket kopierst du zunächst die Beispielkonfiguration und passt die externe Datei an:</p>
+
+<pre class="code-block"><code>Copy-Item config/application.properties.example config/application.properties</code></pre>
+
+<p>Die relevanten Eigenschaften sehen so aus:</p>
+<pre class="code-block"><code>battery.url=${BATTERY_URL:}
+battery.authToken=${BATTERY_AUTH_TOKEN:}</code></pre>
+
+<p>Du kannst die Werte über die Umgebungsvariablen <code>BATTERY_URL</code> und <code>BATTERY_AUTH_TOKEN</code> bereitstellen oder sie in deiner privaten <code>config/application.properties</code> setzen. Als Batterieadresse verwendest du die lokale URL deiner Anlage, zum Beispiel <code>http://192.168.178.42</code>. Der Token gehört in eine lokal geschützte Konfiguration und nicht in eine Datei, die du veröffentlichst oder mit anderen teilst.</p>
+
+<p>Danach startest du das Paket wie in der Anleitung beschrieben. Öffne das Dashboard von Zeus Charge Control und prüfe, ob der Speicher erreichbar ist und plausible Werte angezeigt werden. Einen vollständigen Überblick über Version 4.0, Installation und Dashboard findest du im Artikel <a href="https://tiny-tool.de/zeus-charge-control-pv-batterie-dynamische-strompreise/">Zeus Charge Control: PV-Batterie intelligent mit dynamischen Strompreisen laden</a>.</p>
+
+<div class="zeus-factbox">
+<h3>Für den Betrieb von Zeus Charge Control</h3>
+Du benötigst Java 21 oder neuer. Das ZIP-Paket bringt Startskripte für Windows und Linux/macOS sowie eine Konfigurationsvorlage mit. Die Anwendung wird standardmäßig lokal bereitgestellt; ändere die Netzwerkanbindung nur bewusst und schütze den Zugriff auf dein Heimnetz.
+</div>
+</section>
+
+<section id="sonnen-token-fehler">
+<h2>Wenn es nicht funktioniert</h2>
+<ul>
+<li><strong>Batterieoberfläche nicht erreichbar:</strong> Prüfe IP-Adresse, WLAN beziehungsweise Ethernet und ob beide Geräte im selben Netzwerk sind.</li>
+<li><strong>Anmeldung schlägt fehl:</strong> Rollenwahl und Passwort können je nach Modell abweichen. Prüfe die Geräteunterlagen und nutze das Initialpasswort nur, wenn die Anlage noch eine Erstanmeldung erwartet.</li>
+<li><strong>Token wird abgelehnt:</strong> Kopiere ihn erneut und kontrolliere, dass keine Leerzeichen oder Zeilenumbrüche mitkopiert wurden. Prüfe außerdem, ob du den Token für die richtige lokale Batterie verwendest.</li>
+<li><strong>Lesen klappt, Steuern nicht:</strong> Prüfe, ob die Write API aktiviert und für deine Anlage freigegeben ist. Manche Energiemanagement- oder Vermarktungsdienste schränken sie ein.</li>
+<li><strong>Zeus zeigt keinen Speicher:</strong> Kontrolliere <code>battery.url</code>, <code>battery.authToken</code> und die Erreichbarkeit des Geräts vom Rechner, auf dem Zeus läuft. Sieh anschließend in die Anwendungslogs.</li>
+</ul>
+</section>
+
+<section id="sonnen-token-faq">
+<h2>Häufige Fragen</h2>
+
+<h3>Ist der Access-Token dasselbe wie mein Sonnen-Portal-Passwort?</h3>
+<p>Nein. Das Portal- beziehungsweise Gerätepasswort dient der Anmeldung. Der API-Token wird für autorisierte Anfragen an die lokale Schnittstelle verwendet.</p>
+
+<h3>Muss ich Read API und Write API beide aktivieren?</h3>
+<p>Zum Auslesen von Daten ist Read API erforderlich. Für Steuerfunktionen wird zusätzlich Write API benötigt, sofern sie von deinem System unterstützt und freigegeben wird. Aktiviere nur die Rechte, die du tatsächlich brauchst.</p>
+
+<h3>Kann ich den Token von unterwegs über das Internet abrufen?</h3>
+<p>Diese Anleitung setzt den Zugriff auf die lokale Oberfläche im Heimnetz voraus. Richte keine ungeschützte Portweiterleitung zur Batterie ein. Für Fernzugriff nutze nur ein sicher konfiguriertes Netzwerkverfahren, das du selbst verantwortest.</p>
+
+<h3>Was mache ich, wenn meine Menüs anders aussehen?</h3>
+<p>Die Oberfläche hängt von Modell und Softwarestand ab. Prüfe die Dokumentation im Dashboard und die offiziellen <a href="https://www.sonnen.de/rln-sb">sonnen-Versionshinweise</a>. Bei Unklarheiten hilft der Installationsbetrieb oder der Hersteller-Support.</p>
+</section>
+
+<section class="tt-longform-conclusion">
+<h2>Fazit</h2>
+<p>Mit der lokalen IP-Adresse, einem passenden API-Zugang und einem sicher verwahrten Token lässt sich Zeus Charge Control mit einer kompatiblen sonnenBatterie verbinden. Die konkreten Menüs und verfügbaren Rechte können sich je nach Anlage unterscheiden; besonders die Write API ist nicht in jeder Konfiguration verfügbar.</p>
+<p>Wenn du anschließend Ladeplanung und Dashboard kennenlernen möchtest, findest du die aktuelle Projektübersicht hier: <a href="https://tiny-tool.de/zeus-charge-control-pv-batterie-dynamische-strompreise/">Zeus Charge Control: PV-Batterie intelligent mit dynamischen Strompreisen laden</a>.</p>
+</section>
+
+<p class="tt-editorial-note"><strong>Hinweis:</strong> Sonnen und sonnenBatterie sind Marken der jeweiligen Rechteinhaber. Dieser Beitrag ist eine unabhängige Anleitung und steht in keiner Verbindung zur Sonnen GmbH. Bezeichnungen und Menüpfade können sich mit Firmware-Updates ändern.</p>
+
+<p class="tt-editorial-note"><strong>Über mich:</strong> Ich bin Guido Zeuner – Softwareentwickler, IT-Berater und Wissensvermittler. Auf tiny-tool.de teile ich technische Erfahrungen und praxisnahe Lösungen. <a href="https://tiny-tool.de/about/">Mehr über mich</a>.</p>
+</article>
