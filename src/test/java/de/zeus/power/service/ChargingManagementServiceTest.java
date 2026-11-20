@@ -57,6 +57,101 @@ class ChargingManagementServiceTest {
     }
 
     @Test
+    void catchupRespectsCheaperWindowAndReevaluatesWhenItDisappears() {
+        long now = System.currentTimeMillis();
+        var active = new ChargingSchedule();
+        active.setId(1L);
+        active.setStartTimestamp(now - 1000);
+        active.setEndTimestamp(now + 60_000);
+        var later = new ChargingSchedule();
+        later.setStartTimestamp(now + 120_000);
+        inject(service, "catchupEnabled", true);
+        int start = NightConfig.getNightStartHour(), end = NightConfig.getNightEndHour();
+        try {
+            int hour = LocalDateTime.now().getHour();
+            NightConfig.updateNightHours((hour + 2) % 24, (hour + 3) % 24);
+            when(scheduleRepo.findAll()).thenReturn(List.of(active, later));
+            when(utils.shouldWaitForCheaperWindow(eq(active), anyList(), eq(bms)))
+                    .thenReturn(java.util.Optional.of(later), java.util.Optional.empty());
+            org.springframework.test.util.ReflectionTestUtils.invokeMethod(service, "tryCatchupStart", now, 50);
+            verify(bms, never()).scheduleHoldTick();
+            when(scheduleRepo.findAll()).thenReturn(List.of(active));
+            org.springframework.test.util.ReflectionTestUtils.invokeMethod(service, "tryCatchupStart", now + 1000, 50);
+            verify(bms).scheduleHoldTick();
+        } finally {
+            NightConfig.updateNightHours(start, end);
+        }
+    }
+
+    @Test
+    void expiredGuardLimitDoesNotRestartADeletedChargingWindow() {
+        long now = System.currentTimeMillis();
+        var guard = mock(GridChargeGuard.class);
+        inject(service, "gridGuard", guard);
+        when(guard.activeLeaseUntil(anyLong())).thenReturn(now + 20_000);
+        when(taskScheduler.schedule(any(Runnable.class), any(Date.class))).thenReturn(mock(ScheduledFuture.class));
+        var schedule = new ChargingSchedule();
+        schedule.setId(123L);
+        schedule.setStartTimestamp(now - 1000);
+        schedule.setEndTimestamp(now + 90_000);
+        Boolean started = org.springframework.test.util.ReflectionTestUtils.invokeMethod(service, "startScheduledHold", schedule);
+        assertFalse(started);
+        ArgumentCaptor<Runnable> callback = ArgumentCaptor.forClass(Runnable.class);
+        verify(taskScheduler).schedule(callback.capture(), any(Date.class));
+        when(scheduleRepo.findById(123L)).thenReturn(java.util.Optional.empty());
+        callback.getValue().run();
+        verify(bms, never()).scheduleHoldTick();
+    }
+
+    @Test
+    void monitorsUnexpectedGridChargingAtTargetEvenWithoutPrices() {
+        long now = System.currentTimeMillis();
+        var guard = mock(GridChargeGuard.class);
+        var prices = mock(MarketPriceRepository.class);
+        inject(service, "gridGuard", guard);
+        inject(service, "marketPriceRepository", prices);
+        when(guard.enabled()).thenReturn(true);
+        when(prices.findCurrentMarketPrice(now)).thenReturn(java.util.Optional.empty());
+        when(scheduleRepo.findAll()).thenReturn(List.of());
+        var status = new de.zeus.power.model.BatteryStatusResponse();
+        status.setRsoc(95);
+        status.setOperatingMode("2");
+        org.springframework.test.util.ReflectionTestUtils.invokeMethod(service, "monitorGridCharge", now, status);
+        verify(guard).tick(eq(now), eq(now + 60_000), eq(now + 60_000), eq(status));
+    }
+
+    @Test
+    void catchupCanStartDuringNightIdleButNotManualPause() {
+        long now = System.currentTimeMillis();
+        var active = new ChargingSchedule();
+        active.setId(99L);
+        active.setStartTimestamp(now - 1000);
+        active.setEndTimestamp(now + 120_000);
+        inject(service, "catchupEnabled", true);
+        inject(service, "pvOnlyEnabled", true);
+        inject(service, "weatherWaitMaxMinutes", 120);
+        var weather = mock(WeatherForecastService.class);
+        inject(service, "weatherForecastService", weather);
+        when(bms.isOwnerProtected()).thenReturn(true);
+        when(bms.isNightIdleActive()).thenReturn(true);
+        when(scheduleRepo.findAll()).thenReturn(List.of(active));
+        when(bms.scheduleHoldTick()).thenReturn(true);
+        when(taskScheduler.scheduleAtFixedRate(any(Runnable.class), anyLong())).thenReturn(mock(ScheduledFuture.class));
+        int start = NightConfig.getNightStartHour(), end = NightConfig.getNightEndHour();
+        try {
+            int hour = LocalDateTime.now().getHour();
+            NightConfig.updateNightHours(hour, (hour + 1) % 24);
+            when(bms.isManualIdleActive()).thenReturn(true);
+            org.springframework.test.util.ReflectionTestUtils.invokeMethod(service, "tryCatchupStart", now, 50);
+            verify(bms, never()).scheduleHoldTick();
+            when(bms.isManualIdleActive()).thenReturn(false);
+            org.springframework.test.util.ReflectionTestUtils.invokeMethod(service, "tryCatchupStart", now, 50);
+            verify(bms).scheduleHoldTick();
+            verifyNoInteractions(weather);
+        } finally { NightConfig.updateNightHours(start, end); }
+    }
+
+    @Test
     void scheduleStopPlannedCharging_plansStopTasksForFutureSchedules() {
         long now = System.currentTimeMillis();
         ChargingSchedule s = new ChargingSchedule();

@@ -301,6 +301,29 @@ test("a pending command cannot be submitted twice", async ({ page }) => {
   expect(commands).toBe(1);
 });
 
+test("night idle can be disabled while the battery is unavailable", async ({
+  page,
+  request,
+}) => {
+  await request.post("/toggle-night-charging", {
+    data: { nightChargingIdle: true },
+  });
+  await request.post("/__test/scenario?name=unavailable");
+  await request.post("/__test/scenario?name=reject");
+  await page.goto("/charging-status?lang=de");
+  await expect(page.locator("#batteryWarning")).toBeVisible();
+  await expect(page.locator("#nightChargingBtn")).toBeEnabled();
+  await page.locator("#nightChargingBtn").click();
+  await expect(page.locator("#actionNotice")).toHaveAttribute("role", "alert");
+  await expect(page.locator("#actionNotice")).toContainText(
+    "an die Batterie wird wiederholt",
+  );
+  await expect(page.locator("#nightChargingBtn")).toHaveAttribute(
+    "aria-checked",
+    "false",
+  );
+});
+
 test("missing battery, empty prices and plans remain clear and recover without reload", async ({
   page,
   request,

@@ -20,7 +20,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest(classes = ClientApplication.class, properties = {
         // Existing operator configurations register only the standard messages bundle.
         "spring.messages.basename=messages",
-        "battery.url=", "battery.authToken=", "weather.api.enabled=false",
+        "battery.url=", "battery.authToken=", "battery.night.state.path=target/test-production-night.state", "weather.api.enabled=false",
         "scheduled.job.cron=-", "battery.automatic.mode.check.interval=3600000",
         "awattar.marketdata.url=http://127.0.0.1:9/disabled", "tibber.marketdata.url=http://127.0.0.1:9/disabled",
         "spring.datasource.url=jdbc:h2:mem:production-smoke", "spring.jpa.hibernate.ddl-auto=create-drop",
