@@ -217,11 +217,10 @@ public class ChargingStatusController {
                 log.info("Night hours updated by user: {} -> {} (during toggle request)", startHour, endHour);
             }
 
-            chargingUtils.setNightChargingIdle(nightChargingIdle);
-            batteryManagementService.setNightChargingIdle(nightChargingIdle);
-            chargingManagementService.scheduleNightIdleWindowTasks();
-
             if (nightChargingIdle) {
+                batteryManagementService.setNightChargingIdle(true);
+                chargingUtils.setNightChargingIdle(true);
+                chargingManagementService.scheduleNightIdleWindowTasks();
                 if (ChargingUtils.isNight(System.currentTimeMillis())) {
                     chargingManagementService.activateNightIdleIfInWindow();
                 } else {
@@ -229,8 +228,9 @@ public class ChargingStatusController {
                 }
             } else {
                 // Disable idle and hand back control
-                batteryManagementService.setNightIdleActive(false);
-                boolean ok = batteryManagementService.resetToAutomaticMode(true);
+                boolean ok = batteryManagementService.disableNightIdleAndHandBack();
+                chargingUtils.setNightChargingIdle(false);
+                chargingManagementService.scheduleNightIdleWindowTasks();
                 log.info("Night idle deactivated by user. Handback to EM success={}", ok);
                 if (!ok) {
                     return new ApiResponse<>(false, HttpStatus.BAD_GATEWAY, "Night idle disabled; return to automatic control failed", null);
@@ -298,6 +298,7 @@ public class ChargingStatusController {
         status.put("manualIdleActive", manualIdle);                   // explicit flag for UI polling
         status.put("nightChargingIdle", chargingUtils.isNightChargingIdle());
         status.put("nightIdleActive", batteryManagementService.isNightIdleActive());
+        status.put("nightHandbackPending", batteryManagementService.isNightHandbackPending());
         status.put("isCharging", batteryManagementService.isForcedChargingActive());
         Double currentPrice = marketPriceService.getCurrentlyValidPrice();
         status.put("currentPrice", currentPrice);
@@ -346,6 +347,7 @@ public class ChargingStatusController {
 
             switch (mode) {
                 case "idle": {
+                    synchronized (batteryManagementService) {
                     // Idempotence guard
                     if (batteryManagementService.isManualIdleActive()) {
                         log.info("Already in idle mode");
@@ -366,6 +368,7 @@ public class ChargingStatusController {
                     } else {
                         log.warn("Switch to idle failed.");
                         return new ApiResponse<>(false, HttpStatus.BAD_GATEWAY, "Failed to set 0W", null);
+                    }
                     }
                 }
                 case "standard": {
