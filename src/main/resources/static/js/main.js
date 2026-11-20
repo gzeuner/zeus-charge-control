@@ -145,7 +145,14 @@ function notice(message, error = false) {
 function setControls() {
   const unavailable = !connected || !statusData?.batteryAvailable;
   document.querySelectorAll("[data-ui-action]").forEach((el) => {
-    el.disabled = actionBusy || unavailable;
+    el.disabled =
+      actionBusy ||
+      (unavailable &&
+        !(
+          el.id === "nightChargingBtn" &&
+          connected &&
+          statusData?.nightChargingIdle
+        ));
   });
   document.querySelectorAll("#nightWindowForm input").forEach((el) => {
     el.disabled = actionBusy || unavailable;
@@ -510,6 +517,7 @@ async function fetchStatus(force = false) {
     }
     connection(true);
     renderStatus();
+    if (data.nightHandbackPending) notice(t.nightHandbackPending, true);
     renderAllData();
     text("lastUpdated", `${t.lastUpdated} ${dateTime(Date.now(), false)}`);
   } catch (error) {
@@ -523,7 +531,13 @@ async function fetchStatus(force = false) {
   }
 }
 async function executeAction(url, body, onSuccess) {
-  if (actionBusy || !connected || !statusData?.batteryAvailable) return;
+  if (
+    actionBusy ||
+    !connected ||
+    (!statusData?.batteryAvailable &&
+      !(url === "/toggle-night-charging" && body.nightChargingIdle === false))
+  )
+    return;
   actionBusy = true;
   // Retire any earlier status request so it cannot overwrite the acknowledged result.
   ++requestGeneration;
@@ -536,8 +550,18 @@ async function executeAction(url, body, onSuccess) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (result.success !== true)
+    if (result.success !== true) {
+      if (
+        url === "/toggle-night-charging" &&
+        body.nightChargingIdle === false &&
+        result.message ===
+          "Night idle disabled; return to automatic control failed"
+      ) {
+        notice(t.nightHandbackPending, true);
+        return;
+      }
       throw new Error("Action rejected by battery service");
+    }
     if (onSuccess) onSuccess();
     notice(t.actionSuccess);
   } catch (error) {

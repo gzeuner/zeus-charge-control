@@ -10,6 +10,9 @@ import de.zeus.power.util.ChargingUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import jakarta.annotation.PostConstruct;
+import java.nio.file.*;
+import java.io.IOException;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -125,6 +128,36 @@ public class BatteryManagementService {
     private volatile boolean forcedChargingActive = false;
     private volatile boolean isReducedChargingActive = false;
     private volatile boolean nightIdleActive = false;
+    private volatile boolean nightHandbackPending = false;
+
+    @Value("${battery.night.state.path:./data/night-idle.state}")
+    private String nightStatePath = "./data/night-idle.state";
+
+    @PostConstruct
+    void restoreNightState() {
+        Path path = Path.of(nightStatePath);
+        if (!Files.exists(path)) return;
+        try {
+            String state = Files.readString(path).trim();
+            if (!List.of("ENABLED", "DISABLED", "PENDING", "ENABLED_PENDING").contains(state))
+                throw new IllegalStateException("Invalid night idle state: " + state);
+            nightChargingIdle = state.equals("ENABLED") || state.equals("ENABLED_PENDING");
+            nightHandbackPending = state.equals("PENDING") || state.equals("ENABLED_PENDING");
+        } catch (IOException e) { throw new IllegalStateException("Cannot read night idle state", e); }
+    }
+
+    private void persistNightState(String state) {
+        Path path = Path.of(nightStatePath).toAbsolutePath();
+        Path tmp = path.resolveSibling(path.getFileName() + ".tmp");
+        try {
+            Files.createDirectories(path.getParent());
+            Files.writeString(tmp, state);
+            try { Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE); }
+            catch (AtomicMoveNotSupportedException e) { Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING); }
+        } catch (IOException e) { throw new IllegalStateException("Cannot save night idle state", e); }
+    }
+
+    public boolean isNightHandbackPending() { return nightHandbackPending; }
     private int lastSetpointW;
     private final Queue<Map.Entry<Long, Integer>> rsocHistory = new ConcurrentLinkedQueue<>();
     private final Queue<BatteryStatusSample> batteryStatusHistory = new ConcurrentLinkedQueue<>();
@@ -151,7 +184,8 @@ public class BatteryManagementService {
     @Deprecated
     public boolean setDynamicChargingPoint(int watts) { return setChargeWatts(watts); }
 
-    public boolean setChargeWatts(int watts) {
+    public synchronized boolean setChargeWatts(int watts) {
+        if (nightHandbackPending && !retryNightHandback()) return false;
         if (isBatteryNotConfigured() || watts < 0) return false;
         int clamped = Math.min(Math.max(0, watts), getInverterMaxWatt());
         var resp = commandService.setChargePoint(clamped);
@@ -163,7 +197,8 @@ public class BatteryManagementService {
         return false;
     }
 
-    public boolean setDischargeWatts(int watts) {
+    public synchronized boolean setDischargeWatts(int watts) {
+        if (nightHandbackPending && !retryNightHandback()) return false;
         if (isBatteryNotConfigured() || watts < 0) return false;
         int clamped = Math.min(Math.max(0, watts), getInverterMaxWatt());
         var resp = commandService.setDischargePoint(clamped);
@@ -239,7 +274,7 @@ public class BatteryManagementService {
 
     // ------------ main ops
 
-    public boolean initCharging(boolean forceCharging) {
+    public synchronized boolean initCharging(boolean forceCharging) {
         // Publish control state only after the battery acknowledges the new setpoint.
         invalidateBatteryCache();
 
@@ -395,22 +430,58 @@ public class BatteryManagementService {
     public int getLastSetpointW() { return lastSetpointW; }
     public void setLastSetpointW(int watts) { this.lastSetpointW = watts; }
     public boolean isNightChargingIdle() { return nightChargingIdle; }
-    public void setNightChargingIdle(boolean nightChargingIdle) { this.nightChargingIdle = nightChargingIdle; }
+    public synchronized void setNightChargingIdle(boolean enabled) {
+        if (enabled && nightHandbackPending && !retryNightHandback())
+            throw new IllegalStateException("Night handback is still pending");
+        if (enabled) persistNightState("ENABLED");
+        this.nightChargingIdle = enabled;
+    }
     public boolean isNightIdleActive() { return nightIdleActive; }
     public void setNightIdleActive(boolean active) { this.nightIdleActive = active; }
     public boolean isScheduleOwnerActive() {
         return controlOwner == ControlOwner.SCHEDULE && System.currentTimeMillis() < ownerValidUntil.get();
     }
 
-    public boolean activateNightIdleHold() {
-        nightIdleActive = true;
-        boolean ok = startNightIdleHold();
-        if (!ok) nightIdleActive = false;
-        return ok;
+    public synchronized void releaseScheduledOwner() {
+        if (controlOwner == ControlOwner.SCHEDULE) releaseOwnerToEm("scheduled window ended");
     }
 
-    public boolean startNightIdleHold() {
-        if (!ChargingUtils.isNight(System.currentTimeMillis())) return false;
+    public synchronized boolean activateNightIdleHold() {
+        if (!nightChargingIdle || nightHandbackPending || manualIdleActive || forcedChargingActive || isScheduleOwnerActive()) return false;
+        nightIdleActive = true;
+        return startNightIdleHold();
+    }
+
+    public synchronized boolean disableNightIdleAndHandBack() {
+        boolean otherOwner = manualIdleActive || ((forcedChargingActive || isScheduleOwnerActive())
+                && (!nightIdleActive || lastSetpointW > Math.max(1, nightPauseWatts)));
+        persistNightState(otherOwner ? "DISABLED" : "PENDING");
+        nightChargingIdle = false;
+        nightIdleActive = false;
+        nightHandbackPending = !otherOwner;
+        return retryNightHandback();
+    }
+
+    public synchronized boolean endNightIdleAndHandBack() {
+        if (!nightIdleActive) return true;
+        boolean otherOwner = manualIdleActive || ((forcedChargingActive || isScheduleOwnerActive())
+                && lastSetpointW > Math.max(1, nightPauseWatts));
+        if (otherOwner) { nightIdleActive = false; return true; }
+        persistNightState(nightChargingIdle ? "ENABLED_PENDING" : "PENDING");
+        nightIdleActive = false;
+        nightHandbackPending = true;
+        return retryNightHandback();
+    }
+
+    public synchronized boolean retryNightHandback() {
+        if (!nightHandbackPending) return true;
+        if (resetToAutomaticMode(true)) { persistNightState(nightChargingIdle ? "ENABLED" : "DISABLED"); nightHandbackPending = false; return true; }
+        return false;
+    }
+
+    public synchronized boolean startNightIdleHold() {
+        if (!nightChargingIdle || !nightIdleActive || nightHandbackPending || manualIdleActive
+                || forcedChargingActive || isScheduleOwnerActive() || !ChargingUtils.isNight(System.currentTimeMillis())) return false;
         boolean okTiny = pauseWithTinySetpoint();
         if (!okTiny) return false;
         long nightEnd = getNightEndMillis(System.currentTimeMillis());
@@ -469,7 +540,7 @@ public class BatteryManagementService {
     /** Planned-window hold tick. Returns true to keep holding; false to end hold. */
     public boolean scheduleHoldTick() { return applyHoldTick(true); }
 
-    private boolean applyHoldTick(boolean scheduledWindow) {
+    private synchronized boolean applyHoldTick(boolean scheduledWindow) {
         if (isBatteryNotConfigured()) return false;
 
         long now = System.currentTimeMillis();

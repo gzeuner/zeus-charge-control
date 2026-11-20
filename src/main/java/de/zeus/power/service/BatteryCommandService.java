@@ -218,6 +218,28 @@ public class BatteryCommandService {
         String endpoint = buildUrl(SETPOINT_PATH + CHARGE_PATH + 0);
         return executePostRequest(endpoint, "set neutral setpoint (0W)", HttpStatus.CREATED);
     }
+    /** Apply a short import limit only if the device has no competing site limits. */
+    public boolean limitAcCharging(int seconds, boolean renewing) {
+        if (batteryNotConfigured || restTemplate == null || seconds < 1 || seconds > 30) return false;
+        String endpoint = buildUrl("/site/limits");
+        try {
+            var limits = restTemplate.getForObject(endpoint, tools.jackson.databind.JsonNode.class);
+            String key = "p_bess_inv_max_import_limit";
+            if (limits == null || !limits.isObject()) return false;
+            boolean ownLimit = renewing && limits.size() == 1 && limits.path(key).isIntegralNumber()
+                    && limits.path(key).asLong() == 0;
+            if (!limits.isEmpty() && !ownLimit) {
+                LOG.warn("AC charge limit not applied: existing site limits may belong to another controller.");
+                return false;
+            }
+            restTemplate.put(endpoint, java.util.Map.of(key, 0, "duration", "PT" + seconds + "S"));
+            return true;
+        } catch (org.springframework.web.client.RestClientException ex) {
+            LOG.warn("AC charge limit unavailable: {}", ex.getMessage());
+            return false;
+        }
+    }
+
     /**
      * Sets a configuration key-value pair for the battery via a PUT request.
      *
@@ -226,6 +248,10 @@ public class BatteryCommandService {
      * @return An ApiResponse indicating success or failure of the operation.
      */
     public ApiResponse<?> setConfiguration(String key, String value) {
+        // The wallbox relies on the operating mode selected on the battery.
+        if (key == null || "EM_OperatingMode".equalsIgnoreCase(key.trim())) {
+            return new ApiResponse<>(false, HttpStatus.FORBIDDEN, "Battery operating mode is read-only in Zeus.", null);
+        }
         String endpoint = buildUrl(CONFIGURATIONS_PATH);
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(FORM_URLENCODED);
