@@ -1,0 +1,214 @@
+<article class="tt-article tt-article-premium tt-longform-article" lang="de-DE" aria-labelledby="zeus-charge-control-title">
+<header>
+<p class="tt-longform-kicker">Energie · Photovoltaik · Open Source</p>
+
+<div class="tt-article-meta tt-editorial-meta"><span class="tt-update-badge tt-editorial-update">Stand · <time datetime="2026-10-25">25. Oktober 2026</time></span>
+<span class="tt-editorial-reading-time">Von Guido Zeuner · etwa 9 Minuten Lesezeit</span></div>
+
+<h1 id="zeus-charge-control-title">Zeus Charge Control 4.0: PV-Speicher intelligent mit Strompreisen laden</h1>
+<p class="tt-longform-subtitle">Das Open-Source-Projekt plant günstige Ladefenster für Sonnen-Batteriespeicher. Das überarbeitete Dashboard bringt Batteriestatus, Ladeplanung und manuelle Steuerung auf Desktop und Smartphone zusammen.</p>
+</header>
+
+<figure id="zeus-charge-control-hero" class="tt-longform-media tt-article-hero"><img src="https://tiny-tool.de/wp-content/uploads/2026/10/zeus-charge-control-showcase.png" alt="Vier Smartphone-Ansichten von Zeus Charge Control 4.0 in den Themes Solar, Forest, Midnight und Nord. Die Oberfläche zeigt Beispielwerte und keine Live-Daten einer Batterie." width="1672" height="941" />
+<figcaption class="tt-longform-caption">Zeus Charge Control 4.0 auf dem Smartphone: vier der fünf Themes mit Beispieldaten aus der Demo-Ansicht.</figcaption></figure>
+
+<div class="tt-longform-intro">
+
+Mit einem dynamischen Stromtarif ändern sich die Preise im Tagesverlauf. Zeus Charge Control kann diese Preisfenster für die Ladeplanung eines kompatiblen PV-Speichers berücksichtigen. In Version 4.0 wurde vor allem die Weboberfläche erneuert: Sie zeigt den Speicherzustand, die Preisentwicklung und geplante Ladezeiten gemeinsam an und bietet direkte Steuerungsmöglichkeiten.
+
+Das Projekt richtet sich an technisch versierte Betreiberinnen und Betreiber, die ihre Anlage selbst konfigurieren und überwachen. Die Software ist kein universelles Energiemanagementsystem und nicht als Plug-and-play-Lösung für beliebige Speicher gedacht.
+
+<div class="zeus-warningbox">
+<h3>Vor dem Einsatz prüfen</h3>
+Zeus Charge Control unterstützt derzeit ausschließlich PV-Batteriespeicher mit <strong>Sonnen API v2</strong>. Das unabhängige Open-Source-Projekt ist kein Produkt der Sonnen GmbH. Konfiguration, laufende Kontrolle und Bewertung der Ladeentscheidungen liegen beim Betreiber der Anlage.
+</div>
+</div>
+
+<section class="tt-longform-summary" aria-labelledby="zeus-charge-control-summary">
+<div class="tt-longform-summary-head"><h2 id="zeus-charge-control-summary">Das Wichtigste in einer Minute</h2></div>
+<ul class="tt-longform-summary-list">
+<li><strong>Version:</strong> 4.0.0 mit neuem Dashboard, fünf Themes sowie Desktop- und Mobilansichten.</li>
+<li><strong>Kompatibilität:</strong> PV-Batteriespeicher mit Sonnen API v2; andere Speicher und Wechselrichter werden derzeit nicht unterstützt.</li>
+<li><strong>Planung:</strong> Strompreise, Ladezustand und konfigurierbare Batterieparameter bestimmen mögliche Ladefenster. Wetterdaten über Open-Meteo sind optional.</li>
+<li><strong>Betrieb:</strong> Java 21 oder neuer; entweder das ausführbare JAR oder das vorbereitete ZIP-Paket verwenden.</li>
+</ul>
+</section>
+
+<nav class="zeus-toc tt-longform-toc" aria-label="Inhaltsverzeichnis">
+<h2>Direkt zum Thema</h2>
+<ul>
+<li><a href="#zeus-was-ist-das">Was ist Zeus Charge Control?</a></li>
+<li><a href="#zeus-neuerungen">Was ist in Version 4.0 neu?</a></li>
+<li><a href="#zeus-ui">Dashboard und Screenshots</a></li>
+<li><a href="#zeus-logik">So funktioniert die Ladeplanung</a></li>
+<li><a href="#zeus-setup">Installation und Start</a></li>
+<li><a href="#zeus-konfiguration">Konfiguration und Sonnen-Token</a></li>
+<li><a href="#zeus-sicherheit">Betrieb, Grenzen und Verantwortung</a></li>
+<li><a href="#zeus-faq">Häufige Fragen</a></li>
+<li><a href="#zeus-links">Projekt und weiterführende Links</a></li>
+</ul>
+</nav>
+
+<section id="zeus-was-ist-das">
+<h2>Was ist Zeus Charge Control?</h2>
+<p><strong>Zeus Charge Control</strong> ist eine Java-Anwendung auf Basis von Spring Boot. Sie verbindet einen kompatiblen Batteriespeicher mit Marktdaten und erstellt daraus Ladepläne. Je nach Konfiguration können die Preise von aWATTar oder Tibber stammen; Wetterdaten lassen sich über Open-Meteo ergänzen.</p>
+
+<p>Die Anwendung kann günstige Zeiträume erkennen, den aktuellen Ladezustand berücksichtigen und geplante Ladevorgänge anpassen. Sie zeigt außerdem Messwerte und Preisverläufe an. Eine Ersparnis ist damit nicht garantiert: Sie hängt unter anderem vom Tarif, der Anlage, den gewählten Einstellungen und den tatsächlichen Preisen ab.</p>
+
+<div class="zeus-factbox">
+<h3>Voraussetzungen auf einen Blick</h3>
+<ul>
+<li>PV-Batteriespeicher mit erreichbarer Sonnen API v2</li>
+<li>Zugangsdaten und lokale beziehungsweise erreichbare Adresse der Batterie</li>
+<li>Java 21 oder neuer auf dem Zielsystem</li>
+<li>Ein dynamischer Tarif beziehungsweise eine konfigurierte Quelle für Marktdaten</li>
+<li>Technische Bereitschaft, Einstellungen und laufenden Betrieb selbst zu prüfen</li>
+</ul>
+</div>
+</section>
+
+<section id="zeus-neuerungen">
+<h2>Was ist in Version 4.0 neu?</h2>
+<p>Version 4.0.0 bringt ein neu gestaltetes Energie-Dashboard. Die Übersichtsseite bündelt wichtige Informationen und Aktionen, statt sie auf getrennte Ansichten zu verteilen.</p>
+
+<ul>
+<li><strong>Speicherübersicht:</strong> Ladezustand, verfügbare Energie, saisonales Ladeziel, Solarproduktion, Hausverbrauch und Batterieleistung.</li>
+<li><strong>Preis und Ladeplan:</strong> Preisverlauf, geplante Ladephasen und die fünf günstigsten künftigen Zeiträume, als Diagramm oder Tabelle.</li>
+<li><strong>Bedienelemente:</strong> Automatik, Speicher pausieren und Netzladen starten oder beenden. Zum Start des Netzladens ist eine ausdrückliche Bestätigung erforderlich.</li>
+<li><strong>Live-Aktualisierung:</strong> Die Werte werden alle zehn Sekunden aktualisiert, ohne die Seite neu zu laden. Bei Verbindungsproblemen zeigt die Oberfläche einen Hinweis und sperrt Steueraktionen bis zur Wiederverbindung.</li>
+<li><strong>Preisanzeige:</strong> Wahlweise Börsenpreis netto oder Gesamtpreis mit den konfigurierten Aufschlägen und der Mehrwertsteuer. Diese Umschaltung ändert die Anzeige, nicht die Ladeoptimierung.</li>
+<li><strong>Nachtruhe:</strong> Ein einstellbares Zeitfenster kann den Speicher nach dem nächtlichen Laden im Leerlauf halten. Es kann über Mitternacht laufen; Änderungen aus der Oberfläche gelten bis zum Neustart des Servers.</li>
+<li><strong>Fünf Themes:</strong> Nord, Midnight, Forest, Solar und Ember. Das Dashboard unterstützt Deutsch und Englisch sowie schmale Smartphone-Ansichten.</li>
+</ul>
+
+<p>Die Themes, die Preisbasis und die aktuelle Tabellen- beziehungsweise Diagrammansicht bleiben im Browser gespeichert. Fehlende Messwerte werden sichtbar als nicht verfügbar angezeigt, statt einen scheinbaren Messwert vorzutäuschen.</p>
+</section>
+
+<section id="zeus-ui">
+<h2>Dashboard und Screenshots</h2>
+<p>Das Dashboard ist für Desktop und Mobilgeräte ausgelegt. Die folgenden Aufnahmen zeigen die Solar-Ansicht mit ausdrücklich markierten Beispieldaten. Sie stammen aus der lokalen Demo und bilden keine echte Batterie ab.</p>
+
+<figure class="tt-longform-media"><img src="https://tiny-tool.de/wp-content/uploads/2026/10/dashboard-solar-desktop.png" alt="Desktop-Dashboard von Zeus Charge Control 4.0 im Theme Solar mit Batteriestatus, Steuerung, Nachtruhe, Strompreisdiagramm und Demo-Hinweis." width="1440" height="1703" loading="lazy" />
+<figcaption class="tt-longform-caption">Desktop-Ansicht im Theme Solar. Die angezeigten Werte und Preisintervalle sind Beispieldaten.</figcaption></figure>
+
+<figure class="tt-longform-media"><img src="https://tiny-tool.de/wp-content/uploads/2026/10/dashboard-solar-mobile.png" alt="Mobile, lange Dashboard-Ansicht von Zeus Charge Control 4.0 im Theme Solar mit Demo-Hinweis und Beispieldaten." width="1170" height="7086" loading="lazy" />
+<figcaption class="tt-longform-caption">Smartphone-Ansicht im Theme Solar, als Chromium-Geräteansicht mit einer Breite von 390 CSS-Pixeln aufgenommen.</figcaption></figure>
+
+<p class="tt-editorial-note">Die Demo-Aufnahmen enthalten simulierte Werte. Sie zeigen weder Zugangsdaten noch den Zustand einer realen Anlage.</p>
+</section>
+
+<section id="zeus-logik">
+<h2>So funktioniert die Ladeplanung</h2>
+<p>Die Planung verbindet Preise mit dem Batteriezustand und den technischen Parametern der Anlage. Vereinfacht läuft ein Planungsschritt so ab:</p>
+
+<ol>
+<li><strong>Batterie auslesen:</strong> Die Anwendung fragt unter anderem den relativen Ladezustand (RSOC) und weitere verfügbare Messwerte über die Sonnen API ab.</li>
+<li><strong>Ziel und Grenzen prüfen:</strong> Sie vergleicht den aktuellen Zustand mit dem konfigurierten Ladeziel und berücksichtigt Kapazität und maximale Leistung.</li>
+<li><strong>Preise einlesen:</strong> Die ausgewählte Preisquelle liefert die verfügbaren Marktpreisintervalle. Tibber und aWATTar können abhängig von der Konfiguration als Quelle oder Ausweichquelle dienen.</li>
+<li><strong>Zeitfenster auswählen:</strong> Preisgrenzen, Zeitvorgaben und Ladebedarf fließen in die Planung ein. Optionale Wetterdaten können helfen, erwartete sonnige Zeiträume einzubeziehen.</li>
+<li><strong>Plan aktualisieren:</strong> Die Ladeplanung wird regelmäßig sowie bei relevanten Daten- und Zustandsänderungen neu bewertet. Überholte oder abgelaufene Zeitfenster können dabei entfernt werden.</li>
+<li><strong>Ergebnis kontrollieren:</strong> Plan, Preisverlauf und Speicherwerte bleiben im Dashboard sichtbar. Die Betreiberin oder der Betreiber prüft, ob das tatsächliche Verhalten zur Anlage passt.</li>
+</ol>
+
+<h3>Was bedeutet RSOC?</h3>
+<p><strong>RSOC</strong> steht für „Relative State of Charge“ und bezeichnet den Ladezustand der Batterie in Prozent. Ein RSOC von 50 Prozent bedeutet, dass der Speicher nach seiner Messung ungefähr halb geladen ist. Zeus nutzt diesen Wert unter anderem, um den Ladebedarf zu beurteilen und einen Ladevorgang am konfigurierten Ziel zu beenden.</p>
+
+<div class="zeus-tipp"><strong>Ein Beispiel:</strong> Liegt der RSOC unter dem Zielwert und sind für die erlaubten Zeiträume niedrige Preise verfügbar, kann Zeus passende Ladefenster planen. Wie viel Strom tatsächlich in dieser Zeit geladen wird, hängt auch von Leistung, Batteriekapazität und Anlagenverhalten ab.</div>
+</section>
+
+<section id="zeus-setup">
+<h2>Installation und Start</h2>
+<p>Das Projekt wird als Quellcode auf GitHub bereitgestellt. Für einen eigenen Build sind Java 21 und Maven 3.9 oder neuer erforderlich. Auf dem späteren Zielsystem genügt Java 21 oder neuer.</p>
+
+<div class="zeus-factbox">
+<h3>Ausführbares JAR erstellen</h3>
+<pre><code>mvn clean package
+java -jar target/zeus-charge-control-4.0.0.jar</code></pre>
+<p>Das JAR enthält die benötigten Java-Abhängigkeiten, Templates, Browser-Dateien und Sprachdateien. Für den vollständigen Maven-Lifecycle ist weiterhin <code>mvn clean verify</code> verfügbar.</p>
+</div>
+
+<h3>ZIP-Paket für den Betrieb</h3>
+<p>Das Projekt enthält außerdem ein Packaging-Skript für ein ZIP-Paket mit Startdateien für Windows und Linux/macOS, Konfigurationsvorlage, Lizenzen und Anleitung. Das Paket kann nach dem Build mit <code>scripts/package.ps1</code> erzeugt werden. Auf dem Zielrechner wird die Beispielkonfiguration kopiert und angepasst; danach startet man die Anwendung mit <code>start.bat</code> beziehungsweise <code>bash start.sh</code>. Maven und Node.js müssen dort nicht installiert sein.</p>
+
+<p>Nach dem Start ist das Dashboard standardmäßig unter <a href="http://127.0.0.1:8080/charging-status">http://127.0.0.1:8080/charging-status</a> erreichbar. Die Beispielkonfiguration bindet die Oberfläche zunächst an den lokalen Rechner. Für Zugriff im Heimnetz muss die Netzwerkanbindung bewusst angepasst werden.</p>
+</section>
+
+<section id="zeus-konfiguration">
+<h2>Konfiguration und Sonnen-Token</h2>
+<p>Vor der ersten Nutzung müssen Batterieadresse, API-Token und technische Werte zur eigenen Installation passen. Die Paketvorlage liegt unter <code>config/application.properties.example</code>; eigene Einstellungen können als <code>config/application.properties</code> daneben liegen. Sensible Zugangsdaten gehören weder in ein öffentliches Repository noch in Screenshots oder geteilte Logs.</p>
+
+<pre class="code-block"><code>battery.url=${BATTERY_URL:}
+battery.authToken=${BATTERY_AUTH_TOKEN:}
+
+battery.inverter.max.watts=${BATTERY_INVERTER_MAX_WATTS:4600}
+battery.max.capacity.wh=${BATTERY_MAX_CAPACITY_WH:10000}</code></pre>
+
+<ul>
+<li><code>battery.url</code> ist die Adresse der Batterie, die vom Rechner mit Zeus erreichbar sein muss.</li>
+<li><code>battery.authToken</code> enthält den Zugriffstoken für die Sonnen API.</li>
+<li><code>battery.inverter.max.watts</code> beschreibt die maximale Lade- beziehungsweise Wechselrichterleistung.</li>
+<li><code>battery.max.capacity.wh</code> gibt die konfigurierte Batteriekapazität in Wattstunden an.</li>
+</ul>
+
+<p>Die Zahlen im Beispiel sind keine Empfehlung für deine Anlage. Prüfe außerdem Marktpreisquelle, gegebenenfalls Tibber-Zugangsdaten, optionale Wetterkoordinaten, Ladeziele und Tarifaufschläge. Wie du den benötigten Token in der Sonnen-Oberfläche findest, erklärt die Anleitung <a href="https://tiny-tool.de/wie-du-ein-access-token-von-deiner-sonnenbatterie-bekommst/">„Wie du ein Access-Token von deiner sonnenBatterie bekommst“</a>.</p>
+
+<div class="zeus-warningbox">
+<h3>Konfiguration sorgfältig prüfen</h3>
+Ein falscher Token, eine nicht erreichbare Adresse oder unpassende Leistungs- und Kapazitätswerte können die Messwerte und Ladeplanung beeinträchtigen. Übernimm die Beispielwerte nicht ungeprüft und vergleiche nach dem Start die Anzeige mit deiner Anlage.
+</div>
+</section>
+
+<section id="zeus-sicherheit">
+<h2>Betrieb, Grenzen und Verantwortung</h2>
+<p>Das Projekt ist im README als <strong>experimentell</strong> gekennzeichnet. Die Bedienoberfläche macht Messwerte und Aktionen sichtbarer; sie ersetzt aber weder eine fachliche Prüfung noch die Kontrolle durch den Betreiber. Automatisierte Ladeentscheidungen können technische und wirtschaftliche Folgen haben.</p>
+
+<ul>
+<li>Prüfe die Anlage nach Änderungen an Konfiguration, Tarif, Software oder Firmware.</li>
+<li>Beobachte zunächst, ob geplante und tatsächliche Ladevorgänge zusammenpassen.</li>
+<li>Die Anwendung bringt keine eigene Benutzeranmeldung mit. Exponiere die Oberfläche deshalb nicht ungeschützt im Internet und öffne den Netzwerkzugriff nur mit passenden Schutzmaßnahmen.</li>
+<li>API-Ausfälle, fehlende Marktdaten, Netzwerkprobleme und fehlerhafte Einstellungen können die Planung beeinflussen.</li>
+<li>Die Software garantiert weder einen störungsfreien Betrieb noch eine Stromkostenersparnis und ist nicht für sicherheitskritische oder netzrelevante Steuerungsaufgaben vorgesehen.</li>
+</ul>
+
+<p>Zeus Charge Control wurde nicht von der Sonnen GmbH entwickelt, wird von ihr nicht bereitgestellt oder unterstützt und ist kein offizielles Sonnen-Produkt. Die Namen der Anbieter und Produkte dienen der technischen Einordnung. Für die Nutzung der jeweiligen Schnittstellen sind auch deren Bedingungen zu beachten.</p>
+</section>
+
+<section id="zeus-faq">
+<h2>Häufige Fragen</h2>
+
+<h3>Welche Batteriespeicher unterstützt Zeus Charge Control?</h3>
+<p>Derzeit PV-Batteriespeicher mit Sonnen API v2. Andere Batteriespeicher, Wechselrichter oder Energiemanagementsysteme werden nicht automatisch unterstützt.</p>
+
+<h3>Welche Strompreise kann die Anwendung abrufen?</h3>
+<p>Die Anwendung unterstützt aWATTar und Tibber. Welche Quelle verwendet wird und ob eine Ausweichquelle greift, hängt von der Konfiguration ab. Zugangsdaten sind bei Bedarf selbst einzurichten.</p>
+
+<h3>Ist Open-Meteo erforderlich?</h3>
+<p>Nein. Wetterdaten sind optional. Sie können anhand der eingestellten Koordinaten und Wetterparameter in die Planung einfließen.</p>
+
+<h3>Kann ich die Oberfläche vom Smartphone aus bedienen?</h3>
+<p>Ja. Das Dashboard ist für schmale und breite Bildschirme ausgelegt. Die Weboberfläche läuft auf dem Gerät, auf dem Zeus gestartet wurde; für Zugriff von anderen Geräten muss die Netzwerkkonfiguration entsprechend eingerichtet werden.</p>
+
+<h3>Ändert die Brutto-/Netto-Umschaltung die Ladeplanung?</h3>
+<p>Nein. Sie ändert die Preisbasis in den angezeigten Karten, Tabellen, Diagrammen und Bestätigungen. Die Einstellung ist eine Anzeigeoption und steuert den Optimierer nicht um.</p>
+
+<h3>Was passiert, wenn die API oder Batterie nicht erreichbar ist?</h3>
+<p>Die Anwendung zeigt fehlende Werte beziehungsweise Verbindungsprobleme an; Steueraktionen bleiben während der Verbindungsstörung gesperrt. Prüfe trotzdem Netzwerk, URL, Token und Logs, bevor du dich wieder auf die Automatik verlässt.</p>
+</section>
+
+<section id="zeus-links">
+<h2>Projekt und weiterführende Links</h2>
+<ul>
+<li><a href="https://github.com/gzeuner/zeus-charge-control">Zeus Charge Control auf GitHub</a> – Quellcode, aktuelle Dokumentation und Projektdateien.</li>
+<li><a href="https://tiny-tool.de/wie-du-ein-access-token-von-deiner-sonnenbatterie-bekommst/">Access-Token für die sonnenBatterie finden</a> – Anleitung für den API-Zugang.</li>
+<li><a href="https://www.apache.org/licenses/LICENSE-2.0">Apache License 2.0</a> – Lizenz des Projekts.</li>
+</ul>
+</section>
+
+<section class="tt-longform-conclusion">
+<h2>Fazit</h2>
+<p>Zeus Charge Control 4.0 verbindet dynamische Strompreise, Sonnen-Batteriestatus und Ladeplanung in einer deutlich übersichtlicheren Weboberfläche. Die fünf Themes und die mobilen Ansichten machen das Monitoring flexibler; die Verantwortung für passende Einstellungen und regelmäßige Kontrolle bleibt beim Betreiber.</p>
+<p>Wer einen kompatiblen Speicher mit Sonnen API v2 besitzt, technische Konfigurationen sicher prüfen kann und die Anlage aktiv überwacht, findet im Projekt einen interessanten Open-Source-Baustein. Vor dem Einsatz gehören Konfiguration, Zugriffsschutz und die eigenen Erwartungen an die Ladeoptimierung auf den Prüfstand.</p>
+</section>
+
+<p class="tt-editorial-note"><strong>Über mich:</strong> Ich bin Guido Zeuner – Softwareentwickler, IT-Berater und Wissensvermittler. Auf tiny-tool.de teile ich technische Erfahrungen und praxisnahe Lösungen. <a href="https://tiny-tool.de/about/">Mehr über mich</a>.</p>
+</article>

@@ -5,20 +5,17 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 import de.zeus.power.config.LogFilter;
 import de.zeus.power.util.ChargingUtils;
-import de.zeus.power.util.NightConfig;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
-import java.time.ZoneId;
-import java.time.ZonedDateTime;
+import java.util.NavigableMap;
 import java.util.Optional;
+import java.util.TreeMap;
 
 /**
  * Simple Open-Meteo client to fetch hourly cloud cover and decide whether
@@ -58,51 +55,84 @@ public class WeatherForecastService {
 
     public boolean isEnabled() { return enabled; }
 
-    /**
-     * Returns the first epoch millis of an hourly slot with cloud cover
-     * <= threshold between now and latestStartMillis. Only returns daytime
-     * (outside NightConfig hours).
-     */
-    public Optional<Long> findSunnySlot(long nowMillis, long latestStartMillis) {
-        if (!enabled) return Optional.empty();
-        try {
-            long horizonMillis = Math.min(latestStartMillis, nowMillis + lookaheadHours * 3600_000L);
-            // Build Open-Meteo URL. We request hourly=cloudcover and timezone=auto
-            String url = String.format(
-                    "%s?latitude=%s&longitude=%s&hourly=%s&timezone=auto",
-                    baseUrl,
-                    URLEncoder.encode(String.valueOf(latitude), StandardCharsets.UTF_8),
-                    URLEncoder.encode(String.valueOf(longitude), StandardCharsets.UTF_8),
-                    URLEncoder.encode(hourlyParams, StandardCharsets.UTF_8)
-            );
-            ResponseEntity<String> resp = restTemplate.getForEntity(URI.create(url), String.class);
-            if (!resp.getStatusCode().is2xxSuccessful() || resp.getBody() == null) {
-                LogFilter.logWarn(WeatherForecastService.class, "Open-Meteo request failed: {}", resp.getStatusCode());
-                return Optional.empty();
-            }
-            JsonNode root = mapper.readTree(resp.getBody());
-            JsonNode hourly = root.path("hourly");
-            if (hourly.isMissingNode()) return Optional.empty();
+    private record Hour(int cover, double radiation) {}
+    private NavigableMap<Long, Hour> forecast = new TreeMap<>();
+    private long fetchedAt;
+    private long lastAttempt;
+    private static final long HOUR = 3_600_000L;
 
-            JsonNode times = hourly.path("time");
-            JsonNode covers = hourly.path("cloudcover");
-            if (!times.isArray() || !covers.isArray()) return Optional.empty();
-
-            int n = Math.min(times.size(), covers.size());
-            for (int i = 0; i < n; i++) {
-                String ts = times.get(i).asText();          // ISO8601 local time (timezone=auto)
-                int cover = covers.get(i).asInt(100);
-                // Parse to epoch millis
-                long t = Instant.parse(ZonedDateTime.parse(ts + "Z").toInstant().toString()).toEpochMilli();
-                if (t < nowMillis || t > horizonMillis) continue;
-                if (ChargingUtils.isNight(t)) continue;      // only consider daytime slots
-                if (cover <= sunnyThresholdPct) {
-                    return Optional.of(t);
+    // Publish only complete snapshots. Keep the previous forecast through short outages.
+    private synchronized NavigableMap<Long, Hour> snapshot(long now) {
+        if (!enabled) return new TreeMap<>();
+        if (now - fetchedAt >= HOUR && now - lastAttempt >= 300_000L) {
+            lastAttempt = now;
+            try {
+                String params = hourlyParams.replace("cloudcover", "cloud_cover");
+                var variables = new java.util.LinkedHashSet<>(java.util.Arrays.asList(params.split(",")));
+                variables.add("cloud_cover");
+                variables.add("shortwave_radiation");
+                URI uri = URI.create(baseUrl + "?latitude=" + latitude + "&longitude=" + longitude
+                        + "&hourly=" + URLEncoder.encode(String.join(",", variables), StandardCharsets.UTF_8)
+                        + "&timeformat=unixtime&timezone=GMT");
+                JsonNode hourly = mapper.readTree(restTemplate.getForObject(uri, String.class)).path("hourly");
+                var times = hourly.path("time");
+                var cover = hourly.path("cloud_cover");
+                var radiation = hourly.path("shortwave_radiation");
+                var fresh = new TreeMap<Long, Hour>();
+                if (!times.isArray() || !cover.isArray() || times.size() != cover.size())
+                    throw new IllegalArgumentException("Incomplete hourly forecast");
+                for (int i = 0; i < times.size(); i++) {
+                    if (!times.get(i).isIntegralNumber() || !cover.get(i).isNumber()) continue;
+                    int pct = cover.get(i).asInt();
+                    if (pct < 0 || pct > 100) continue;
+                    var rad = radiation.path(i);
+                    fresh.put(times.get(i).asLong() * 1000, new Hour(pct, rad.isNumber() ? rad.asDouble() : -1));
                 }
+                long floor = Math.floorDiv(now, HOUR) * HOUR;
+                for (long t = floor; t <= floor + Math.max(1, lookaheadHours) * HOUR; t += HOUR)
+                    if (!fresh.containsKey(t)) throw new IllegalArgumentException("Forecast horizon has gaps");
+                forecast = fresh;
+                fetchedAt = now;
+                LogFilter.logInfo(getClass(), "Open-Meteo hourly forecast refreshed.");
+            } catch (Exception ex) {
+                LogFilter.logWarn(getClass(), "Weather refresh failed; last successful fetch (epoch ms): {}. {}",
+                        fetchedAt, ex.getMessage());
             }
-        } catch (Exception ex) {
-            LogFilter.logWarn(WeatherForecastService.class, "Weather parsing failed: {}", ex.getMessage());
         }
-        return Optional.empty();
+        return now - fetchedAt <= 3 * HOUR ? forecast : new TreeMap<>();
+    }
+
+    public Optional<Long> findSunnySlot(long now, long latest) {
+        long end = Math.min(latest, now + lookaheadHours * HOUR);
+        if (end <= now) return Optional.empty();
+        var hours = snapshot(now);
+        return hours.subMap(now, false, end, true).entrySet().stream()
+                .filter(e -> !ChargingUtils.isNight(e.getKey()) && e.getValue().cover <= sunnyThresholdPct)
+                .filter(e -> {
+                    // Radiation timestamp is the END of the averaging interval.
+                    Hour next = hours.get(e.getKey() + HOUR);
+                    return next != null && next.radiation > 0;
+                })
+                .map(java.util.Map.Entry::getKey).findFirst();
+    }
+
+    /** Shadow-only grid target. Reserve must cover every prefix before the forecast PV arrives. */
+    public Optional<Integer> previewGridTarget(long now, int seasonal, int reserve, double capacityWh,
+                                                double pvKwp, double householdW) {
+        if (pvKwp <= 0 || capacityWh <= 0 || householdW <= 0 || reserve >= seasonal) return Optional.empty();
+        var hours = snapshot(now);
+        long start = now;
+        double balance = 0, deficit = 0;
+        for (int i = 0; i < lookaheadHours; i++) {
+            long end = (Math.floorDiv(start, HOUR) + 1) * HOUR;
+            Hour h = hours.get(end);
+            if (h == null || h.radiation < 0) return Optional.empty();
+            balance += (pvKwp * h.radiation * 0.75 - householdW) * (end - start) / HOUR;
+            deficit = Math.max(deficit, -balance);
+            start = end;
+        }
+        int headroom = (int) Math.floor(100 * Math.max(0, balance) / capacityWh);
+        int beforeSun = reserve + (int) Math.ceil(100 * deficit / capacityWh);
+        return Optional.of(Math.min(seasonal, Math.max(beforeSun, seasonal - headroom)));
     }
 }

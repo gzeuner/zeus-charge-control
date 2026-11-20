@@ -35,14 +35,20 @@ import java.util.stream.Collectors;
 @Component
 public class ChargingUtils {
     private static final DateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
-    private static final double SECONDS_PER_HOUR = 3600.0;
     private static final int MINIMUM_CHARGING_PERIODS = 2;
 
     @Value("${battery.inverter.max.watts:4600}")
     private int chargingPointInWatt;
 
+    @Value("${battery.grid.import.limit.watts:4600}")
+    private int gridChargeWatts = 4600;
+
+    public double deliverableWh(long start, long end) {
+        return Math.max(0L, end - start) / 3_600_000.0 * Math.max(0, Math.min(gridChargeWatts, chargingPointInWatt));
+    }
+
     @Value("${battery.nightChargingIdle:false}")
-    private boolean nightChargingIdle;
+    private volatile boolean nightChargingIdle;
 
     @Value("${battery.handback.debounce.ms:60000}")
     private long handBackDebounceMs;
@@ -68,6 +74,13 @@ public class ChargingUtils {
     @Value("${battery.rsoc.drop.default.per.hour:3.0}")
     private double defaultRsocDropPerHour;
 
+    @Value("${scheduling.wait.max.defer.hours:6}")
+    private int dayDeferHours;
+    @Value("${scheduling.wait.min.price.diff.cents:0.5}")
+    private double daySavingsCt;
+    @Value("${scheduling.wait.relative.drop.pct:5}")
+    private double dayDropPct;
+
     private final AtomicLong lastHandBackTs = new AtomicLong(0L);
 
     @Autowired
@@ -76,6 +89,11 @@ public class ChargingUtils {
     private SeasonalTargetStateOfChargeService seasonalTargetStateOfChargeService;
     @Autowired
     private BatteryCapacityService batteryCapacityService;
+
+    @jakarta.annotation.PostConstruct
+    void restoreNightConfiguration() {
+        nightChargingIdle = batteryManagementService.isNightChargingIdle();
+    }
 
     // ---- validation & calculations (existing) ----
 
@@ -330,12 +348,17 @@ public class ChargingUtils {
                                                                  List<ChargingSchedule> futureWindows,
                                                                  BatteryManagementService bms) {
         long now = System.currentTimeMillis();
+        boolean day = !isNight(now);
         long latestStart = now + Math.max(0, waitMaxDelayMinutes) * 60_000L;
+        long dayEnd = now + Math.max(0, dayDeferHours) * 3_600_000L;
 
         // Candidates: within acceptable delay and cheaper than the current window
         List<ChargingSchedule> candidates = futureWindows.stream()
-                .filter(s -> s.getStartTimestamp() >= now && s.getStartTimestamp() <= latestStart)
-                .filter(s -> isSignificantlyCheaper(currentWindow.getPrice(), s.getPrice()))
+                .filter(s -> s.getStartTimestamp() > now)
+                .filter(s -> (s.getStartTimestamp() <= latestStart
+                        && isSignificantlyCheaper(currentWindow.getPrice(), s.getPrice()))
+                        || (day && !isNight(s.getStartTimestamp()) && s.getStartTimestamp() <= dayEnd
+                        && cheaper(currentWindow.getPrice(), s.getPrice(), daySavingsCt, dayDropPct / 100)))
                 .sorted(Comparator.comparingDouble(ChargingSchedule::getPrice)
                         .thenComparingLong(ChargingSchedule::getStartTimestamp))
                 .toList();
@@ -386,9 +409,13 @@ public class ChargingUtils {
     // --- Helper functions for shouldWaitForCheaperWindow ---
 
     private boolean isSignificantlyCheaper(double currentPriceCt, double candidatePriceCt) {
+        return cheaper(currentPriceCt, candidatePriceCt, waitMinSavingsCt, waitMinSavingsPct);
+    }
+
+    private boolean cheaper(double currentPriceCt, double candidatePriceCt, double absolute, double relative) {
         double absDelta = currentPriceCt - candidatePriceCt;
-        double pctDelta = absDelta / Math.max(currentPriceCt, 0.0001);
-        return absDelta >= waitMinSavingsCt || pctDelta >= waitMinSavingsPct;
+        double pctDelta = currentPriceCt == 0 ? 0 : absDelta / Math.abs(currentPriceCt);
+        return absDelta > 0 && (absDelta >= absolute || pctDelta >= relative);
     }
 
     /**
@@ -430,13 +457,14 @@ public class ChargingUtils {
                 .sorted(Comparator.comparingLong(ChargingSchedule::getStartTimestamp))
                 .collect(Collectors.toList());
 
-        double totalSeconds = 0.0;
+        double wh = 0;
+        long coveredUntil = startTs;
         for (ChargingSchedule s : seq) {
-            long dur = Math.max(0L, s.getEndTimestamp() - s.getStartTimestamp());
-            totalSeconds += dur / 1000.0;
+            long end = Math.min(horizonEnd, s.getEndTimestamp());
+            wh += deliverableWh(Math.max(coveredUntil, s.getStartTimestamp()), end);
+            coveredUntil = Math.max(coveredUntil, end);
         }
-        // Energy (Wh) = P(W) * t(h)
-        return chargingPointInWatt * (totalSeconds / SECONDS_PER_HOUR);
+        return wh;
     }
 
     // ---- helpers (existing) ----
