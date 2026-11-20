@@ -324,15 +324,26 @@ public class MarketPriceService {
     }
 
     private List<MarketPriceResponse.MarketData> mapTibberPriceData(List<TibberResponse.PriceData> priceDataList) {
-        return priceDataList.stream().map(data -> {
+        var sorted = priceDataList.stream().sorted(java.util.Comparator.comparing(d -> Instant.parse(d.getStartsAt()))).toList();
+        long previousDuration = 3_600_000L;
+        var result = new java.util.ArrayList<MarketPriceResponse.MarketData>();
+        for (int i = 0; i < sorted.size(); i++) {
+            var data = sorted.get(i);
             MarketPriceResponse.MarketData md = new MarketPriceResponse.MarketData();
             md.setStartTimestamp(Instant.parse(data.getStartsAt()).toEpochMilli());
-            md.setEndTimestamp(Instant.parse(data.getStartsAt()).plus(1, ChronoUnit.HOURS).toEpochMilli());
+            long start = md.getStartTimestamp();
+            if (i + 1 < sorted.size()) {
+                long delta = Instant.parse(sorted.get(i + 1).getStartsAt()).toEpochMilli() - start;
+                if (delta <= 0) continue;
+                if (delta <= 3_600_000L) previousDuration = delta;
+            }
+            md.setEndTimestamp(start + previousDuration);
             // Tibber returns EUR/kWh -> *100 = ct/kWh
             md.setMarketprice(Math.round((data.getEnergy() * CONVERSION_FACTOR) * CONVERSION_FACTOR) / CONVERSION_FACTOR);
             md.setUnit(CENT_KWH);
-            return md;
-        }).collect(Collectors.toList());
+            result.add(md);
+        }
+        return result;
     }
 
     public List<MarketPrice> getAllMarketPrices() {
@@ -364,17 +375,13 @@ public class MarketPriceService {
         List<MarketPrice> marketPrices = marketPriceResponse.getData().stream().map(priceData -> {
             MarketPrice mp = new MarketPrice();
             mp.setStartTimestamp(priceData.getStartTimestamp());
-            long adjustedEnd = priceData.getEndTimestamp() - 1000; // subtract 1s to avoid overlap
-            if (adjustedEnd <= priceData.getStartTimestamp()) {
-                adjustedEnd = priceData.getStartTimestamp() + 1000;
-            }
-            mp.setEndTimestamp(adjustedEnd);
+            mp.setEndTimestamp(priceData.getEndTimestamp()); // exclusive upper bound
             mp.setMarketPrice(priceData.getMarketprice());
             mp.setUnit(CENT_KWH);
             return mp;
         }).collect(Collectors.toList());
 
         marketPriceRepository.saveAll(marketPrices);
-        LogFilter.logInfo(MarketPriceService.class, "Saved {} market prices with adjusted end timestamps.", marketPrices.size());
+        LogFilter.logInfo(MarketPriceService.class, "Saved {} market prices with provider interval durations.", marketPrices.size());
     }
 }
