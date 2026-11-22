@@ -1,0 +1,198 @@
+<!doctype html>
+<html xmlns:th="http://www.thymeleaf.org">
+  <body>
+    <section
+      th:fragment="panel"
+      id="wallboxPanel"
+      class="panel wallbox-panel"
+      aria-labelledby="wallboxTitle"
+      th:data-status-url="@{/wallbox/status}"
+      th:data-settings-url="@{/wallbox/settings}"
+      th:data-states="#{wallbox.states}"
+      th:data-phases="#{wallbox.phases}"
+      th:data-active="#{wallbox.active}"
+      th:data-off="#{wallbox.off}"
+      th:data-waiting="#{wallbox.waiting}"
+      th:data-online="#{wallbox.online}"
+      th:data-offline="#{wallbox.offline}"
+      th:data-paused="#{wallbox.paused}"
+      th:data-ignored="#{wallbox.ignored}"
+      th:data-wrong-mode="#{wallbox.wrongMode}"
+      th:data-solar-offline="#{wallbox.solarOffline}"
+      th:data-pause-unconfirmed="#{wallbox.pauseUnconfirmed}"
+      th:data-save-error="#{wallbox.saveError}"
+      th:data-api-error="#{wallbox.apiError}"
+    >
+      <header class="panel-header">
+        <div class="wb-device">
+          <span class="night-icon"
+            ><i class="fas fa-charging-station" aria-hidden="true"></i
+          ></span>
+          <div>
+            <p class="eyebrow">Sonnen / Etrel INCH</p>
+            <h2
+              id="wallboxTitle"
+              class="panel-title"
+              th:text="#{wallbox.title}"
+            >
+              Wallbox
+            </h2>
+          </div>
+        </div>
+        <div class="wb-switch">
+          <span id="wbControlState" class="muted">–</span>
+          <button
+            id="wbEnabled"
+            class="switch-button"
+            type="button"
+            role="switch"
+            aria-checked="false"
+            th:aria-label="#{wallbox.switchLabel}"
+            disabled
+          >
+            <span></span>
+          </button>
+        </div>
+      </header>
+      <div class="wb-body">
+        <div class="wb-controls">
+          <div>
+            <h3 id="wbModeLabel" class="wb-label" th:text="#{wallbox.mode}">
+              Lademodus
+            </h3>
+            <div class="wb-modes" role="group" aria-labelledby="wbModeLabel">
+              <button
+                th:each="mode : ${ {'ECO','SMART','POWER'} }"
+                type="button"
+                th:data-mode="${mode}"
+                th:title="#{__${'wallbox.' + mode}__}"
+                aria-pressed="false"
+                disabled
+              >
+                <i
+                  aria-hidden="true"
+                  class="fas"
+                  th:classappend="${mode == 'ECO' ? 'fa-leaf' : (mode == 'SMART' ? 'fa-battery-half' : 'fa-bolt')}"
+                ></i>
+                <span
+                  th:text="${#strings.capitalize(#strings.toLowerCase(mode))}"
+                ></span>
+              </button>
+            </div>
+            <p id="wbModeHelp" class="muted"></p>
+          </div>
+          <form id="wbSmart" hidden>
+            <label
+              ><span th:text="#{wallbox.min}"></span>
+              <input
+                id="wbMin"
+                type="number"
+                required
+                min="0"
+                max="100"
+                step="1"
+                inputmode="numeric"
+            /></label>
+            <label
+              ><span th:text="#{wallbox.reserve}"></span>
+              <input
+                id="wbReserve"
+                type="number"
+                required
+                min="0"
+                max="100"
+                step="1"
+                inputmode="numeric"
+            /></label>
+            <button
+              class="secondary-button"
+              type="submit"
+              th:text="#{wallbox.save}"
+            ></button>
+          </form>
+        </div>
+        <div id="wbLive" hidden>
+          <div class="wb-charge">
+            <div class="wb-charge-head">
+              <dl>
+                <dt th:text="#{wallbox.power}"></dt>
+                <dd data-metric="power">–</dd>
+              </dl>
+              <strong id="wbState">–</strong>
+            </div>
+            <dl class="wb-charge-details">
+              <div>
+                <dt><span th:text="#{wallbox.current}"></span></dt>
+                <dd data-metric="current">–</dd>
+              </div>
+              <div>
+                <dt><span th:text="#{wallbox.target}"></span></dt>
+                <dd data-metric="target">–</dd>
+              </div>
+              <div>
+                <dt><span th:text="#{wallbox.phaseUse}"></span></dt>
+                <dd data-metric="phaseUse">–</dd>
+              </div>
+              <div>
+                <dt><span th:text="#{wallbox.available}"></span></dt>
+                <dd data-metric="available">–</dd>
+              </div>
+            </dl>
+          </div>
+          <dl class="wb-energy">
+            <div>
+              <dt>
+                <i class="fas fa-sun" aria-hidden="true"></i>
+                <span th:text="#{wallbox.pv}"></span>
+              </dt>
+              <dd data-metric="pv">–</dd>
+            </div>
+            <div>
+              <dt>
+                <i class="fas fa-house" aria-hidden="true"></i>
+                <span th:text="#{wallbox.house}"></span>
+              </dt>
+              <dd data-metric="house">–</dd>
+            </div>
+            <div>
+              <dt>
+                <i class="fas fa-plug" aria-hidden="true"></i>
+                <span th:text="#{wallbox.grid}"></span>
+              </dt>
+              <dd data-metric="grid">–</dd>
+            </div>
+            <div>
+              <dt>
+                <i class="fas fa-battery-half" aria-hidden="true"></i>
+                <span th:text="#{wallbox.soc}"></span>
+              </dt>
+              <dd data-metric="soc">–</dd>
+            </div>
+            <div>
+              <dt>
+                <i class="fas fa-bolt" aria-hidden="true"></i>
+                <span th:text="#{wallbox.batteryPower}"></span>
+              </dt>
+              <dd data-metric="batteryPower">–</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+      <div class="wb-meta">
+        <span class="wb-link">Modbus TCP · <b id="wbLink">–</b></span>
+        <span id="wbAccessLine" hidden
+          ><span th:text="#{wallbox.last}"></span> · <time id="wbAccess"></time
+        ></span>
+      </div>
+      <p id="wbWarning" class="notice notice-error" role="status" hidden></p>
+      <p
+        id="wbFallback"
+        class="notice notice-error"
+        role="status"
+        hidden
+        th:text="#{wallbox.fallback}"
+      ></p>
+      <p id="wbFeedback" role="status" hidden></p>
+    </section>
+  </body>
+</html>

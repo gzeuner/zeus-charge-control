@@ -74,6 +74,7 @@ test-results/
 .env
 .env.*
 application-local.properties
+src/main/resources/application.properties
 application-dev.properties
 application-test.properties
 application-prod.properties

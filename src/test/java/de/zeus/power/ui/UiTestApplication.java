@@ -26,17 +26,23 @@ import static org.mockito.Mockito.*;
 @Configuration(proxyBeanMethods = false)
 @TestComponent
 @EnableAutoConfiguration
+@ComponentScan(basePackages = "de.zeus.power.wallbox")
 @AutoConfigurationPackage(basePackages = "de.zeus.power")
 @EnableConfigurationProperties({BatteryProperties.class, PriceDisplayProperties.class})
 @Import({ChargingStatusController.class, LicenseController.class, WebConfig.class,
         PriceDisplayService.class, BatteryCapacityService.class, TestEndpoints.class, SampleDataAdvice.class})
 public class UiTestApplication {
-    public static void main(String[] args) {
+    public static void main(String[] args) throws java.io.IOException {
         SpringApplication app = new SpringApplication(UiTestApplication.class);
         app.setDefaultProperties(Map.of("server.address", "127.0.0.1", "server.port", "18080",
                 "spring.datasource.url", "jdbc:h2:mem:ui-fixture", "spring.jpa.hibernate.ddl-auto", "create-drop",
                 "spring.h2.console.enabled", "false", "logging.file.name", "target/ui-test-server.log"));
-        app.run(args);
+        var directory = java.nio.file.Files.createTempDirectory("zeus-wallbox-ui");
+        var config = directory.resolve("application.properties");
+        directory.toFile().deleteOnExit();
+        config.toFile().deleteOnExit();
+        app.run("--wallbox.config-file=" + config, "--wallbox.enabled=false", "--wallbox.mode=ECO",
+                "--wallbox.host=127.0.0.1", "--wallbox.port=1", "--battery.url=http://127.0.0.1:1");
     }
 
     @Bean TestState testState() { return new TestState(); }

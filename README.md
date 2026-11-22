@@ -140,6 +140,22 @@ Falsche Kapazitäten, falsche Leistungswerte oder eine falsche API-Adresse könn
 
 ---
 
+### Sonnen / Etrel INCH per Modbus TCP
+
+Beim Aktivieren und beim Start mit eingeschalteter Steuerung beginnt Zeus mit HR 8 = 0 A. Erst wenn die Wallbox diesen Schreibzugriff bestätigt, liest Zeus die Messwerte und berechnet den ersten Ladesollwert.
+
+Im Dashboard unter **Wallbox** lassen sich die Steuerung einschalten, der Lademodus wechseln und die beiden Smart-Grenzen bearbeiten. Änderungen lösen sofort einen neuen Regelzyklus aus. Zeus speichert die vier GUI-Werte in einem markierten Abschnitt der externen `./config/application.properties` und liest sie beim Start wieder ein. Der Dienst benötigt Schreibzugriff auf das Verzeichnis. Für eine bestehende Konfiguration an einem anderen Ort lässt sich der Pfad mit `wallbox.config-file` angeben.
+
+Beim Ausschalten der Steuerung oder beim regulären Beenden des Dienstes fordert Zeus bei aktiver Steuerung eine Pause über HR 8 an. Nach 10 Sekunden ohne erfolgreichen Zugriff kann die Wallbox ihren eingestellten 6-A-Rückfallstrom verwenden. Das Dashboard zeigt den letzten bestätigten Zugriff und kennzeichnet einen möglichen Rückfall. Die drei Istströme sind die Messwerte für L1, L2 und L3.
+
+Bei einem Modbus-Fehler versucht Zeus, den Sollstrom auf 0 A zu setzen. Fehlt auch die Bestätigung der Pause, meldet das Dashboard den Sollwert als unbekannt. Zeus lässt dann mindestens 11 Sekunden lang jeglichen Modbus-Verkehr ruhen, damit der 10-Sekunden-Watchdog der Wallbox ablaufen kann. Solange die Steuerung eingeschaltet ist, versucht Zeus danach zuerst wieder 0 A. Erst nach der Bestätigung und einem neuen vollständigen Messzyklus sind positive Sollwerte wieder möglich. Eine Modbus-Bestätigung quittiert das Schreiben. Den tatsächlich fließenden Strom zeigen die Phasenmesswerte.
+
+Mit `WALLBOX_ENABLED=true` übernimmt Zeus die Stromvorgabe an Anschluss 1. In der Wallbox Power/Fast wählen, die Sonnen-Systemkommunikation eingeschaltet lassen und die Kommunikationsüberwachung auf 10 s mit 6 A Rückfallstrom stellen. Zeus schreibt alle 8 s den Sollstrom in HR 8. Während der ersten ca. 45 s kann die Fahrzeugerkennung die Übernahme verzögern.
+
+`WALLBOX_MODE` wählt `ECO` (Dach-PV), `SMART` (Dach-PV plus Hausspeicher bis zur konfigurierten SoC-Reserve) oder `POWER` (bis 11 kW). Unter 6 A pausiert Zeus sofort. Für den Neustart muss der Überschuss standardmäßig 16 s ausreichen. Nutze `deployment/application.properties.example` als Vorlage für die private `config/application.properties` und setze eigene Anlagenwerte.
+
+Bei stabiler Ladung den Protokolleintrag „Check meter wiring“ prüfen. Entspricht der Hausverbrauch ungefähr der Standortbilanz (PV + Batterieentladung − Netzeinspeisung), ist die Wallbox enthalten. Ist er um die EV-Leistung geringer, `WALLBOX_CONSUMPTION_INCLUDES_WALLBOX=false` setzen. Bei 0 W EV-Leistung ist die Zuordnung offen.
+
 ## 📊 RSOC – was ist das?
 
 **RSOC** steht für **Relative State of Charge**.
@@ -511,6 +527,22 @@ battery.max.capacity.wh=${BATTERY_MAX_CAPACITY_WH:10000}
 Incorrect capacities, incorrect power values or a wrong API address may result in unreliable charging decisions.
 
 ---
+
+### Sonnen / Etrel INCH over Modbus TCP
+
+On enable, including startup with control enabled, Zeus first writes HR 8 = 0 A. Only after the charger acknowledges this write does Zeus read measurements and calculate its first charging target.
+
+Use **Wallbox** on the dashboard to enable control, switch modes and edit the two Smart limits. Changes trigger a fresh control cycle immediately. Zeus saves the four GUI settings in a marked section of external `./config/application.properties` and reloads them on startup. The service needs write access to the directory. Set `wallbox.config-file` to use an existing configuration in another location.
+
+Switching control off requests a pause via HR 8 and stops polling. After 10 seconds without a successful access the charger may use its configured 6 A fallback. The dashboard shows the last acknowledged access and flags a possible fallback. The three measured currents correspond to L1, L2 and L3.
+
+An orderly shutdown also requests a pause when control is enabled. After a Modbus failure, Zeus requests 0 A. If the pause is unacknowledged, the dashboard shows an unknown target and Zeus suspends all Modbus traffic for at least 11 seconds so the 10-second charger watchdog can expire. While control is enabled, the next attempt requests only 0 A. Positive targets require an acknowledged pause and a new complete measurement cycle. A Modbus acknowledgement confirms the register write. The phase measurements show the current actually flowing.
+
+Set `WALLBOX_ENABLED=true` to control connector 1. Select Power/Fast in the charger, keep Sonnen system communication enabled, and set the web UI communication monitor to 10 s with a 6 A fallback. Zeus writes HR 8 every 8 s by default. The EV can take about 45 s to apply a setpoint at session start.
+
+Set `WALLBOX_MODE` to `ECO` for rooftop PV surplus, `SMART` to use rooftop PV and battery discharge above the configured SoC reserve, or `POWER` for up to 11 kW. Smart requires USOC above both the configured minimum and BackupBuffer plus the reserve margin. Eco and Smart pause below the minimum charging current. Start from `deployment/application.properties.example` and provide your own charger hostname, Sonnen URL and site settings in private `config/application.properties`.
+
+During stable charging, compare the values in the “Check meter wiring” log entry. If consumption matches the site balance (PV + signed battery discharge − signed grid export), leave `WALLBOX_CONSUMPTION_INCLUDES_WALLBOX=true`. If consumption is lower by approximately the measured EV load, set it to `false`. An idle EV gives the same result for either wiring.
 
 ## 📊 RSOC – what does it mean?
 

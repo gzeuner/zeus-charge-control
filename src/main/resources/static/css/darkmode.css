@@ -861,6 +861,233 @@ h1 {
   place-items: center;
   border-radius: 9px;
 }
+.wallbox-panel {
+  margin-top: 25px;
+  padding: 26px 28px 18px;
+}
+.wb-device,
+.wb-switch,
+.wb-charge-head,
+.wb-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.wb-device .night-icon {
+  width: 42px;
+  height: 42px;
+  font-size: 18px;
+}
+.wb-switch,
+.wb-meta,
+#wbModeHelp {
+  color: var(--muted);
+  font-size: 12px;
+}
+.wb-body {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 20px 28px;
+  margin-top: 20px;
+}
+.wb-body:has(#wbLive[hidden]) {
+  display: block;
+}
+.wb-body:has(#wbLive[hidden]) .wb-controls {
+  display: flex;
+  align-items: start;
+  flex-wrap: wrap;
+  gap: 12px 32px;
+}
+#wbLive:not([hidden]) {
+  display: contents;
+}
+.wb-controls {
+  align-self: center;
+  min-width: 0;
+}
+.wb-label {
+  font-size: 14px;
+  font-weight: 650;
+  margin-bottom: 8px;
+}
+.wb-modes {
+  display: inline-grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface-muted);
+  max-width: 100%;
+}
+.wb-modes button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 4px clamp(8px, 1.5vw, 20px);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 13px;
+}
+.wb-modes button:hover,
+.wb-modes button[aria-pressed="true"] {
+  color: var(--primary-strong);
+  background: var(--primary-soft);
+}
+.wb-modes button[aria-pressed="true"] {
+  border-color: var(--primary);
+}
+#wbModeHelp {
+  max-width: 48ch;
+  margin: 8px 0 0;
+  line-height: 1.5;
+}
+#wbSmart:not([hidden]) {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin-top: 14px;
+  max-width: 360px;
+}
+#wbSmart label {
+  display: grid;
+  align-content: end;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+#wbSmart input {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface-muted);
+}
+#wbSmart button {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+.wb-charge {
+  background: var(--battery-bg);
+  color: var(--battery-text);
+  border-radius: 14px;
+  padding: 18px 22px;
+  align-self: center;
+}
+.wallbox-panel dl,
+.wallbox-panel dd {
+  margin: 0;
+}
+.wallbox-panel dt {
+  font-size: 12px;
+  font-weight: 400;
+}
+.wallbox-panel dd {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  margin-top: 3px;
+}
+.wb-charge dt {
+  color: var(--battery-muted);
+}
+.wb-charge-head {
+  justify-content: space-between;
+  align-items: start;
+}
+.wb-charge-head dd {
+  color: var(--battery-accent);
+  font-size: clamp(26px, 3vw, 36px);
+  letter-spacing: -0.035em;
+  line-height: 1.15;
+}
+#wbState {
+  border-radius: 8px;
+  border: 1px solid var(--battery-line);
+  padding: 4px 9px;
+  font-size: 12px;
+  color: var(--battery-muted);
+}
+#wbState[data-state="charging"] {
+  color: var(--battery-accent);
+}
+#wbState[data-state="fault"] {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.wallbox-panel .wb-charge-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--battery-line);
+}
+.wb-charge-details dd {
+  font-size: 14px;
+}
+.wb-energy {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 16px;
+  padding: 16px 0;
+  border-block: 1px solid var(--border);
+}
+.wb-energy dt {
+  color: var(--muted);
+}
+.wb-energy i {
+  color: var(--primary);
+  margin-right: 3px;
+}
+.wb-energy dd {
+  font-size: 17px;
+}
+.wb-meta {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-size: 11px;
+}
+.wb-meta > :not([hidden]) {
+  margin-top: 10px;
+}
+.wallbox-panel:has(#wbLive[hidden]) .wb-link {
+  display: none;
+}
+.wallbox-panel .notice {
+  overflow-wrap: anywhere;
+}
+.wallbox-panel .notice,
+#wbFeedback:not([hidden]) {
+  margin: 10px 0 0;
+}
+@media (max-width: 760px) {
+  .wallbox-panel {
+    margin-top: 17px;
+    padding: 20px 16px 16px;
+  }
+  .wb-body {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+  .wb-energy {
+    grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+  }
+  .wb-charge {
+    padding: 16px;
+  }
+  .wb-switch {
+    gap: 6px;
+  }
+}
 .switch-button {
   width: 38px;
   height: 23px;

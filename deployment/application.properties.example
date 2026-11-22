@@ -15,7 +15,7 @@ spring.datasource.password=${SPRING_DATASOURCE_PASSWORD:}
 spring.jpa.hibernate.ddl-auto=update
 
 # Sonnen API v2. Leave blank for an unconfigured, non-controlling installation.
-# Example URL format: http://YOUR_LAN_HOST/api/v2 (do not copy somebody else's address/token).
+# Set the local Sonnen API base URL for your own installation.
 battery.url=${BATTERY_URL:}
 battery.authToken=${BATTERY_AUTH_TOKEN:}
 battery.inverter.max.watts=${BATTERY_INVERTER_MAX_WATTS:4600}
@@ -23,8 +23,20 @@ battery.grid.import.limit.watts=${BATTERY_GRID_IMPORT_LIMIT_WATTS:4600}
 battery.max.capacity.wh=${BATTERY_MAX_CAPACITY_WH:10000}
 battery.capacity.installed-modules=${BATTERY_CAPACITY_INSTALLED_MODULES:2}
 battery.capacity.module-usable-capacity-wh=${BATTERY_CAPACITY_MODULE_USABLE_CAPACITY_WH:5000}
-battery.season.summer.target-state-of-charge=${BATTERY_SEASON_SUMMER_TARGET_STATE_OF_CHARGE:70}
-battery.season.winter.target-state-of-charge=${BATTERY_SEASON_WINTER_TARGET_STATE_OF_CHARGE:90}
+battery.season.summer.target-state-of-charge=${BATTERY_SEASON_SUMMER_TARGET_STATE_OF_CHARGE:}
+battery.season.winter.target-state-of-charge=${BATTERY_SEASON_WINTER_TARGET_STATE_OF_CHARGE:}
+
+# Optional Sonnen / Etrel INCH control. Select Power/Fast in the charger web UI.
+wallbox.enabled=${WALLBOX_ENABLED:false}
+wallbox.host=${WALLBOX_HOST:wallbox.local}
+wallbox.mode=${WALLBOX_MODE:ECO}
+wallbox.consumption-includes-wallbox=${WALLBOX_CONSUMPTION_INCLUDES_WALLBOX:true}
+wallbox.port=${WALLBOX_PORT:502}
+wallbox.unit-id=${WALLBOX_UNIT_ID:1}
+wallbox.poll-interval-ms=${WALLBOX_POLL_INTERVAL_MS:8000}
+wallbox.smart-min-usoc=${WALLBOX_SMART_MIN_USOC:}
+wallbox.smart-reserve-percent=${WALLBOX_SMART_RESERVE_PERCENT:}
+wallbox.resume-hold-seconds=${WALLBOX_RESUME_HOLD_SECONDS:}
 
 marketdata.source=${MARKETDATA_SOURCE:awattar}
 awattar.authToken=${AWATTAR_AUTH_TOKEN:}
@@ -36,8 +48,8 @@ battery.nightChargingIdle=${BATTERY_NIGHT_CHARGING_IDLE:false}
 
 # Enable weather only after setting the coordinates of your installation.
 weather.api.enabled=${WEATHER_API_ENABLED:false}
-weather.api.latitude=${WEATHER_API_LATITUDE:52.52}
-weather.api.longitude=${WEATHER_API_LONGITUDE:13.405}
+weather.api.latitude=${WEATHER_API_LATITUDE:}
+weather.api.longitude=${WEATHER_API_LONGITUDE:}
 
 # Display-only tariff example. Replace with the charges for your actual contract.
 price.display.vat-rate=0.19
