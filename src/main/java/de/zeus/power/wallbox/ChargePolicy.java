@@ -16,7 +16,11 @@ final class ChargePolicy {
     }
 
     float target(ChargerReadings charger, SonnenReadings battery, long nowNanos) {
-        availableWatts = available(charger, battery);
+        return target(charger, battery, nowNanos, null);
+    }
+
+    float target(ChargerReadings charger, SonnenReadings battery, long nowNanos, Double pvOverrideW) {
+        availableWatts = available(charger, battery, pvOverrideW);
         float ceiling = charger.maxAmps();
         if (charger.selectedMode() != 1 || !charger.sessionActive() || ceiling == 0) {
             return pause();
@@ -39,7 +43,7 @@ final class ChargePolicy {
         return nowNanos - surplusSince >= hold ? (float) amps : 0;
     }
 
-    private Double available(ChargerReadings charger, SonnenReadings battery) {
+    private Double available(ChargerReadings charger, SonnenReadings battery, Double pvOverrideW) {
         if (settings.mode() == WallboxSettings.Mode.POWER || battery == null || !battery.hasPowerReadings()) {
             return null;
         }
@@ -52,7 +56,8 @@ final class ChargePolicy {
             houseW = Math.max(0, houseW - charger.powerKw() * 1000.0);
         }
         double dischargeW = Math.max(0, battery.batteryW());
-        double pvSurplusW = battery.productionW() - houseW;
+        double productionW = pvOverrideW != null && Double.isFinite(pvOverrideW) ? pvOverrideW : battery.productionW();
+        double pvSurplusW = productionW - houseW;
         return settings.mode() == WallboxSettings.Mode.SMART && battery.aboveReserve(settings)
                 ? pvSurplusW + dischargeW : pvSurplusW - dischargeW;
     }

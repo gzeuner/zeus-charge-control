@@ -16,7 +16,7 @@ test("wallbox modes, Smart limits, live readings and loss of connection", async 
     await page.goto("/charging-status?lang=de");
     const panel = page.locator("#wallboxPanel");
     await expect(
-      page.locator("main > .data-section + #wallboxPanel:last-child"),
+      page.locator("main > .data-section + #wallboxPanel"),
     ).toHaveCount(1);
     const smart = panel.getByRole("button", { name: "Smart", exact: true });
     await panel.getByRole("button", { name: "Power", exact: true }).click();
@@ -45,7 +45,7 @@ test("wallbox modes, Smart limits, live readings and loss of connection", async 
       "aria-checked",
       "true",
     );
-    await expect(page.locator("#wbLink")).toHaveText("Offline", {
+    await expect(page.locator("#wbLink")).toHaveText(/Reconnect|Fehler/, {
       timeout: 12000,
     });
 
@@ -73,6 +73,7 @@ test("wallbox modes, Smart limits, live readings and loss of connection", async 
       },
     };
     data.lastAccess = new Date().toISOString();
+    data.modbusError = null;
     data.watchdogPossible = false;
     data.pauseUnconfirmed = false;
     data.pollIntervalMs = 400;

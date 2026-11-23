@@ -1062,6 +1062,73 @@ h1 {
 .wallbox-panel:has(#wbLive[hidden]) .wb-link {
   display: none;
 }
+.kostal-panel {
+  margin-top: 16px;
+  padding: 24px 28px 18px;
+}
+.kostal-panel .eyebrow {
+  color: var(--muted);
+}
+.kostal-panel .wb-device .night-icon {
+  width: 42px;
+  height: 42px;
+  font-size: 18px;
+}
+.kostal-state {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  color: var(--muted);
+  background: var(--surface-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.kostal-state[data-state="connected"] {
+  color: var(--primary-strong);
+}
+.kostal-state[data-state="stale"],
+.kostal-state[data-state="error"] {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.kostal-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin: 20px 0 0;
+  padding: 17px 0;
+  border-block: 1px solid var(--border);
+}
+.kostal-metrics > div {
+  min-width: 0;
+}
+.kostal-metrics dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+.kostal-metrics dd {
+  margin: 4px 0 0;
+  font-size: 16px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.kostal-metric-primary dd {
+  color: var(--primary-strong);
+  font-size: 21px;
+}
+.kostal-fallback {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.kostal-fallback:not([hidden]) {
+  padding: 10px 12px;
+  border-radius: 9px;
+  color: var(--text);
+  background: var(--surface-muted);
+}
 .wallbox-panel .notice {
   overflow-wrap: anywhere;
 }
@@ -1073,6 +1140,14 @@ h1 {
   .wallbox-panel {
     margin-top: 17px;
     padding: 20px 16px 16px;
+  }
+  .kostal-panel {
+    margin-top: 12px;
+    padding: 20px 16px 16px;
+  }
+  .kostal-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px 12px;
   }
   .wb-body {
     grid-template-columns: minmax(0, 1fr);

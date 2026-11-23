@@ -103,8 +103,8 @@ class ChargePolicyTest {
     @Test
     void rejectsPollIntervalsOutsideTheWatchdogBudget() {
         for (int interval : new int[]{0, 8001}) {
-            assertThrows(IllegalArgumentException.class, () -> new WallboxSettings("localhost", 502, 1,
-                    ECO, interval, 20, 5, 0, true));
+            var invalid = new WallboxSettings("localhost", 502, 1, ECO, interval, 20, 5, 0, true);
+            assertTrue(invalid.validationError().contains("mode, timing"));
         }
     }
 
@@ -114,5 +114,14 @@ class ChargePolicyTest {
         assertEquals(0, eco.target(charger(0, 0, 16, 16),
                 new SonnenReadings(8000.0, null, 0.0, 0.0, 70.0, 0.0), 0));
         assertEquals(0, eco.target(charger(0, Float.NaN, 16, 16), battery(8000, 0, 0, 70, 0), 0));
+    }
+
+    @Test
+    void freshKostalPvCanReplaceSonnenProductionAndNullFallsBackToSonnen() {
+        var eco = policy(ECO, true, 0);
+        var ev = charger(0, 0, 16, 16);
+        var battery = battery(1000, 500, 0, 70, 0);
+        assertEquals(6, eco.target(ev, battery, 0, 4640.0));
+        assertEquals(0, eco.target(ev, battery, 0, null));
     }
 }

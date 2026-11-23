@@ -239,6 +239,8 @@ Erzeugt ein vollständiges, ausführbares JAR unter `target/zeus-charge-control-
 
 ### Start im Entwicklungsmodus
 
+Details zu den opt-in Wallbox- und KOSTAL-Funktionen: [Wallbox and KOSTAL configuration](./docs/kostal-integration.md).
+
 ```bash
 mvn spring-boot:run
 ```

@@ -29,18 +29,19 @@ class WallboxControlTest {
     void dashboardChangesTakeEffectImmediatelyAndSurviveRestart(@TempDir Path temp) throws Exception {
         Path config = temp.resolve("application.properties");
         String other = "# Standort\r\nbattery.authToken=${BATTERY_AUTH_TOKEN:}\r\n";
-        Files.writeString(config, other);
+        String initial = other + "# BEGIN Zeus wallbox GUI\r\nwallbox.enabled=false\r\nwallbox.mode=ECO\r\nwallbox.smart-min-usoc=20\r\nwallbox.smart-reserve-percent=5\r\n# END Zeus wallbox GUI\r\n";
+        Files.writeString(config, initial);
         try (var server = listener()) {
             var runner = new ApplicationContextRunner().withUserConfiguration(WallboxControl.class)
                     .withBean(RestTemplateBuilder.class, () -> new RestTemplateBuilder())
-                    .withPropertyValues("wallbox.config-file=" + config, "wallbox.host=127.0.0.1",
+                    .withPropertyValues("wallbox.enabled=true", "wallbox.config-file=" + config, "wallbox.host=127.0.0.1",
                             "wallbox.port=" + server.getLocalPort(), "battery.url=http://127.0.0.1:1");
             runner.run(context -> {
                 var control = context.getBean(WallboxControl.class);
                 assertFalse(control.status().settings().enabled());
                 assertThrows(IllegalArgumentException.class, () -> control.update(Map.of("smartMinUsoc", 101)));
                 assertThrows(IllegalArgumentException.class, () -> control.update(Map.of("smartReservePercent", 2.5)));
-                assertEquals(other, Files.readString(config));
+                assertEquals(initial, Files.readString(config));
                 control.update(Map.of("enabled", true, "mode", "POWER"));
                 try (var peer = server.accept()) {
                     expectWrite(peer, 0, false);
@@ -65,6 +66,20 @@ class WallboxControlTest {
                 assertNull(status.lastAccess());
             });
         }
+    }
+
+    @Test
+    void masterFeatureSwitchPreventsUiFromStartingWallbox(@TempDir Path temp) throws Exception {
+        var runner = new ApplicationContextRunner().withUserConfiguration(WallboxControl.class)
+                .withBean(RestTemplateBuilder.class, RestTemplateBuilder::new)
+                .withPropertyValues("wallbox.config-file=" + temp.resolve("application.properties"),
+                        "wallbox.host=127.0.0.1", "battery.url=http://127.0.0.1:1");
+        runner.run(context -> {
+            WallboxControl control = context.getBean(WallboxControl.class);
+            assertFalse(control.status().featureEnabled());
+            assertFalse(control.status().settings().enabled());
+            assertThrows(IllegalArgumentException.class, () -> control.update(Map.of("enabled", true)));
+        });
     }
 
     @Test

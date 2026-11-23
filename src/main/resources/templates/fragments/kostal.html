@@ -1,0 +1,55 @@
+<!doctype html>
+<html xmlns:th="http://www.thymeleaf.org">
+  <body>
+    <section
+      th:fragment="panel"
+      id="kostalPanel"
+      class="panel kostal-panel"
+      aria-labelledby="kostalTitle"
+      th:data-status-url="@{/kostal/status}"
+      th:data-disabled="#{kostal.disabled}"
+      th:data-connected="#{kostal.connected}"
+      th:data-stale="#{kostal.stale}"
+      th:data-disconnected="#{kostal.disconnected}"
+      th:data-config-error="#{kostal.configError}"
+      th:data-unavailable="#{kostal.unavailable}"
+      th:data-fallback="#{kostal.fallback}"
+    >
+      <header class="panel-header">
+        <div class="wb-device">
+          <span class="night-icon">
+            <i class="fas fa-solar-panel" aria-hidden="true"></i>
+          </span>
+          <div>
+            <p class="eyebrow" th:text="#{kostal.kicker}">
+              PV / MODBUS TCP · READ ONLY
+            </p>
+            <h2 class="panel-title" id="kostalTitle" th:text="#{kostal.title}">
+              KOSTAL inverter
+            </h2>
+          </div>
+        </div>
+        <span class="kostal-state" id="kostalState" role="status">—</span>
+      </header>
+      <dl class="kostal-metrics">
+        <div class="kostal-metric-primary">
+          <dt>PV (KOSTAL) AC</dt>
+          <dd id="kostalAc">—</dd>
+        </div>
+        <div>
+          <dt>PV (KOSTAL) DC</dt>
+          <dd id="kostalDc">—</dd>
+        </div>
+        <div>
+          <dt th:text="#{kostal.source}">PV source for surplus control</dt>
+          <dd id="kostalSource">SONNEN</dd>
+        </div>
+        <div>
+          <dt th:text="#{kostal.last}">Last valid value</dt>
+          <dd><time id="kostalLast">—</time></dd>
+        </div>
+      </dl>
+      <p id="kostalFallback" class="kostal-fallback" role="status" hidden></p>
+    </section>
+  </body>
+</html>

@@ -29,16 +29,22 @@ record WallboxSettings(@DefaultValue("wallbox.local") String host, @DefaultValue
 
     @ConstructorBinding
     WallboxSettings {
-        if (host == null || host.isBlank() || port < 1 || port > 65535 || unitId < 0 || unitId > 255) {
-            throw new IllegalArgumentException("Invalid wallbox host, port or unit ID");
-        }
+        // Defer value validation to WallboxControl so an enabled but misconfigured device
+        // is safely left stopped without preventing the monitoring application from starting.
+    }
+
+    String validationError() {
+        if (host == null || host.isBlank() || host.trim().matches("<.*>")) return "host is empty or still a placeholder";
+        if (port < 1 || port > 65535) return "port must be between 1 and 65535";
+        if (unitId < 0 || unitId > 255) return "unit-id must be between 0 and 255";
         if (mode == null || pollIntervalMs <= 0 || pollIntervalMs > 8000
                 || smartMinUsoc < 0 || smartMinUsoc > 100 || smartReservePercent < 0
                 || smartReservePercent > 100 || resumeHoldSeconds < 0
                 || connectTimeoutMs < 1 || connectTimeoutMs > 8000
                 || readTimeoutMs < 1 || readTimeoutMs > 3000
                 || maxErrorsBeforeReconnect < 1 || maxErrorsBeforeReconnect > 100) {
-            throw new IllegalArgumentException("Invalid wallbox mode, timing, reserve or reconnect settings");
+            return "invalid mode, timing, reserve or reconnect settings";
         }
+        return null;
     }
 }

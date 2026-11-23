@@ -11,6 +11,19 @@ test.beforeEach(async ({ request }) => {
   await request.post("/__test/reset");
 });
 
+test("KOSTAL status card fits the dashboard and shows the disabled default", async ({
+  page,
+}) => {
+  await openDashboard(page, "en");
+  const panel = page.locator("#kostalPanel");
+  await expect(panel).toBeVisible();
+  await expect(page.locator("#kostalState")).toHaveText("Disabled");
+  await expect(page.locator("#kostalSource")).toHaveText("SONNEN");
+  await expect(panel.locator("dt").first()).toHaveText("PV (KOSTAL) AC");
+  await expect(panel.locator(".kostal-metrics")).toHaveCSS("display", "grid");
+  await expect(panel).toHaveCSS("padding-top", /^(20|24)px$/);
+});
+
 test("live dashboard renders real templates, chart and missing metrics without browser errors", async ({
   page,
 }) => {

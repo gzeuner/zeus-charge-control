@@ -91,6 +91,7 @@
     </script>
     <script th:src="@{/js/main.js}" defer></script>
     <script th:src="@{/js/wallbox.js}" defer></script>
+    <script th:src="@{/js/kostal.js}" defer></script>
   </head>
   <body class="status-page">
     <a class="skip-link" href="#main" th:text="#{ui.skip}">Skip to content</a>
@@ -185,6 +186,7 @@
           th:replace="~{fragments/charging-status :: dataSection}"
         ></section>
         <section th:replace="~{fragments/wallbox :: panel}"></section>
+        <section th:replace="~{fragments/kostal :: panel}"></section>
       </main>
       <footer class="app-footer">
         <span>ZEUS CHARGE CONTROL <b>4.0.0</b></span

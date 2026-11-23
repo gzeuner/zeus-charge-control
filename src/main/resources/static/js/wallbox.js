@@ -41,7 +41,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const ev = sample?.charger;
     const battery = sample?.battery;
     toggle.setAttribute("aria-checked", String(settings.enabled));
-    text("wbControlState", settings.enabled ? labels.active : labels.off);
+    text("wbControlState", data.featureEnabled === false ? labels.disabled : settings.enabled ? labels.active : labels.off);
     for (const btn of modes) {
       const active = btn.dataset.mode === settings.mode;
       btn.setAttribute("aria-pressed", String(active));
@@ -61,7 +61,9 @@ document.addEventListener("DOMContentLoaded", () => {
       ev?.status === 4 ? "charging" : ev?.status === 8 ? "fault" : "idle";
     text(
       "wbLink",
-      !settings.enabled
+      data.featureEnabled === false
+        ? labels.disabled
+        : !settings.enabled
         ? labels.offline
         : data.modbusState === "CONNECTED"
           ? labels.online
@@ -111,7 +113,7 @@ document.addEventListener("DOMContentLoaded", () => {
     for (const el of panel.querySelectorAll("[data-metric]")) {
       el.textContent = values[el.dataset.metric];
     }
-    controls(true);
+    controls(data.featureEnabled !== false);
     schedule(data.pollIntervalMs);
   }
 

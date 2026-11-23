@@ -21,6 +21,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import de.zeus.power.kostal.KostalInverterService;
+import org.springframework.beans.factory.annotation.Autowired;
 
 @Service
 @EnableConfigurationProperties(WallboxSettings.class)
@@ -52,6 +54,12 @@ class WallboxControl {
     private final String statusUrl;
     private Long sessionStart;
     private boolean loggedMeterCheck;
+    private final boolean propertyEnabled;
+    private boolean featureEnabled;
+    private KostalInverterService kostal;
+
+    @Autowired(required = false)
+    void configureKostal(KostalInverterService kostal) { this.kostal = kostal; }
 
     WallboxControl(WallboxSettings settings, RestTemplateBuilder builder,
                    @Value("${battery.url:}") String batteryUrl,
@@ -59,10 +67,17 @@ class WallboxControl {
                    @Value("${wallbox.enabled:false}") boolean enabled,
                    @Value("${wallbox.config-file:./config/application.properties}") String configFile) throws IOException {
         this.settings = settings;
+        this.propertyEnabled = enabled;
+        this.featureEnabled = enabled;
         config = new WallboxConfigFile(Path.of(configFile));
-        preferences = config.read(new WallboxPreferences(enabled, settings.mode(), settings.smartMinUsoc(),
+        WallboxPreferences loaded = config.read(new WallboxPreferences(enabled, settings.mode(), settings.smartMinUsoc(),
                 settings.smartReservePercent()));
-        charger = new InchModbusClient(settings);
+        if (enabled && settings.validationError() != null) {
+            LOG.error("Wallbox nicht gestartet: {}", settings.validationError());
+            this.featureEnabled = false;
+        }
+        preferences = this.featureEnabled ? loaded : new WallboxPreferences(false, loaded.mode(), loaded.smartMinUsoc(), loaded.smartReservePercent());
+        charger = this.featureEnabled ? new InchModbusClient(settings) : null;
 
         String base = batteryUrl.trim();
         if (base.isEmpty()) {
@@ -80,6 +95,7 @@ class WallboxControl {
 
     @PostConstruct
     synchronized void start() {
+        if (!propertyEnabled) LOG.info("Wallbox deaktiviert (property=false)");
         if (preferences.enabled()) startPolling();
     }
 
@@ -88,19 +104,22 @@ class WallboxControl {
 
     record Status(WallboxPreferences settings, int pollIntervalMs, Sample sample, Instant lastAccess,
                   Instant lastSuccessfulRead, InchModbusClient.ConnectionState modbusState,
-                  String modbusError, boolean watchdogPossible, boolean pauseUnconfirmed) {}
+                  String modbusError, boolean watchdogPossible, boolean pauseUnconfirmed, boolean featureEnabled) {}
 
     synchronized Status status() {
-        Instant last = charger.lastAccess();
+        Instant last = charger == null ? null : charger.lastAccess();
         Instant reference = last == null ? monitoringSince : last;
         boolean fallback = reference != null && !Instant.now().isBefore(reference.plusSeconds(10));
-        return new Status(preferences, settings.pollIntervalMs(), sample, last, charger.lastSuccessfulRead(),
-                charger.connectionState(), charger.lastError(), fallback, unconfirmedPause != null);
+        return new Status(preferences, settings.pollIntervalMs(), sample, last,
+                charger == null ? null : charger.lastSuccessfulRead(),
+                charger == null ? null : charger.connectionState(), charger == null ? null : charger.lastError(),
+                fallback, unconfirmedPause != null, featureEnabled);
     }
 
     synchronized Status update(Map<String, Object> changes) throws IOException {
         if (stopping) throw new IOException("Wallbox controller is shutting down");
         WallboxPreferences next = preferences.update(changes);
+        if (!featureEnabled && next.enabled()) throw new IllegalArgumentException("Wallbox-Steuerung ist durch wallbox.enabled=false deaktiviert");
         if (next.equals(preferences)) return status();
         config.save(next);
         boolean wasEnabled = preferences.enabled();
@@ -202,7 +221,7 @@ class WallboxControl {
                 sessionStart = now;
             }
             boolean detecting = sessionStart != null && now - sessionStart < TimeUnit.SECONDS.toNanos(45);
-            float target = policy.target(ev, battery, now);
+            float target = policy.target(ev, battery, now, kostal == null ? null : kostal.usablePvPowerW());
             LOG.debug("Charger {} lifetime={} kWh on={} EV detection={} Sonnen={}",
                     ev, ev.lifetimeMwh() / 1e6, ev.enabled(), detecting, battery);
             if (ev.selectedMode() != 1) {
@@ -278,7 +297,7 @@ class WallboxControl {
             if (stopping) return;
             stopping = true;
             if (periodic != null) periodic.cancel(false);
-            scheduler.execute(preferences.enabled() ? this::disable : charger::close);
+            scheduler.execute(featureEnabled && preferences.enabled() ? this::disable : () -> { if (charger != null) charger.close(); });
             scheduler.shutdown();
         }
         // Do not hold the status lock while the worker finishes its final pause.

@@ -26,7 +26,7 @@ import static org.mockito.Mockito.*;
 @Configuration(proxyBeanMethods = false)
 @TestComponent
 @EnableAutoConfiguration
-@ComponentScan(basePackages = "de.zeus.power.wallbox")
+@ComponentScan(basePackages = {"de.zeus.power.wallbox", "de.zeus.power.kostal"})
 @AutoConfigurationPackage(basePackages = "de.zeus.power")
 @EnableConfigurationProperties({BatteryProperties.class, PriceDisplayProperties.class})
 @Import({ChargingStatusController.class, LicenseController.class, WebConfig.class,
@@ -39,9 +39,10 @@ public class UiTestApplication {
                 "spring.h2.console.enabled", "false", "logging.file.name", "target/ui-test-server.log"));
         var directory = java.nio.file.Files.createTempDirectory("zeus-wallbox-ui");
         var config = directory.resolve("application.properties");
+        java.nio.file.Files.writeString(config, "# BEGIN Zeus wallbox GUI\nwallbox.enabled=false\nwallbox.mode=ECO\nwallbox.smart-min-usoc=20\nwallbox.smart-reserve-percent=5\n# END Zeus wallbox GUI\n");
         directory.toFile().deleteOnExit();
         config.toFile().deleteOnExit();
-        app.run("--wallbox.config-file=" + config, "--wallbox.enabled=false", "--wallbox.mode=ECO",
+        app.run("--wallbox.config-file=" + config, "--wallbox.enabled=true", "--wallbox.mode=ECO",
                 "--wallbox.host=127.0.0.1", "--wallbox.port=1", "--battery.url=http://127.0.0.1:1");
     }
 
