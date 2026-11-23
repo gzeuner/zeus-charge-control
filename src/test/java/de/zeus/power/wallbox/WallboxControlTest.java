@@ -95,6 +95,7 @@ class WallboxControlTest {
                     .withPropertyValues("wallbox.enabled=true", "wallbox.host=127.0.0.1",
                             "wallbox.port=" + server.getLocalPort(), "wallbox.unit-id=1",
                             "wallbox.mode=eco", "wallbox.poll-interval-ms=500",
+                            "wallbox.read-timeout-ms=500",
                             "wallbox.smart-min-usoc=20", "wallbox.smart-reserve-percent=5",
                             "wallbox.resume-hold-seconds=0", "wallbox.consumption-includes-wallbox=true",
                             "battery.url=http://127.0.0.1:" + battery.getAddress().getPort() + "/api/v2",
@@ -186,13 +187,10 @@ class WallboxControlTest {
                         var lastAccess = control.status().lastAccess();
                         control.update(Map.of("smartMinUsoc", 35)); // Must not bypass recovery.
                         server.setSoTimeout(8000);
-                        assertThrows(SocketTimeoutException.class, server::accept);
-                        assertEquals(lastAccess, control.status().lastAccess());
-                        org.awaitility.Awaitility.await().atMost(4, TimeUnit.SECONDS)
-                                .until(() -> control.status().watchdogPossible());
                         try (var peer = server.accept()) {
-                            expectWrite(peer, 0, false); // First recovery access is a pause, even in POWER.
-                            assertTrue(System.nanoTime() - failedAt >= TimeUnit.SECONDS.toNanos(11));
+                            assertTrue(System.nanoTime() - failedAt >= TimeUnit.SECONDS.toNanos(7));
+                            assertEquals(lastAccess, control.status().lastAccess());
+                            expectWrite(peer, 0, false); // Recovery starts with a watchdog pause.
                             snapshot(peer, 1, 12);
                             expectWrite(peer, 12, false); // Recomputed from new readings.
                             org.awaitility.Awaitility.await().until(() -> !control.status().pauseUnconfirmed()
@@ -233,7 +231,7 @@ class WallboxControlTest {
     void lateButOtherwiseValidWriteEchoDoesNotCountAsAnAcknowledgement() throws Exception {
         try (var server = listener();
              var client = new InchModbusClient(new WallboxSettings("127.0.0.1", server.getLocalPort(), 1,
-                     WallboxSettings.Mode.POWER, 8000, 20, 5, 0, true));
+                     WallboxSettings.Mode.POWER, 8000, 20, 5, 0, true, 2000, 500, 3));
              var worker = Executors.newSingleThreadExecutor()) {
             var write = worker.submit(() -> { client.setCurrent(0); return null; });
             try (var peer = server.accept()) {

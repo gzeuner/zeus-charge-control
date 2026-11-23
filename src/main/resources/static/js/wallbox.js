@@ -61,22 +61,26 @@ document.addEventListener("DOMContentLoaded", () => {
       ev?.status === 4 ? "charging" : ev?.status === 8 ? "fault" : "idle";
     text(
       "wbLink",
-      sample
-        ? sample.connected
+      !settings.enabled
+        ? labels.offline
+        : data.modbusState === "CONNECTED"
           ? labels.online
-          : labels.offline
-        : labels.waiting,
+          : data.modbusState === "ERROR"
+            ? labels.modbusError
+            : data.modbusState === "RECONNECTING"
+              ? labels.modbusReconnecting
+              : labels.waiting,
     );
-    byId("wbAccessLine").hidden = !data.lastAccess;
-    if (data.lastAccess) {
-      const date = new Date(data.lastAccess);
+    byId("wbAccessLine").hidden = !data.lastSuccessfulRead;
+    if (data.lastSuccessfulRead) {
+      const date = new Date(data.lastSuccessfulRead);
       if (Number.isFinite(date.getTime())) {
         text("wbAccess", date.toLocaleString(locale));
         byId("wbAccess").dateTime = date.toISOString();
       }
     }
     byId("wbFallback").hidden = !data.watchdogPossible;
-    const warnings = [sample?.error];
+    const warnings = [sample?.error || data.modbusError];
     if (data.pauseUnconfirmed) warnings.unshift(labels.pauseUnconfirmed);
     if (settings.enabled && ev && !battery) warnings.push(labels.solarOffline);
     if (ev && ev.selectedMode !== 1) warnings.push(labels.wrongMode);
