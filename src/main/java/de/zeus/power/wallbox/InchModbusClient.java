@@ -3,10 +3,10 @@ package de.zeus.power.wallbox;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.InputStream;
 import java.io.DataOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
@@ -14,48 +14,76 @@ import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.util.concurrent.TimeUnit;
 
-/** Connector 1. A single polling thread owns this Modbus TCP connection. */
+/** A persistent, single-owner Modbus TCP connection to Sonnen / Etrel INCH. */
 final class InchModbusClient implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(InchModbusClient.class);
-    private static final int TIMEOUT_MS = 600;
+    private static final int SLAVE_DEVICE_BUSY = 6;
+    private static final long INITIAL_BACKOFF_MS = 1_000;
+    private static final long MAX_BACKOFF_MS = 30_000;
+
+    enum ConnectionState { CONNECTED, RECONNECTING, ERROR }
+
     private final WallboxSettings settings;
     private Socket socket;
     private InputStream input;
     private DataOutputStream output;
     private int transaction;
     private int unit;
+    private int consecutiveErrors;
+    private int backoffLevel;
+    private long reconnectAfterNanos;
     private volatile Instant lastAccess;
-    private String recovery;
-
-    Instant lastAccess() { return lastAccess; }
-    String recovery() { return recovery; }
+    private volatile Instant lastSuccessfulRead;
+    private volatile ConnectionState connectionState = ConnectionState.RECONNECTING;
+    private volatile String lastError;
+    private volatile String recovery;
 
     InchModbusClient(WallboxSettings settings) {
         this.settings = settings;
         unit = settings.unitId();
     }
 
+    Instant lastAccess() { return lastAccess; }
+    Instant lastSuccessfulRead() { return lastSuccessfulRead; }
+    ConnectionState connectionState() { return connectionState; }
+    String lastError() { return lastError; }
+    String recovery() { return recovery; }
+
     ChargerReadings read() throws IOException {
         recovery = null;
+        try {
+            ChargerReadings readings = readSnapshot();
+            Instant now = Instant.now();
+            lastSuccessfulRead = now;
+            lastAccess = now;
+            recordSuccess();
+            return readings;
+        } catch (IOException failure) {
+            recordFailure(failure);
+            throw failure;
+        }
+    }
+
+    private ChargerReadings readSnapshot() throws IOException {
         ByteBuffer connector;
         try {
             connector = readInputs(0, 6);
         } catch (SocketTimeoutException timeout) {
-            if (settings.unitId() == 255) {
-                throw timeout;
-            }
+            if (settings.unitId() == 255) throw timeout;
             int previous = unit;
             unit = alternateUnit();
-            recovery = "Modbus timeout (unit " + unit + " retry)";
-            LOG.warn("Charger timed out. Retrying reads with unit {}", unit);
+            recovery = "Read timeout on unit " + previous + "; retrying unit " + unit;
+            LOG.warn("Modbus {} on unit {}; retrying documented reads with unit {}",
+                    timeout.getClass().getSimpleName(), previous, unit);
             try {
                 connector = readInputs(0, 6);
-            } catch (IOException failedProbe) {
+            } catch (IOException retryFailure) {
                 unit = previous;
-                close();
-                throw failedProbe;
+                closeSocket();
+                throw retryFailure;
             }
         }
+
         ByteBuffer phases = readInputs(8, 20);
         long lifetime = readInputs(48, 4).getLong();
         int mode = readInputs(53, 1).getShort();
@@ -72,18 +100,27 @@ final class InchModbusClient implements AutoCloseable {
     /** Only a pause may be repeated after an ambiguous write timeout. */
     void confirmPause() throws IOException {
         try {
-            setCurrent(0);
-        } catch (SocketTimeoutException timeout) {
-            if (settings.unitId() == 255) throw timeout;
-            int previous = unit;
-            unit = alternateUnit();
             try {
-                setCurrent(0);
-            } catch (IOException failedPause) {
-                unit = previous;
-                close();
-                throw failedPause;
+                writeCurrent(0);
+            } catch (SocketTimeoutException timeout) {
+                if (settings.unitId() == 255) throw timeout;
+                int previous = unit;
+                unit = alternateUnit();
+                LOG.warn("Modbus {} while pausing unit {}; retrying zero-amp pause with unit {}",
+                        timeout.getClass().getSimpleName(), previous, unit);
+                try {
+                    writeCurrent(0);
+                } catch (IOException retryFailure) {
+                    unit = previous;
+                    closeSocket();
+                    throw retryFailure;
+                }
             }
+            lastAccess = Instant.now();
+            recordSuccess();
+        } catch (IOException failure) {
+            recordFailure(failure);
+            throw failure;
         }
     }
 
@@ -97,7 +134,7 @@ final class InchModbusClient implements AutoCloseable {
         ByteBuffer response = exchange(4, ByteBuffer.allocate(4).putShort((short) address)
                 .putShort((short) words).array());
         if (response.remaining() != 1 + words * 2 || Byte.toUnsignedInt(response.get()) != words * 2) {
-            throw invalidResponse("FC 04 register count");
+            throw invalidResponse("FC 04 register count at " + address);
         }
         lastAccess = Instant.now();
         return response.slice();
@@ -107,26 +144,30 @@ final class InchModbusClient implements AutoCloseable {
         if (!Float.isFinite(amps) || (amps != 0 && amps < 6) || amps > 16) {
             throw new IllegalArgumentException("Invalid HR 8 current " + amps);
         }
+        try {
+            writeCurrent(amps);
+            lastAccess = Instant.now();
+            recordSuccess();
+        } catch (IOException failure) {
+            recordFailure(failure);
+            throw failure;
+        }
+    }
+
+    private void writeCurrent(float amps) throws IOException {
         LOG.info("Writing charger HR 8 = {} A (unit {})", amps, unit);
         byte[] payload = ByteBuffer.allocate(9).putShort((short) 8).putShort((short) 2)
                 .put((byte) 4).putFloat(amps).array();
         ByteBuffer echo = exchange(16, payload);
         if (echo.remaining() != 4 || echo.getShort() != 8 || echo.getShort() != 2) {
-            throw invalidResponse("FC 16 address/count");
+            throw invalidResponse("FC 16 address/count for HR 8");
         }
-        lastAccess = Instant.now();
     }
 
     private ByteBuffer exchange(int function, byte[] payload) throws IOException {
-        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(TIMEOUT_MS);
         try {
-            if (socket == null) {
-                socket = new Socket();
-                socket.connect(new InetSocketAddress(settings.host(), settings.port()), TIMEOUT_MS);
-                socket.setTcpNoDelay(true);
-                input = socket.getInputStream();
-                output = new DataOutputStream(socket.getOutputStream());
-            }
+            ensureConnected();
+            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(settings.readTimeoutMs());
             transaction = (transaction + 1) & 0xffff;
             output.write(ByteBuffer.allocate(8 + payload.length)
                     .putShort((short) transaction).putShort((short) 0).putShort((short) (2 + payload.length))
@@ -144,15 +185,40 @@ final class InchModbusClient implements AutoCloseable {
             if (code == (function | 0x80) && pdu.remaining() == 1) {
                 throw new DeviceException(Byte.toUnsignedInt(pdu.get()));
             }
-            if (code != function) {
-                throw new IOException("Unexpected Modbus function " + code);
-            }
+            if (code != function) throw new IOException("Unexpected Modbus function " + code);
             return pdu.slice();
         } catch (DeviceException ex) {
             throw ex;
         } catch (IOException ex) {
-            close();
+            closeSocket();
             throw ex;
+        }
+    }
+
+    private void ensureConnected() throws IOException {
+        if (socket != null && socket.isConnected() && !socket.isClosed()) return;
+        long waitNanos = reconnectAfterNanos - System.nanoTime();
+        if (waitNanos > 0) {
+            connectionState = ConnectionState.ERROR;
+            throw new ReconnectBackoffException(TimeUnit.NANOSECONDS.toMillis(waitNanos));
+        }
+        connectionState = ConnectionState.RECONNECTING;
+        Socket candidate = new Socket();
+        try {
+            candidate.connect(new InetSocketAddress(settings.host(), settings.port()), settings.connectTimeoutMs());
+            candidate.setTcpNoDelay(true);
+            candidate.setSoTimeout(settings.readTimeoutMs());
+            socket = candidate;
+            input = candidate.getInputStream();
+            output = new DataOutputStream(candidate.getOutputStream());
+            LOG.info("Modbus TCP connected to {}:{} (unit {})", settings.host(), settings.port(), unit);
+        } catch (IOException failure) {
+            try {
+                candidate.close();
+            } catch (IOException closeFailure) {
+                failure.addSuppressed(closeFailure);
+            }
+            throw failure;
         }
     }
 
@@ -171,29 +237,89 @@ final class InchModbusClient implements AutoCloseable {
     }
 
     private IOException invalidResponse(String field) {
-        close();
+        closeSocket();
         return new IOException("Invalid Modbus response for " + field);
     }
 
+    private void recordSuccess() {
+        consecutiveErrors = 0;
+        backoffLevel = 0;
+        reconnectAfterNanos = 0;
+        lastError = null;
+        connectionState = ConnectionState.CONNECTED;
+    }
+
+    private void recordFailure(IOException failure) {
+        if (failure instanceof ReconnectBackoffException) return;
+
+        String message = failure.getMessage();
+        String type = failureType(failure);
+        lastError = type + (message == null || message.isBlank() ? "" : ": " + message);
+        if (failure instanceof DeviceException device && device.code() != SLAVE_DEVICE_BUSY) {
+            consecutiveErrors = 0;
+            connectionState = ConnectionState.ERROR;
+            LOG.error("Modbus {} (slave exception {})", type, device.code());
+            return;
+        }
+
+        consecutiveErrors++;
+        if (consecutiveErrors >= settings.maxErrorsBeforeReconnect()) {
+            closeSocket();
+            long backoffMs = Math.min(MAX_BACKOFF_MS, INITIAL_BACKOFF_MS << Math.min(backoffLevel, 5));
+            backoffLevel++;
+            reconnectAfterNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(backoffMs);
+            consecutiveErrors = 0;
+            connectionState = ConnectionState.ERROR;
+            LOG.warn("Modbus {} after {} consecutive failures; reconnect in {} ms: {}",
+                    type, settings.maxErrorsBeforeReconnect(), backoffMs,
+                    failure.getMessage());
+        } else {
+            connectionState = ConnectionState.RECONNECTING;
+            LOG.warn("Modbus {} ({}/{} consecutive errors): {}", type,
+                    consecutiveErrors, settings.maxErrorsBeforeReconnect(), failure.getMessage());
+        }
+    }
+
+    private static String failureType(IOException failure) {
+        if (failure instanceof DeviceException device && device.code() == SLAVE_DEVICE_BUSY) {
+            return "SlaveDeviceBusy";
+        }
+        return failure.getClass().getSimpleName();
+    }
+
+    @Override
+    public void close() {
+        closeSocket();
+    }
+
+    private void closeSocket() {
+        Socket current = socket;
+        socket = null;
+        input = null;
+        output = null;
+        if (current != null) {
+            try {
+                current.close();
+            } catch (IOException ex) {
+                LOG.debug("Closing Modbus TCP connection: {}: {}", ex.getClass().getSimpleName(), ex.getMessage());
+            }
+        }
+    }
+
     static final class DeviceException extends IOException {
-        final int code;
+        private final int code;
 
         DeviceException(int code) {
             super("Modbus exception " + code);
             this.code = code;
         }
+
+        int code() { return code; }
     }
 
-    @Override
-    public void close() {
-        if (socket != null) {
-            try {
-                socket.close();
-            } catch (IOException ex) {
-                LOG.debug("Closing charger connection", ex);
-            } finally {
-                socket = null;
-            }
+    private static final class ReconnectBackoffException extends IOException {
+        ReconnectBackoffException(long waitMs) {
+            super("Reconnect backoff active (" + Math.max(1, waitMs) + " ms remaining)");
         }
     }
 }
