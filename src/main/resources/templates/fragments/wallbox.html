@@ -10,6 +10,7 @@
       th:data-settings-url="@{/wallbox/settings}"
       th:data-states="#{wallbox.states}"
       th:data-phases="#{wallbox.phases}"
+      th:data-phase-measured="#{wallbox.phaseMeasured}"
       th:data-mode-descriptions="#{wallbox.modeDescriptions}"
       th:data-active="#{wallbox.active}"
       th:data-off="#{wallbox.off}"
@@ -198,6 +199,10 @@
             <div>
               <dt><span th:text="#{wallbox.hardwarePhases}"></span></dt>
               <dd data-metric="hardwarePhases">–</dd>
+            </div>
+            <div>
+              <dt><span th:text="#{wallbox.phaseRaw}"></span></dt>
+              <dd data-metric="phaseRaw">–</dd>
             </div>
           </dl>
         </div>

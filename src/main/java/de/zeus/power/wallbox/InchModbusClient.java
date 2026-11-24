@@ -89,8 +89,19 @@ final class InchModbusClient implements AutoCloseable {
         int mode = readInputs(53, 1).getShort();
         int hardwarePhases = readInputs(1023, 1).getShort();
         float installed = readInputs(1028, 2).getFloat();
-        return new ChargerReadings(connector.getShort(), connector.getShort(), hardwarePhases, connector.getFloat(),
-                connector.getFloat(), phase(phases, 0), phase(phases, 1), phase(phases, 2),
+        int status = connector.getShort();
+        int phaseMode = connector.getShort();
+        float evMax = connector.getFloat();
+        int ir4High = Short.toUnsignedInt(connector.getShort());
+        int ir4Low = Short.toUnsignedInt(connector.getShort());
+        // FC 04 address 4 is words 4-5 in the block starting at address 0;
+        // ByteBuffer's default order is big-endian, matching the Etrel Float32 register order.
+        float applied = Float.intBitsToFloat((ir4High << 16) | ir4Low);
+        LOG.debug("Charger IR 4 FC 04 address=4 rawWords=[{} {}] decodedFloat32BigEndian={} A",
+                String.format(java.util.Locale.ROOT, "%04X", ir4High),
+                String.format(java.util.Locale.ROOT, "%04X", ir4Low), applied);
+        return new ChargerReadings(status, phaseMode, hardwarePhases, evMax,
+                applied, phase(phases, 0), phase(phases, 1), phase(phases, 2),
                 phases.getFloat(36), lifetime, mode, installed);
     }
 
@@ -163,6 +174,7 @@ final class InchModbusClient implements AutoCloseable {
         if (echo.remaining() != 4 || echo.getShort() != 8 || echo.getShort() != 2) {
             throw invalidResponse("FC 16 address/count for HR 8");
         }
+        LOG.debug("Modbus FC 16 acknowledged HR 8 address=8 words=2 requested={} A", amps);
     }
 
     private ByteBuffer exchange(int function, byte[] payload) throws IOException {

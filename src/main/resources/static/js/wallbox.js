@@ -30,6 +30,24 @@ document.addEventListener("DOMContentLoaded", () => {
     return number(value) === null ? "–" : format(value, digits) + " " + unit;
   }
 
+  function measuredPhaseUse(ev) {
+    const active = [ev?.l1, ev?.l2, ev?.l3]
+      .map((phase, index) => ({ phase, line: `L${index + 1}` }))
+      .filter(
+        ({ phase }) => number(phase?.amps) !== null && number(phase.amps) > 1,
+      );
+    if (!active.length) {
+      const reported = phases[ev?.phases];
+      if (reported && reported !== "Unbekannt" && reported !== "Unknown")
+        return reported;
+      const hardware = number(ev?.hardwarePhases);
+      if (hardware !== null && hardware >= 1 && hardware <= 3)
+        return `${hardware} (IR 1023)`;
+      return "–";
+    }
+    return `${active.length} (${active.map(({ line }) => line).join(", ")}; ${labels.phaseMeasured})`;
+  }
+
   function controls(ready) {
     for (const control of [toggle, ...modes, ...smart.elements]) {
       control.disabled = !ready || saving;
@@ -42,7 +60,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const ev = sample?.charger;
     const battery = sample?.battery;
     toggle.setAttribute("aria-checked", String(settings.enabled));
-    text("wbControlState", data.featureEnabled === false ? labels.disabled : settings.enabled ? labels.active : labels.off);
+    text(
+      "wbControlState",
+      data.featureEnabled === false
+        ? labels.disabled
+        : settings.enabled
+          ? labels.active
+          : labels.off,
+    );
     for (const btn of modes) {
       const active = btn.dataset.mode === settings.mode;
       btn.setAttribute("aria-pressed", String(active));
@@ -71,14 +96,14 @@ document.addEventListener("DOMContentLoaded", () => {
       data.featureEnabled === false
         ? labels.disabled
         : !settings.enabled
-        ? labels.offline
-        : data.modbusState === "CONNECTED"
-          ? labels.online
-          : data.modbusState === "ERROR"
-            ? labels.modbusError
-            : data.modbusState === "RECONNECTING"
-              ? labels.modbusReconnecting
-              : labels.waiting,
+          ? labels.offline
+          : data.modbusState === "CONNECTED"
+            ? labels.online
+            : data.modbusState === "ERROR"
+              ? labels.modbusError
+              : data.modbusState === "RECONNECTING"
+                ? labels.modbusReconnecting
+                : labels.waiting,
     );
     byId("wbAccessLine").hidden = !data.lastSuccessfulRead;
     if (data.lastSuccessfulRead) {
@@ -123,6 +148,12 @@ document.addEventListener("DOMContentLoaded", () => {
         ? `${ev.selectedMode} (${modeDescriptions[ev.selectedMode] || modeDescriptions[0]})`
         : "–",
     };
+    if (ev) {
+      values.phaseUse = measuredPhaseUse(ev);
+      values.phaseRaw = `${ev.phases} (${phases[ev.phases] || "Unbekannt"})`;
+    } else {
+      values.phaseRaw = "–";
+    }
     for (const el of panel.querySelectorAll("[data-metric]")) {
       el.textContent = values[el.dataset.metric];
     }

@@ -220,4 +220,17 @@ class ChargePolicyTest {
         assertEquals(8.1f, eco.target(unknownPhasesButThreePhaseHardware,
                 battery(5600, 0, 0, 90, 0), 0), 0.01);
     }
+
+    @Test
+    void ecoUsesMeasuredThreePhaseCurrentsAheadOfIr1TwoPhaseValue() {
+        var settings = new WallboxSettings("localhost", 502, 1, ECO, 8000, 20, 5, 0, true,
+                2000, 2500, 3, 3, 230, 6, 16, 0);
+        var ev = new ChargerReadings(4, 5, 3, 16, 0,
+                new ChargerReadings.Phase(230, 15.9f, 0),
+                new ChargerReadings.Phase(230, 15.9f, 0),
+                new ChargerReadings.Phase(230, 15.9f, 0),
+                11.07f, 0, 1, 16);
+        assertEquals(6.6f, new ChargePolicy(settings)
+                .target(ev, battery(4565, 0, 0, 90, 0), 0), 0.01);
+    }
 }

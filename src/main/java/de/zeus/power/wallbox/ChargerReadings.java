@@ -17,6 +17,8 @@ record ChargerReadings(int status, int phases, int hardwarePhases, float evMaxAm
     }
 
     int effectivePhases(int configuredPhases) {
+        int measured = measuredActivePhases();
+        if (measured > 0) return measured;
         int reported = switch (phases) {
             case 0 -> 3;
             case 1, 2, 3 -> 1;
@@ -25,6 +27,21 @@ record ChargerReadings(int status, int phases, int hardwarePhases, float evMaxAm
         };
         if (reported > 0) return reported;
         return hardwarePhases >= 1 && hardwarePhases <= 3 ? hardwarePhases : configuredPhases;
+    }
+
+    int measuredActivePhases() {
+        int active = 0;
+        if (l1.amps() > 1) active++;
+        if (l2.amps() > 1) active++;
+        if (l3.amps() > 1) active++;
+        return active;
+    }
+
+    String phaseSource() {
+        if (measuredActivePhases() > 0) return "measured-phase-currents>1A";
+        if (phases >= 0 && phases <= 3 || phases == 5) return "IR1";
+        if (hardwarePhases >= 1 && hardwarePhases <= 3) return "IR1023";
+        return "wallbox.phases";
     }
 
     boolean enabled() {

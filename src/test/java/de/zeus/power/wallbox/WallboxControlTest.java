@@ -170,7 +170,7 @@ class WallboxControlTest {
             try (var ignoredUnit = server.accept()) {
                 request(ignoredUnit, 1, 4); // Keep the first socket silent.
                 try (var peer = server.accept()) {
-                    snapshot(peer, 255, 16);
+                    snapshot(peer, 255, 16, 15.9f);
                     var reading = task.get(4, TimeUnit.SECONDS);
                     assertEquals(4, reading.status());
                     assertEquals(0, reading.phases());
@@ -179,7 +179,9 @@ class WallboxControlTest {
                     assertEquals("Fast", reading.modeDescription());
                     assertEquals(16, reading.installedMaxAmps());
                     assertEquals(16, reading.evMaxAmps());
-                    assertFalse(reading.enabled());
+                    assertEquals(15.9f, reading.appliedAmps(), 0.01f,
+                            "IR 4 Float32 must decode big-endian words at FC 04 address 4");
+                    assertTrue(reading.enabled());
                     assertEquals(1.25f, reading.powerKw());
                     assertEquals(0.5f, reading.l2().kw());
                     assertEquals(3.0f, reading.l3().amps());

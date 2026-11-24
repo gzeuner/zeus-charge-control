@@ -329,8 +329,11 @@ class WallboxControl {
         consecutiveTargetDeviations = differs ? consecutiveTargetDeviations + 1 : 0;
         if (consecutiveTargetDeviations >= 2
                 && (lastDeviationLog == null || !now.isBefore(lastDeviationLog.plusSeconds(60)))) {
-            LOG.info("Box begrenzt (Load Guard/Lastplan/Custom max): HR8={}A IR4={}A IR1028={}A IR2={}A",
-                    lastWrittenTargetAmps, readings.appliedAmps(), readings.installedMaxAmps(), readings.evMaxAmps());
+            LOG.info("Box begrenzt (Load Guard/Lastplan/Custom max) oder IR4-Abweichung: HR8={}A IR4={}A "
+                            + "L1/L2/L3={}A/{}A/{}A IR1={} IR1023={} IR1028={}A IR2={}A",
+                    lastWrittenTargetAmps, readings.appliedAmps(), readings.l1().amps(), readings.l2().amps(),
+                    readings.l3().amps(), readings.phases(), readings.hardwarePhases(),
+                    readings.installedMaxAmps(), readings.evMaxAmps());
             lastDeviationLog = now;
         }
     }

@@ -58,6 +58,7 @@ final class ChargePolicy {
             case ECO -> pvSurplus;
         };
         int phases = charger == null ? settings.phases() : charger.effectivePhases(settings.phases());
+        String phaseSource = charger == null ? "wallbox.phases" : charger.phaseSource();
         double wattsPerAmp = phases * (double) settings.voltage();
         float hardwareCeiling = charger == null ? 0 : charger.maxAmps(settings.minCurrentA(), settings.maxCurrentA());
         double ceiling = hardwareCeiling;
@@ -68,7 +69,7 @@ final class ChargePolicy {
         double amps = rawAmps;
         String ignoredCeilings = charger == null ? "" : charger.ignoredCeilings(settings.minCurrentA());
         StringBuilder applied = new StringBuilder("[hardware/config max=" + ceiling + "A, phases=" + phases
-                + " (IR1=" + (charger == null ? "n/a" : charger.phases()) + ", IR1023="
+                + " (source=" + phaseSource + ", IR1=" + (charger == null ? "n/a" : charger.phases()) + ", IR1023="
                 + (charger == null ? "n/a" : charger.hardwarePhases()) + "), wallbox.min-current-a="
                 + settings.minCurrentA() + "A, wallbox.max-current-a=" + settings.maxCurrentA() + "A]")
                 .append(batteryLimit);
@@ -97,12 +98,12 @@ final class ChargePolicy {
         }
         if (charger == null || !charger.acceptsSetpoint() || hardwareCeiling <= 0) {
             availableWatts = Double.isFinite(rawAvailable) ? rawAvailable : null;
-            diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, rawAmps, applied, 0, houseRule);
+            diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, charger, rawAmps, applied, 0, houseRule);
             return pause();
         }
         if (!Double.isFinite(amps)) {
             availableWatts = null;
-            diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, rawAmps, applied, 0, houseRule);
+            diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, charger, rawAmps, applied, 0, houseRule);
             return pause();
         }
         if (mode != WallboxSettings.Mode.POWER || settings.gridLimitWatts() > 0) {
@@ -117,20 +118,20 @@ final class ChargePolicy {
             clampReason = "below-minimum-current";
             availableWatts = rawAvailable;
             if (mode == WallboxSettings.Mode.POWER) {
-                diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, rawAmps, applied, 0, houseRule);
+                diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, charger, rawAmps, applied, 0, houseRule);
                 return pause();
             }
             if (lowSince == null) lowSince = nowNanos;
             long hold = TimeUnit.SECONDS.toNanos(settings.resumeHoldSeconds());
             if (nowNanos - lowSince >= hold) {
-                diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, rawAmps, applied, 0, houseRule);
+                diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, charger, rawAmps, applied, 0, houseRule);
                 return 0;
             }
             // Keep the existing setpoint during the stop hysteresis where possible.
             float held = charger.appliedAmps() >= settings.minCurrentA()
                     ? Math.min(charger.appliedAmps(), (float) ceiling) : 0;
             if (held > 0) clampReason = "stop-hysteresis";
-            diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, rawAmps,
+            diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, charger, rawAmps,
                     applied.append(" [below-min=" ).append(settings.minCurrentA()).append("A, hysteresis]").toString(), held, houseRule);
             return held;
         }
@@ -139,16 +140,20 @@ final class ChargePolicy {
         // The stop hysteresis above still prevents oscillation when available power falls.
         availableWatts = mode == WallboxSettings.Mode.POWER ? null
                 : Math.max(0, rawAvailable);
-        diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, rawAmps, applied, amps, houseRule);
+        diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, charger, rawAmps, applied, amps, houseRule);
         return (float) amps;
     }
 
     private String diagnostic(double pv, double house, double houseWithoutEv, double evW, double pac,
-                              double soc, double grid, double rawAmps, CharSequence limits, double target, String houseRule) {
+                              double soc, double grid, ChargerReadings charger, double rawAmps,
+                              CharSequence limits, double target, String houseRule) {
         return "mode=" + settings.effectiveMode() + " PV=" + round(pv) + "W house=" + round(house)
                 + "W houseWithoutWallbox=" + round(houseWithoutEv) + "W wallbox=" + round(evW)
                 + "W battery=" + round(pac) + "W USOC=" + round(soc) + "% grid=" + round(grid)
-                + "W raw=" + round(rawAmps) + "A " + houseRule + " phases=" + settings.phases()
+                + "W raw=" + round(rawAmps) + "A " + houseRule + " phases=" + (charger == null
+                ? settings.phases() + " (wallbox.phases)"
+                : charger.effectivePhases(settings.phases()) + " (" + charger.phaseSource()
+                        + ", IR1=" + charger.phases() + ", IR1023=" + charger.hardwarePhases() + ")")
                 + " voltage=" + settings.voltage() + "V battery.inverter.max.watts=" + inverterMaxWatts
                 + "W " + limits + " final=" + round(target) + "A";
     }
