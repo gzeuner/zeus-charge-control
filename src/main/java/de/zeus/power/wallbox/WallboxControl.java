@@ -54,9 +54,12 @@ class WallboxControl {
     private final String statusUrl;
     private Long sessionStart;
     private boolean loggedMeterCheck;
+    private Instant lastIr53Info;
     private final boolean propertyEnabled;
     private boolean featureEnabled;
     private KostalInverterService kostal;
+    @Value("${battery.inverter.max.watts:4600}")
+    private double inverterMaxWatts;
 
     @Autowired(required = false)
     void configureKostal(KostalInverterService kostal) { this.kostal = kostal; }
@@ -202,7 +205,7 @@ class WallboxControl {
             }
         }
         if (applied != active) {
-            policy = new ChargePolicy(settings.withPreferences(active));
+            policy = new ChargePolicy(settings.withPreferences(active), inverterMaxWatts);
             applied = active;
         }
         long started = System.nanoTime();
@@ -224,9 +227,10 @@ class WallboxControl {
             float target = policy.target(ev, battery, now, kostal == null ? null : kostal.usablePvPowerW());
             LOG.debug("Charger {} lifetime={} kWh on={} EV detection={} Sonnen={}",
                     ev, ev.lifetimeMwh() / 1e6, ev.enabled(), detecting, battery);
-            if (ev.selectedMode() != 1) {
-                LOG.warn("IR 53={} (erwartet 1). An der Wallbox Power/Fast wählen; sonst kann sie HR 8 überschreiben.",
-                        ev.selectedMode());
+            Instant ir53Now = Instant.now();
+            if (lastIr53Info == null || !ir53Now.isBefore(lastIr53Info.plusSeconds(600))) {
+                LOG.info("Wallbox diagnostic raw IR 53={}", ev.selectedMode());
+                lastIr53Info = ir53Now;
             }
             if (!loggedMeterCheck && ev.powerKw() > 0 && battery != null && battery.hasPowerReadings()
                     && battery.gridFeedInW() != null) {
@@ -236,8 +240,8 @@ class WallboxControl {
                         battery.consumptionW(), balanceW, ev.powerKw(), settings.consumptionIncludesWallbox());
                 loggedMeterCheck = true;
             }
-            LOG.debug("Mode {} target={} A installed={} A EV max={} A applied={} A",
-                    active.mode(), target, ev.installedMaxAmps(), ev.evMaxAmps(), ev.appliedAmps());
+            LOG.debug("Wallbox rule cycle: {} installedMax={}A evMax={}A applied={}A",
+                    policy.diagnostics(), ev.installedMaxAmps(), ev.evMaxAmps(), ev.appliedAmps());
             if (stopping || active != preferences) return;
             var write = writeTarget(target, active, started);
             lastAvailableWatts = policy.availableWatts();
@@ -278,8 +282,8 @@ class WallboxControl {
                 throw ex;
             }
             ChargerReadings fresh = charger.read();
-            float max = fresh.maxAmps();
-            float retry = fresh.selectedMode() == 1 && fresh.sessionActive() && max < target ? max : 0;
+            float max = fresh.maxAmps(settings.minCurrentA(), settings.maxCurrentA());
+            float retry = fresh.sessionActive() && max < target ? max : 0;
             if (retry == 0) {
                 policy.pause();
             }

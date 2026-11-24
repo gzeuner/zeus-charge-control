@@ -11,20 +11,32 @@ record WallboxSettings(@DefaultValue("wallbox.local") String host, @DefaultValue
                        @DefaultValue("5") int smartReservePercent, @DefaultValue("16") int resumeHoldSeconds,
                        @DefaultValue("true") boolean consumptionIncludesWallbox,
                        @DefaultValue("2000") int connectTimeoutMs, @DefaultValue("2500") int readTimeoutMs,
-                       @DefaultValue("3") int maxErrorsBeforeReconnect) {
+                       @DefaultValue("3") int maxErrorsBeforeReconnect,
+                       @DefaultValue("3") int phases, @DefaultValue("230") int voltage,
+                       @DefaultValue("6") int minCurrentA, @DefaultValue("16") int maxCurrentA,
+                       @DefaultValue("0") int gridLimitWatts) {
 
     enum Mode { ECO, SMART, POWER }
 
     WallboxSettings(String host, int port, int unitId, Mode mode, int pollIntervalMs, int smartMinUsoc,
                     int smartReservePercent, int resumeHoldSeconds, boolean consumptionIncludesWallbox) {
         this(host, port, unitId, mode, pollIntervalMs, smartMinUsoc, smartReservePercent, resumeHoldSeconds,
-                consumptionIncludesWallbox, 2000, 2500, 3);
+                consumptionIncludesWallbox, 2000, 2500, 3, 3, 230, 6, 16, 0);
+    }
+
+    WallboxSettings(String host, int port, int unitId, Mode mode, int pollIntervalMs, int smartMinUsoc,
+                    int smartReservePercent, int resumeHoldSeconds, boolean consumptionIncludesWallbox,
+                    int connectTimeoutMs, int readTimeoutMs, int maxErrorsBeforeReconnect) {
+        this(host, port, unitId, mode, pollIntervalMs, smartMinUsoc, smartReservePercent, resumeHoldSeconds,
+                consumptionIncludesWallbox, connectTimeoutMs, readTimeoutMs, maxErrorsBeforeReconnect,
+                3, 230, 6, 16, 0);
     }
 
     WallboxSettings withPreferences(WallboxPreferences prefs) {
         return new WallboxSettings(host, port, unitId, prefs.mode(), pollIntervalMs, prefs.smartMinUsoc(),
                 prefs.smartReservePercent(), resumeHoldSeconds, consumptionIncludesWallbox,
-                connectTimeoutMs, readTimeoutMs, maxErrorsBeforeReconnect);
+                connectTimeoutMs, readTimeoutMs, maxErrorsBeforeReconnect, phases, voltage,
+                minCurrentA, maxCurrentA, gridLimitWatts);
     }
 
     @ConstructorBinding
@@ -42,7 +54,9 @@ record WallboxSettings(@DefaultValue("wallbox.local") String host, @DefaultValue
                 || smartReservePercent > 100 || resumeHoldSeconds < 0
                 || connectTimeoutMs < 1 || connectTimeoutMs > 8000
                 || readTimeoutMs < 1 || readTimeoutMs > 3000
-                || maxErrorsBeforeReconnect < 1 || maxErrorsBeforeReconnect > 100) {
+                || maxErrorsBeforeReconnect < 1 || maxErrorsBeforeReconnect > 100
+                || phases < 1 || phases > 3 || voltage < 100 || voltage > 300
+                || minCurrentA < 6 || maxCurrentA < minCurrentA || maxCurrentA > 16 || gridLimitWatts < 0) {
             return "invalid mode, timing, reserve or reconnect settings";
         }
         return null;

@@ -33,7 +33,11 @@ record ChargerReadings(int status, int phases, float evMaxAmps, float appliedAmp
     }
 
     float maxAmps() {
-        float max = Math.min(16, Math.min(installedMaxAmps, evMaxAmps));
-        return Float.isFinite(installedMaxAmps) && Float.isFinite(evMaxAmps) && max >= 6 ? max : 0;
+        return maxAmps(6, 16);
+    }
+
+    float maxAmps(int min, int configuredMax) {
+        float max = Math.min(configuredMax, Math.min(installedMaxAmps, evMaxAmps));
+        return Float.isFinite(installedMaxAmps) && Float.isFinite(evMaxAmps) && max >= min ? max : 0;
     }
 }

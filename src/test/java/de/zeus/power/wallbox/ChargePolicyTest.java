@@ -28,8 +28,8 @@ class ChargePolicyTest {
         var ev = charger(0, 3, 32, 16);
         var metered = battery(9000, 4400, 700, 90, 5);
         var separate = battery(9000, 1400, 700, 90, 5);
-        assertEquals(10, policy(ECO, true, 0).target(ev, metered, 0));
-        assertEquals(10, policy(ECO, false, 0).target(ev, separate, 0));
+        assertEquals(11, policy(ECO, true, 0).target(ev, metered, 0));
+        assertEquals(11, policy(ECO, false, 0).target(ev, separate, 0));
         assertEquals(0, policy(ECO, false, 0).target(ev, battery(0, 1400, 700, 90, 5), 0));
     }
 
@@ -48,7 +48,7 @@ class ChargePolicyTest {
         var eco = policy(ECO, true, 0);
         for (int phase = 0; phase <= 5; phase++) {
             var ev = charger(phase, 0, 16, 16);
-            double watts = new int[]{690, 220, 230, 240, 690, 470}[phase] * 6;
+            double watts = 690 * 6;
             assertEquals(0, eco.target(ev, battery(watts - 1, 0, 0, 50, 0), 0));
             assertEquals(6, eco.target(ev, battery(watts, 0, 0, 50, 0), 0));
         }
@@ -84,7 +84,7 @@ class ChargePolicyTest {
     }
 
     @Test
-    void onlyAnActiveConnectorInFastModeGetsAPositiveTarget() {
+    void onlyAnActiveConnectorGetsAPositiveTargetAndIr53IsDiagnosticOnly() {
         var power = policy(POWER, true, 0);
         var ev = charger(0, 0, 16, 16);
         for (int state = 0; state <= 11; state++) {
@@ -92,7 +92,7 @@ class ChargePolicyTest {
                 var reading = new ChargerReadings(state, 0, 16, 0, ev.l1(), ev.l2(), ev.l3(),
                         0, 0, mode, 16);
                 boolean canCharge = switch (state) {
-                    case 2, 3, 4, 5, 6, 9 -> mode == 1;
+                    case 2, 3, 4, 5, 6, 9 -> true;
                     default -> false;
                 };
                 assertEquals(canCharge ? 16 : 0, power.target(reading, null, 0));
@@ -123,5 +123,61 @@ class ChargePolicyTest {
         var battery = battery(1000, 500, 0, 70, 0);
         assertEquals(6, eco.target(ev, battery, 0, 4640.0));
         assertEquals(0, eco.target(ev, battery, 0, null));
+    }
+
+    @Test
+    void powerIgnoresBatteryGridImportLimitAndUsesOnlyOptionalSiteLimit() {
+        var ev = charger(0, 0, 16, 16);
+        var noLimit = policy(POWER, true, 0);
+        assertEquals(16, noLimit.target(ev, battery(0, 4600, 4600, 90, 5), 0));
+
+        var base = new WallboxSettings("localhost", 502, 1, POWER, 8000, 25, 5, 0, true,
+                2000, 2500, 3, 3, 230, 6, 16, 4600);
+        var limited = new ChargePolicy(base);
+        assertEquals(6.6f, limited.target(ev, battery(0, 0, 0, 90, 5), 0), 0.01);
+        assertEquals(0, limited.target(ev, battery(0, 2000, 0, 90, 5), 0));
+    }
+
+    @Test
+    void smartCapsBatteryDischargeByInverterLimitAndStopsUsingItBelowReserve() {
+        var ev = charger(0, 0, 16, 16);
+        var settings = new WallboxSettings("localhost", 502, 1, SMART, 8000, 20, 5, 0, true);
+        var smart = new ChargePolicy(settings, 3000);
+        var loadedEv = charger(0, 4, 16, 16);
+        assertEquals(7.3f, smart.target(loadedEv, battery(2800, 4720, 4000, 92, 5), 0), 0.01);
+        assertEquals(0, smart.target(loadedEv, battery(2800, 4720, 4000, 19, 5), 0));
+    }
+
+    @Test
+    void wallboxConsumptionIsRemovedExactlyOnce() {
+        var ev = charger(0, 4, 16, 16);
+        var includes = policy(ECO, true, 0);
+        var separate = policy(ECO, false, 0);
+        float fromMeteredHouse = includes.target(ev, battery(5000, 4720, 0, 90, 5), 0);
+        float fromSeparateHouse = separate.target(ev, battery(5000, 720, 0, 90, 5), 0);
+        assertEquals(fromSeparateHouse, fromMeteredHouse);
+        assertEquals(6.2f, fromMeteredHouse, 0.01);
+    }
+
+    @Test
+    void stopWaitsForHysteresisButDoesNotStartBelowMinimum() {
+        var eco = policy(ECO, true, 16);
+        var active = new ChargerReadings(4, 3, 16, 10, new ChargerReadings.Phase(230, 0, 0),
+                new ChargerReadings.Phase(230, 0, 0), new ChargerReadings.Phase(230, 0, 0),
+                4, 0, 1, 16);
+        long sec = TimeUnit.SECONDS.toNanos(1);
+        assertEquals(10, eco.target(active, battery(3000, 0, 0, 90, 0), 0));
+        assertEquals(10, eco.target(active, battery(1000, 0, 0, 90, 0), sec));
+        assertEquals(0, eco.target(active, battery(1000, 0, 0, 90, 0), 16 * sec));
+        assertEquals(0, eco.target(charger(3, 0, 16, 16), battery(1000, 0, 0, 90, 0), 20 * sec));
+    }
+
+    @Test
+    void configuredPhaseVoltageAndCurrentBoundsAreUsed() {
+        var settings = new WallboxSettings("localhost", 502, 1, ECO, 8000, 20, 5, 0, true,
+                2000, 2500, 3, 1, 240, 7, 12, 0);
+        var policy = new ChargePolicy(settings);
+        assertEquals(7, policy.target(charger(1, 0, 16, 16), battery(1700, 0, 0, 90, 0), 0));
+        assertEquals(12, policy.target(charger(1, 0, 16, 16), battery(10000, 0, 0, 90, 0), 0));
     }
 }

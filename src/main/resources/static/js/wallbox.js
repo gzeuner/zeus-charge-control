@@ -85,7 +85,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const warnings = [sample?.error || data.modbusError];
     if (data.pauseUnconfirmed) warnings.unshift(labels.pauseUnconfirmed);
     if (settings.enabled && ev && !battery) warnings.push(labels.solarOffline);
-    if (ev && ev.selectedMode !== 1) warnings.push(labels.wrongMode);
     message("wbWarning", warnings.filter(Boolean).join(" · "));
 
     const values = {
@@ -109,6 +108,7 @@ document.addEventListener("DOMContentLoaded", () => {
       grid: quantity(battery?.GridFeedIn_W, "W"),
       soc: quantity(battery?.USOC, "%"),
       batteryPower: quantity(battery?.Pac_total_W, "W"),
+      rawMode: ev ? String(ev.selectedMode) : "–",
     };
     for (const el of panel.querySelectorAll("[data-metric]")) {
       el.textContent = values[el.dataset.metric];
