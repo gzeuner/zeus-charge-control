@@ -208,6 +208,18 @@ document.addEventListener("DOMContentLoaded", () => {
     timer = setInterval(refresh, ms);
   }
 
+  function renderStatus(data) {
+    try {
+      render(data);
+      return true;
+    } catch (error) {
+      console.error("Wallbox status rendering failed", error);
+      controls(false);
+      message("wbWarning", labels.renderError);
+      return false;
+    }
+  }
+
   async function refresh() {
     if (document.hidden || saving || polling) return;
     const request = new AbortController();
@@ -217,7 +229,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = await jsonRequest(labels.statusUrl, {
         signal: request.signal,
       });
-      if (polling === request) render(data);
+      if (polling === request) renderStatus(data);
     } catch {
       if (polling === request) {
         controls(false);
@@ -246,8 +258,7 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       if (changes.smartMinUsoc !== undefined || changes.mode !== undefined)
         editing = false;
-      render(data);
-      message("wbFeedback", t.actionSuccess);
+      if (renderStatus(data)) message("wbFeedback", t.actionSuccess);
     } catch {
       message("wbFeedback", labels.saveError);
     } finally {

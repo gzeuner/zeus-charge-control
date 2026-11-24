@@ -19,6 +19,7 @@
       th:data-ignored="#{wallbox.ignored}" th:data-unavailable="#{wallbox.unavailable}"
       th:data-solar-offline="#{wallbox.solarOffline}" th:data-pause-unconfirmed="#{wallbox.pauseUnconfirmed}"
       th:data-save-error="#{wallbox.saveError}" th:data-api-error="#{wallbox.apiError}"
+      th:data-render-error="#{wallbox.renderError}"
       th:data-phase-measured-label="#{wallbox.phaseMeasured}">
       <header class="panel-header">
         <div class="wb-device">
@@ -101,7 +102,10 @@
           </details>
         </div>
       </div>
-      <div class="wb-meta"><span class="wb-link">Modbus TCP · <b id="wbLink">–</b></span></div>
+      <div class="wb-meta">
+        <span class="wb-link">Modbus TCP · <b id="wbLink">–</b></span>
+        <span id="wbAccessLine" hidden><span th:text="#{wallbox.last}"></span> · <time id="wbAccess">–</time></span>
+      </div>
       <p id="wbWarning" class="notice notice-error" role="status" hidden></p>
       <p id="wbFallback" class="notice notice-error" role="status" hidden th:text="#{wallbox.fallback}"></p>
     </section>

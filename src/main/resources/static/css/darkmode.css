@@ -1170,7 +1170,7 @@ h1 {
 .wb-energy dt {
   color: var(--muted);
   font-size: 11px;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .wb-energy i {
   color: var(--primary);
