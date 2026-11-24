@@ -1,6 +1,6 @@
 package de.zeus.power.wallbox;
 
-record ChargerReadings(int status, int phases, float evMaxAmps, float appliedAmps, Phase l1,
+record ChargerReadings(int status, int phases, int hardwarePhases, float evMaxAmps, float appliedAmps, Phase l1,
                        Phase l2, Phase l3, float powerKw, long lifetimeMwh, int selectedMode,
                        float installedMaxAmps) {
 
@@ -12,6 +12,26 @@ record ChargerReadings(int status, int phases, float evMaxAmps, float appliedAmp
 
     boolean enabled() {
         return appliedAmps > 0;
+    }
+
+    String phaseDescription() {
+        return switch (phases) {
+            case 0 -> "3 (L1-L3)";
+            case 1 -> "1 (L1)";
+            case 2 -> "1 (L2)";
+            case 3 -> "1 (L3)";
+            case 4 -> "Unbekannt";
+            case 5 -> "2";
+            default -> "Unbekannt";
+        };
+    }
+
+    String modeDescription() {
+        return switch (selectedMode) {
+            case 1 -> "Fast";
+            case 2 -> "Smart";
+            default -> "Keine Session / unbekannt";
+        };
     }
 
     double wattsPerAmp() {

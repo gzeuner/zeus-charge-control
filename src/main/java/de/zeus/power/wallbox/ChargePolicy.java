@@ -9,9 +9,13 @@ final class ChargePolicy {
     private Long lowSince;
     private Double availableWatts;
     private String diagnostics = "";
+    private double rawTargetAmps;
+    private String clampReason = "none";
 
     Double availableWatts() { return availableWatts; }
     String diagnostics() { return diagnostics; }
+    double rawTargetAmps() { return rawTargetAmps; }
+    String clampReason() { return clampReason; }
 
     ChargePolicy(WallboxSettings settings) { this(settings, 4600); }
     ChargePolicy(WallboxSettings settings, double inverterMaxWatts) {
@@ -44,11 +48,12 @@ final class ChargePolicy {
         double soc = battery != null && battery.usoc() != null ? battery.usoc() : Double.NaN;
         double grid = battery != null && battery.gridFeedInW() != null ? battery.gridFeedInW() : Double.NaN;
         double pvSurplus = Double.isFinite(pv) && Double.isFinite(houseWithoutEv) ? pv - houseWithoutEv : Double.NaN;
-        double discharge = settings.mode() == WallboxSettings.Mode.SMART && battery != null && battery.aboveReserve(settings)
+        var mode = settings.effectiveMode();
+        double discharge = mode == WallboxSettings.Mode.SMART && battery != null && battery.aboveReserve(settings)
                 && Double.isFinite(pac) ? Math.min(Math.max(0, pac), inverterMaxWatts) : 0;
-        String batteryLimit = settings.mode() == WallboxSettings.Mode.SMART
+        String batteryLimit = mode == WallboxSettings.Mode.SMART
                 ? " [battery-discharge-limit=" + inverterMaxWatts + "W, allowed=" + round(discharge) + "W]" : "";
-        double rawAvailable = switch (settings.mode()) {
+        double rawAvailable = switch (mode) {
             case POWER -> Double.NaN;
             case SMART -> Double.isFinite(pvSurplus) ? pvSurplus + discharge : Double.NaN;
             case ECO -> pvSurplus;
@@ -56,14 +61,17 @@ final class ChargePolicy {
         double wattsPerAmp = settings.phases() * (double) settings.voltage();
         float hardwareCeiling = charger == null ? 0 : charger.maxAmps(settings.minCurrentA(), settings.maxCurrentA());
         double ceiling = Math.min(settings.maxCurrentA(), hardwareCeiling);
-        double rawAmps = settings.mode() == WallboxSettings.Mode.POWER ? ceiling
+        double rawAmps = mode == WallboxSettings.Mode.POWER ? settings.maxCurrentA()
                 : Double.isFinite(rawAvailable) ? rawAvailable / wattsPerAmp : Double.NaN;
+        rawTargetAmps = rawAmps;
+        clampReason = "none";
         double amps = rawAmps;
         StringBuilder applied = new StringBuilder("[hardware/config max=" + ceiling + "A, wallbox.min-current-a="
                 + settings.minCurrentA() + "A, wallbox.max-current-a=" + settings.maxCurrentA() + "A]")
                 .append(batteryLimit);
-        if (settings.mode() != WallboxSettings.Mode.POWER && Double.isFinite(amps) && amps > ceiling) {
+        if (Double.isFinite(amps) && amps > ceiling) {
             amps = ceiling;
+            clampReason = "charger-or-wallbox-max";
             applied.append(" [max-current=" ).append(ceiling).append("A]");
         }
         if (settings.gridLimitWatts() > 0) {
@@ -75,7 +83,10 @@ final class ChargePolicy {
                 double siteImportWithoutEv = houseWithoutEv - pv - batterySupply;
                 double gridBudgetForEv = Math.max(0, settings.gridLimitWatts() - siteImportWithoutEv);
                 double cap = gridBudgetForEv / wattsPerAmp;
-                if (amps > cap) amps = cap;
+                if (amps > cap) {
+                    amps = cap;
+                    clampReason = "wallbox.grid-limit-watts";
+                }
                 applied.append(" [wallbox.grid-limit-watts=" ).append(settings.gridLimitWatts())
                         .append("W, cap=" ).append(round(cap)).append("A]");
             }
@@ -90,14 +101,18 @@ final class ChargePolicy {
             diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, rawAmps, applied, 0, houseRule);
             return pause();
         }
-        if (settings.mode() != WallboxSettings.Mode.POWER || settings.gridLimitWatts() > 0) {
+        if (mode != WallboxSettings.Mode.POWER || settings.gridLimitWatts() > 0) {
             double rounded = Math.floor(amps * 10.0 + 1e-9) / 10.0;
-            if (rounded != amps) applied.append(" [round-down-0.1A]");
+            if (rounded != amps) {
+                applied.append(" [round-down-0.1A]");
+                if ("none".equals(clampReason)) clampReason = "rounding";
+            }
             amps = rounded;
         }
         if (amps < settings.minCurrentA()) {
+            clampReason = "below-minimum-current";
             availableWatts = rawAvailable;
-            if (settings.mode() == WallboxSettings.Mode.POWER) {
+            if (mode == WallboxSettings.Mode.POWER) {
                 diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, rawAmps, applied, 0, houseRule);
                 return pause();
             }
@@ -110,15 +125,17 @@ final class ChargePolicy {
             // Keep the existing setpoint during the stop hysteresis where possible.
             float held = charger.appliedAmps() >= settings.minCurrentA()
                     ? Math.min(charger.appliedAmps(), (float) ceiling) : 0;
+            if (held > 0) clampReason = "stop-hysteresis";
             diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, rawAmps,
                     applied.append(" [below-min=" ).append(settings.minCurrentA()).append("A, hysteresis]").toString(), held, houseRule);
             return held;
         }
         lowSince = null;
-        if (settings.mode() != WallboxSettings.Mode.POWER && charger.appliedAmps() < settings.minCurrentA()) {
+        if (mode != WallboxSettings.Mode.POWER && charger.appliedAmps() < settings.minCurrentA()) {
             if (surplusSince == null) surplusSince = nowNanos;
             long hold = TimeUnit.SECONDS.toNanos(settings.resumeHoldSeconds());
             if (nowNanos - surplusSince < hold) {
+                clampReason = "resume-hysteresis";
                 diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, rawAmps,
                         applied.append(" [resume-hold=" ).append(settings.resumeHoldSeconds()).append("s]").toString(), 0, houseRule);
                 return 0;
@@ -126,7 +143,7 @@ final class ChargePolicy {
         } else {
             surplusSince = null;
         }
-        availableWatts = settings.mode() == WallboxSettings.Mode.POWER ? null
+        availableWatts = mode == WallboxSettings.Mode.POWER ? null
                 : Math.max(0, rawAvailable);
         diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, rawAmps, applied, amps, houseRule);
         return (float) amps;
@@ -134,7 +151,7 @@ final class ChargePolicy {
 
     private String diagnostic(double pv, double house, double houseWithoutEv, double evW, double pac,
                               double soc, double grid, double rawAmps, CharSequence limits, double target, String houseRule) {
-        return "mode=" + settings.mode() + " PV=" + round(pv) + "W house=" + round(house)
+        return "mode=" + settings.effectiveMode() + " PV=" + round(pv) + "W house=" + round(house)
                 + "W houseWithoutWallbox=" + round(houseWithoutEv) + "W wallbox=" + round(evW)
                 + "W battery=" + round(pac) + "W USOC=" + round(soc) + "% grid=" + round(grid)
                 + "W raw=" + round(rawAmps) + "A " + houseRule + " phases=" + settings.phases()

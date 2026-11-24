@@ -87,8 +87,9 @@ final class InchModbusClient implements AutoCloseable {
         ByteBuffer phases = readInputs(8, 20);
         long lifetime = readInputs(48, 4).getLong();
         int mode = readInputs(53, 1).getShort();
+        int hardwarePhases = readInputs(1023, 1).getShort();
         float installed = readInputs(1028, 2).getFloat();
-        return new ChargerReadings(connector.getShort(), connector.getShort(), connector.getFloat(),
+        return new ChargerReadings(connector.getShort(), connector.getShort(), hardwarePhases, connector.getFloat(),
                 connector.getFloat(), phase(phases, 0), phase(phases, 1), phase(phases, 2),
                 phases.getFloat(36), lifetime, mode, installed);
     }

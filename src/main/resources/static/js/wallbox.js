@@ -12,6 +12,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const reserve = byId("wbReserve");
   const states = labels.states.split("|");
   const phases = labels.phases.split("|");
+  const modeDescriptions = labels.modeDescriptions.split("|");
   let settings,
     polling,
     interval,
@@ -52,6 +53,12 @@ document.addEventListener("DOMContentLoaded", () => {
       min.value = settings.smartMinUsoc;
       reserve.value = settings.smartReservePercent;
     }
+    text(
+      "wbActiveMode",
+      data.activeMode
+        ? `${data.activeMode} (${data.modeSource || "config"})`
+        : labels.waiting,
+    );
     byId("wbLive").hidden = !settings.enabled;
     const state = byId("wbState");
     state.textContent =
@@ -95,10 +102,14 @@ document.addEventListener("DOMContentLoaded", () => {
             .join(" / ")
         : "–",
       target:
-        sample?.targetAmps === 0
+        data.lastWrittenTargetAmps === 0
           ? "0 A · " + labels.paused
-          : quantity(sample?.targetAmps, "A", 1),
+          : quantity(data.lastWrittenTargetAmps ?? sample?.targetAmps, "A", 1),
+      reported: quantity(data.boxReportedAppliedAmps, "A", 1),
       phaseUse: phases[ev?.phases] || "–",
+      hardwarePhases: quantity(ev?.hardwarePhases, "phases"),
+      evMax: quantity(ev?.evMaxAmps, "A", 1),
+      boxMax: quantity(ev?.installedMaxAmps, "A", 1),
       available:
         settings.mode === "POWER"
           ? labels.ignored
@@ -108,7 +119,9 @@ document.addEventListener("DOMContentLoaded", () => {
       grid: quantity(battery?.GridFeedIn_W, "W"),
       soc: quantity(battery?.USOC, "%"),
       batteryPower: quantity(battery?.Pac_total_W, "W"),
-      rawMode: ev ? String(ev.selectedMode) : "–",
+      rawMode: ev
+        ? `${ev.selectedMode} (${modeDescriptions[ev.selectedMode] || modeDescriptions[0]})`
+        : "–",
     };
     for (const el of panel.querySelectorAll("[data-metric]")) {
       el.textContent = values[el.dataset.metric];

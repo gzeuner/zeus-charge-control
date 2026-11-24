@@ -6,7 +6,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 
 @ConfigurationProperties("wallbox")
 record WallboxSettings(@DefaultValue("wallbox.local") String host, @DefaultValue("502") int port,
-                       @DefaultValue("1") int unitId, @DefaultValue("ECO") Mode mode,
+                       @DefaultValue("1") int unitId, @DefaultValue("POWER") String mode,
                        @DefaultValue("8000") int pollIntervalMs, @DefaultValue("20") int smartMinUsoc,
                        @DefaultValue("5") int smartReservePercent, @DefaultValue("16") int resumeHoldSeconds,
                        @DefaultValue("true") boolean consumptionIncludesWallbox,
@@ -18,7 +18,24 @@ record WallboxSettings(@DefaultValue("wallbox.local") String host, @DefaultValue
 
     enum Mode { ECO, SMART, POWER }
 
+    static Mode parseMode(String value) {
+        if (value == null) return null;
+        try { return Mode.valueOf(value.trim().toUpperCase(java.util.Locale.ROOT)); }
+        catch (IllegalArgumentException ex) { return null; }
+    }
+
+    Mode effectiveMode() {
+        Mode parsed = parseMode(mode);
+        return parsed == null ? Mode.POWER : parsed;
+    }
+
     WallboxSettings(String host, int port, int unitId, Mode mode, int pollIntervalMs, int smartMinUsoc,
+                    int smartReservePercent, int resumeHoldSeconds, boolean consumptionIncludesWallbox) {
+        this(host, port, unitId, mode.name(), pollIntervalMs, smartMinUsoc, smartReservePercent, resumeHoldSeconds,
+                consumptionIncludesWallbox, 2000, 2500, 3, 3, 230, 6, 16, 0);
+    }
+
+    WallboxSettings(String host, int port, int unitId, String mode, int pollIntervalMs, int smartMinUsoc,
                     int smartReservePercent, int resumeHoldSeconds, boolean consumptionIncludesWallbox) {
         this(host, port, unitId, mode, pollIntervalMs, smartMinUsoc, smartReservePercent, resumeHoldSeconds,
                 consumptionIncludesWallbox, 2000, 2500, 3, 3, 230, 6, 16, 0);
@@ -27,13 +44,30 @@ record WallboxSettings(@DefaultValue("wallbox.local") String host, @DefaultValue
     WallboxSettings(String host, int port, int unitId, Mode mode, int pollIntervalMs, int smartMinUsoc,
                     int smartReservePercent, int resumeHoldSeconds, boolean consumptionIncludesWallbox,
                     int connectTimeoutMs, int readTimeoutMs, int maxErrorsBeforeReconnect) {
+        this(host, port, unitId, mode.name(), pollIntervalMs, smartMinUsoc, smartReservePercent, resumeHoldSeconds,
+                consumptionIncludesWallbox, connectTimeoutMs, readTimeoutMs, maxErrorsBeforeReconnect,
+                3, 230, 6, 16, 0);
+    }
+
+    WallboxSettings(String host, int port, int unitId, String mode, int pollIntervalMs, int smartMinUsoc,
+                    int smartReservePercent, int resumeHoldSeconds, boolean consumptionIncludesWallbox,
+                    int connectTimeoutMs, int readTimeoutMs, int maxErrorsBeforeReconnect) {
         this(host, port, unitId, mode, pollIntervalMs, smartMinUsoc, smartReservePercent, resumeHoldSeconds,
                 consumptionIncludesWallbox, connectTimeoutMs, readTimeoutMs, maxErrorsBeforeReconnect,
                 3, 230, 6, 16, 0);
     }
 
+    WallboxSettings(String host, int port, int unitId, Mode mode, int pollIntervalMs, int smartMinUsoc,
+                    int smartReservePercent, int resumeHoldSeconds, boolean consumptionIncludesWallbox,
+                    int connectTimeoutMs, int readTimeoutMs, int maxErrorsBeforeReconnect,
+                    int phases, int voltage, int minCurrentA, int maxCurrentA, int gridLimitWatts) {
+        this(host, port, unitId, mode.name(), pollIntervalMs, smartMinUsoc, smartReservePercent,
+                resumeHoldSeconds, consumptionIncludesWallbox, connectTimeoutMs, readTimeoutMs,
+                maxErrorsBeforeReconnect, phases, voltage, minCurrentA, maxCurrentA, gridLimitWatts);
+    }
+
     WallboxSettings withPreferences(WallboxPreferences prefs) {
-        return new WallboxSettings(host, port, unitId, prefs.mode(), pollIntervalMs, prefs.smartMinUsoc(),
+        return new WallboxSettings(host, port, unitId, prefs.mode().name(), pollIntervalMs, prefs.smartMinUsoc(),
                 prefs.smartReservePercent(), resumeHoldSeconds, consumptionIncludesWallbox,
                 connectTimeoutMs, readTimeoutMs, maxErrorsBeforeReconnect, phases, voltage,
                 minCurrentA, maxCurrentA, gridLimitWatts);
@@ -49,7 +83,7 @@ record WallboxSettings(@DefaultValue("wallbox.local") String host, @DefaultValue
         if (host == null || host.isBlank() || host.trim().matches("<.*>")) return "host is empty or still a placeholder";
         if (port < 1 || port > 65535) return "port must be between 1 and 65535";
         if (unitId < 0 || unitId > 255) return "unit-id must be between 0 and 255";
-        if (mode == null || pollIntervalMs <= 0 || pollIntervalMs > 8000
+        if (pollIntervalMs <= 0 || pollIntervalMs > 8000
                 || smartMinUsoc < 0 || smartMinUsoc > 100 || smartReservePercent < 0
                 || smartReservePercent > 100 || resumeHoldSeconds < 0
                 || connectTimeoutMs < 1 || connectTimeoutMs > 8000

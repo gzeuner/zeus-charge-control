@@ -14,7 +14,7 @@ class ChargePolicyTest {
     }
 
     private static ChargerReadings charger(int phases, float evKw, float evLimit, float installed) {
-        return new ChargerReadings(4, phases, evLimit, 0, new ChargerReadings.Phase(220, 0, 0),
+        return new ChargerReadings(4, phases, 3, evLimit, 0, new ChargerReadings.Phase(220, 0, 0),
                 new ChargerReadings.Phase(230, 0, 0), new ChargerReadings.Phase(240, 0, 0),
                 evKw, 12345, 1, installed);
     }
@@ -89,7 +89,7 @@ class ChargePolicyTest {
         var ev = charger(0, 0, 16, 16);
         for (int state = 0; state <= 11; state++) {
             for (int mode : new int[]{1, 2}) {
-                var reading = new ChargerReadings(state, 0, 16, 0, ev.l1(), ev.l2(), ev.l3(),
+                var reading = new ChargerReadings(state, 0, 3, 16, 0, ev.l1(), ev.l2(), ev.l3(),
                         0, 0, mode, 16);
                 boolean canCharge = switch (state) {
                     case 2, 3, 4, 5, 6, 9 -> true;
@@ -136,6 +136,9 @@ class ChargePolicyTest {
         var limited = new ChargePolicy(base);
         assertEquals(6.6f, limited.target(ev, battery(0, 0, 0, 90, 5), 0), 0.01);
         assertEquals(0, limited.target(ev, battery(0, 2000, 0, 90, 5), 0));
+
+        assertEquals(6.032f, policy(POWER, true, 0)
+                .target(charger(0, 0, 16, 6.032f), null, 0), 0.001f);
     }
 
     @Test
@@ -162,7 +165,7 @@ class ChargePolicyTest {
     @Test
     void stopWaitsForHysteresisButDoesNotStartBelowMinimum() {
         var eco = policy(ECO, true, 16);
-        var active = new ChargerReadings(4, 3, 16, 10, new ChargerReadings.Phase(230, 0, 0),
+        var active = new ChargerReadings(4, 3, 3, 16, 10, new ChargerReadings.Phase(230, 0, 0),
                 new ChargerReadings.Phase(230, 0, 0), new ChargerReadings.Phase(230, 0, 0),
                 4, 0, 1, 16);
         long sec = TimeUnit.SECONDS.toNanos(1);

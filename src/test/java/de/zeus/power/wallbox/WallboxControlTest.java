@@ -5,6 +5,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.restclient.RestTemplateBuilder;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.io.DataInputStream;
 import java.io.IOException;
@@ -23,6 +25,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 class WallboxControlTest {
     @Test
@@ -38,22 +44,39 @@ class WallboxControlTest {
                             "wallbox.port=" + server.getLocalPort(), "battery.url=http://127.0.0.1:1");
             runner.run(context -> {
                 var control = context.getBean(WallboxControl.class);
+                MockMvc mvc = MockMvcBuilders.standaloneSetup(new WallboxController(control)).build();
                 assertFalse(control.status().settings().enabled());
                 assertThrows(IllegalArgumentException.class, () -> control.update(Map.of("smartMinUsoc", 101)));
                 assertThrows(IllegalArgumentException.class, () -> control.update(Map.of("smartReservePercent", 2.5)));
                 assertEquals(initial, Files.readString(config));
-                control.update(Map.of("enabled", true, "mode", "POWER"));
+                mvc.perform(post("/wallbox/settings").contentType("application/json")
+                                .content("{\"enabled\":true,\"mode\":\"POWER\"}"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.settings.mode").value("POWER"));
                 try (var peer = server.accept()) {
                     expectWrite(peer, 0, false);
                     snapshot(peer, 1, 16);
                     expectWrite(peer, 16, false);
                     org.awaitility.Awaitility.await().until(() -> control.status().sample() != null);
                     assertEquals(16f, control.status().sample().targetAmps());
+                    assertEquals(WallboxSettings.Mode.POWER, control.status().activeMode());
+                    assertEquals(16f, control.status().lastWrittenTargetAmps());
                     assertNotNull(control.status().lastAccess());
+                    mvc.perform(get("/wallbox/status"))
+                            .andExpect(status().isOk())
+                            .andExpect(jsonPath("$.activeMode").value("POWER"))
+                            .andExpect(jsonPath("$.lastWrittenTargetAmps").value(16.0));
                     control.update(Map.of("mode", "SMART", "smartMinUsoc", 40, "smartReservePercent", 8));
                     // Socket timeout is shorter than the regular 8 s polling period.
-                    snapshot(peer, 1, 16);
+                    snapshot(peer, 1, 16, 16);
                     expectWrite(peer, 0, false);
+                    org.awaitility.Awaitility.await().until(() -> control.status().activeMode() == WallboxSettings.Mode.SMART
+                            && control.status().sample() != null && control.status().sample().targetAmps() == 0f);
+                    mvc.perform(get("/wallbox/status"))
+                            .andExpect(status().isOk())
+                            .andExpect(jsonPath("$.activeMode").value("SMART"))
+                            .andExpect(jsonPath("$.lastWrittenTargetAmps").value(0.0))
+                            .andExpect(jsonPath("$.boxReportedAppliedAmps").value(16.0));
                     control.update(Map.of("enabled", false));
                     expectWrite(peer, 0, false);
                     assertEquals(-1, peer.getInputStream().read());
@@ -73,11 +96,12 @@ class WallboxControlTest {
         var runner = new ApplicationContextRunner().withUserConfiguration(WallboxControl.class)
                 .withBean(RestTemplateBuilder.class, RestTemplateBuilder::new)
                 .withPropertyValues("wallbox.config-file=" + temp.resolve("application.properties"),
-                        "wallbox.host=127.0.0.1", "battery.url=http://127.0.0.1:1");
+                        "wallbox.host=localhost", "wallbox.mode=FAST", "battery.url=http://localhost:1");
         runner.run(context -> {
             WallboxControl control = context.getBean(WallboxControl.class);
             assertFalse(control.status().featureEnabled());
             assertFalse(control.status().settings().enabled());
+            assertEquals(WallboxSettings.Mode.POWER, control.status().settings().mode());
             assertThrows(IllegalArgumentException.class, () -> control.update(Map.of("enabled", true)));
         });
     }
@@ -122,11 +146,11 @@ class WallboxControlTest {
                             expectWrite(peer, 0, false);
                             snapshot(peer, 1, 16);
                             expectWrite(peer, 16, true);
-                            snapshot(peer, 1, 12); // Exception 12 triggers a fresh limit read and retry.
-                            expectWrite(peer, 12, false);
-                            snapshot(peer, 1, 12);
-                            expectWrite(peer, 12, false); // IR 4 is still zero during EV detection.
-                            snapshot(peer, 1, 12);
+                            snapshot(peer, 1, 6.032f); // Exception 12 refreshes the IR 1028 ceiling.
+                            expectWrite(peer, 6.032f, false);
+                            snapshot(peer, 1, 6.032f, 6.032f);
+                            expectWrite(peer, 6.0f, false); // ECO rounds the 6.032 A box ceiling down to 0.1 A.
+                            snapshot(peer, 1, 6.032f, 6.0f);
                             expectWrite(peer, 0, false);  // HTTP 503 must clear the previous target.
                             assertEquals(3, requests.get());
                         }
@@ -149,6 +173,10 @@ class WallboxControlTest {
                     snapshot(peer, 255, 16);
                     var reading = task.get(4, TimeUnit.SECONDS);
                     assertEquals(4, reading.status());
+                    assertEquals(0, reading.phases());
+                    assertEquals("3 (L1-L3)", reading.phaseDescription());
+                    assertEquals(3, reading.hardwarePhases());
+                    assertEquals("Fast", reading.modeDescription());
                     assertEquals(16, reading.installedMaxAmps());
                     assertEquals(16, reading.evMaxAmps());
                     assertFalse(reading.enabled());
@@ -270,15 +298,20 @@ class WallboxControlTest {
     }
 
     private static void snapshot(Socket socket, int unit, float installed) throws IOException {
-        for (int address : new int[]{0, 8, 48, 53, 1028}) {
+        snapshot(socket, unit, installed, 0);
+    }
+
+    private static void snapshot(Socket socket, int unit, float installed, float reportedTarget) throws IOException {
+        for (int address : new int[]{0, 8, 48, 53, 1023, 1028}) {
             Request req = request(socket, unit, 4);
             assertEquals(address, req.data.getShort());
             ByteBuffer values = switch (address) {
-                case 0 -> ByteBuffer.allocate(12).putShort((short) 4).putShort((short) 0).putFloat(16).putFloat(0);
+                case 0 -> ByteBuffer.allocate(12).putShort((short) 4).putShort((short) 0).putFloat(16).putFloat(reportedTarget);
                 case 8 -> ByteBuffer.allocate(40).putFloat(230).putFloat(230).putFloat(230)
                         .putFloat(1).putFloat(2).putFloat(3).putFloat(.25f).putFloat(.5f).putFloat(.5f).putFloat(1.25f);
                 case 48 -> ByteBuffer.allocate(8).putLong(9_000_000_000L);
                 case 53 -> ByteBuffer.allocate(2).putShort((short) 1);
+                case 1023 -> ByteBuffer.allocate(2).putShort((short) 3);
                 case 1028 -> ByteBuffer.allocate(4).putFloat(installed);
                 default -> throw new AssertionError(address);
             };

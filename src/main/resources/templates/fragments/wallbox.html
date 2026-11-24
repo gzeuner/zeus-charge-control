@@ -10,6 +10,7 @@
       th:data-settings-url="@{/wallbox/settings}"
       th:data-states="#{wallbox.states}"
       th:data-phases="#{wallbox.phases}"
+      th:data-mode-descriptions="#{wallbox.modeDescriptions}"
       th:data-active="#{wallbox.active}"
       th:data-off="#{wallbox.off}"
       th:data-disabled="#{wallbox.disabled}"
@@ -82,6 +83,7 @@
               </button>
             </div>
             <p id="wbModeHelp" class="muted"></p>
+            <p class="muted"><span th:text="#{wallbox.activeMode}"></span>: <strong id="wbActiveMode">–</strong></p>
           </div>
           <form id="wbSmart" hidden>
             <label
@@ -132,6 +134,18 @@
                 <dd data-metric="target">–</dd>
               </div>
               <div>
+                <dt><span th:text="#{wallbox.reported}"></span></dt>
+                <dd data-metric="reported">–</dd>
+              </div>
+              <div>
+                <dt><span th:text="#{wallbox.evMax}"></span></dt>
+                <dd data-metric="evMax">–</dd>
+              </div>
+              <div>
+                <dt><span th:text="#{wallbox.boxMax}"></span></dt>
+                <dd data-metric="boxMax">–</dd>
+              </div>
+              <div>
                 <dt><span th:text="#{wallbox.phaseUse}"></span></dt>
                 <dd data-metric="phaseUse">–</dd>
               </div>
@@ -180,6 +194,10 @@
             <div>
               <dt><span th:text="#{wallbox.rawMode}"></span></dt>
               <dd data-metric="rawMode">–</dd>
+            </div>
+            <div>
+              <dt><span th:text="#{wallbox.hardwarePhases}"></span></dt>
+              <dd data-metric="hardwarePhases">–</dd>
             </div>
           </dl>
         </div>

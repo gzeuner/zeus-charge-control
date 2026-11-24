@@ -11,6 +11,7 @@ import org.springframework.boot.http.client.ClientHttpRequestFactoryBuilder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.core.env.Environment;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -47,6 +48,15 @@ class WallboxControl {
     private Double lastAvailableWatts;
     // Only the single polling thread accesses the policy and session state.
     private WallboxPreferences applied;
+    private volatile WallboxSettings.Mode activeMode;
+    private volatile String modeSource = "config";
+    private volatile Float lastWrittenTargetAmps;
+    private Instant lastReadbackLog;
+    private Instant lastDeviationLog;
+    private int consecutiveTargetDeviations;
+    private Instant lastTargetLog;
+    private Float lastLoggedTargetAmps;
+    private WallboxSettings.Mode lastLoggedMode;
     private boolean initialPauseRequired = true;
     private ChargePolicy policy;
     private final InchModbusClient charger;
@@ -68,19 +78,34 @@ class WallboxControl {
                    @Value("${battery.url:}") String batteryUrl,
                    @Value("${battery.authToken:}") String token,
                    @Value("${wallbox.enabled:false}") boolean enabled,
-                   @Value("${wallbox.config-file:./config/application.properties}") String configFile) throws IOException {
+                   @Value("${wallbox.config-file:./config/application.properties}") String configFile,
+                   Environment environment) throws IOException {
         this.settings = settings;
         this.propertyEnabled = enabled;
         this.featureEnabled = enabled;
         config = new WallboxConfigFile(Path.of(configFile));
-        WallboxPreferences loaded = config.read(new WallboxPreferences(enabled, settings.mode(), settings.smartMinUsoc(),
-                settings.smartReservePercent()));
+        String environmentMode = environment.getProperty("WALLBOX_MODE");
+        var configuredMode = WallboxModeResolver.resolve(null, environmentMode, settings.mode());
+        WallboxPreferences defaults = new WallboxPreferences(enabled, configuredMode.mode(), settings.smartMinUsoc(),
+                settings.smartReservePercent());
+        WallboxConfigFile.Loaded loaded = config.read(defaults);
+        var resolution = loaded.hasGuiBlock()
+                ? WallboxModeResolver.resolve(loaded.persistedMode(), environmentMode, settings.mode())
+                : configuredMode;
+        preferences = loaded.preferences().mode() == resolution.mode() ? loaded.preferences()
+                : new WallboxPreferences(loaded.preferences().enabled(), resolution.mode(),
+                        loaded.preferences().smartMinUsoc(), loaded.preferences().smartReservePercent());
+        modeSource = resolution.source();
         if (enabled && settings.validationError() != null) {
             LOG.error("Wallbox nicht gestartet: {}", settings.validationError());
             this.featureEnabled = false;
         }
-        preferences = this.featureEnabled ? loaded : new WallboxPreferences(false, loaded.mode(), loaded.smartMinUsoc(), loaded.smartReservePercent());
+        preferences = this.featureEnabled ? preferences : new WallboxPreferences(false, preferences.mode(),
+                preferences.smartMinUsoc(), preferences.smartReservePercent());
         charger = this.featureEnabled ? new InchModbusClient(settings) : null;
+        LOG.info("Effective wallbox settings: mode={} source={} minimum={}A maximum={}A gridLimit={}W phases={} voltage={}V",
+                preferences.mode(), modeSource, settings.minCurrentA(), settings.maxCurrentA(),
+                settings.gridLimitWatts(), settings.phases(), settings.voltage());
 
         String base = batteryUrl.trim();
         if (base.isEmpty()) {
@@ -105,7 +130,8 @@ class WallboxControl {
     record Sample(ChargerReadings charger, SonnenReadings battery, Float targetAmps, Double availableWatts,
                   boolean connected, String error) {}
 
-    record Status(WallboxPreferences settings, int pollIntervalMs, Sample sample, Instant lastAccess,
+    record Status(WallboxPreferences settings, WallboxSettings.Mode activeMode, String modeSource,
+                  Float lastWrittenTargetAmps, Float boxReportedAppliedAmps, int pollIntervalMs, Sample sample, Instant lastAccess,
                   Instant lastSuccessfulRead, InchModbusClient.ConnectionState modbusState,
                   String modbusError, boolean watchdogPossible, boolean pauseUnconfirmed, boolean featureEnabled) {}
 
@@ -113,7 +139,9 @@ class WallboxControl {
         Instant last = charger == null ? null : charger.lastAccess();
         Instant reference = last == null ? monitoringSince : last;
         boolean fallback = reference != null && !Instant.now().isBefore(reference.plusSeconds(10));
-        return new Status(preferences, settings.pollIntervalMs(), sample, last,
+        ChargerReadings readings = sample != null && sample.charger() != null ? sample.charger() : lastReadings;
+        return new Status(preferences, activeMode, modeSource, lastWrittenTargetAmps,
+                readings == null ? null : readings.appliedAmps(), settings.pollIntervalMs(), sample, last,
                 charger == null ? null : charger.lastSuccessfulRead(),
                 charger == null ? null : charger.connectionState(), charger == null ? null : charger.lastError(),
                 fallback, unconfirmedPause != null, featureEnabled);
@@ -125,8 +153,14 @@ class WallboxControl {
         if (!featureEnabled && next.enabled()) throw new IllegalArgumentException("Wallbox-Steuerung ist durch wallbox.enabled=false deaktiviert");
         if (next.equals(preferences)) return status();
         config.save(next);
+        WallboxSettings.Mode oldMode = preferences.mode();
+        modeSource = "UI";
+        if (oldMode != next.mode()) {
+            LOG.info("Wallbox mode changed: {} -> {} (source=UI)", oldMode, next.mode());
+        }
         boolean wasEnabled = preferences.enabled();
         preferences = next;
+        if (!next.enabled()) activeMode = null;
         sample = null;
         if (periodic != null) periodic.cancel(false);
         if (next.enabled()) {
@@ -207,6 +241,7 @@ class WallboxControl {
         if (applied != active) {
             policy = new ChargePolicy(settings.withPreferences(active), inverterMaxWatts);
             applied = active;
+            activeMode = active.mode();
         }
         long started = System.nanoTime();
         SonnenReadings battery = null;
@@ -217,6 +252,7 @@ class WallboxControl {
             ev = charger.read();
             lastReadings = ev;
             lastBatteryReadings = battery;
+            logReadback(ev);
             long now = System.nanoTime();
             if (!ev.sessionActive()) {
                 sessionStart = null;
@@ -225,11 +261,12 @@ class WallboxControl {
             }
             boolean detecting = sessionStart != null && now - sessionStart < TimeUnit.SECONDS.toNanos(45);
             float target = policy.target(ev, battery, now, kostal == null ? null : kostal.usablePvPowerW());
+            logTarget(active.mode(), target);
             LOG.debug("Charger {} lifetime={} kWh on={} EV detection={} Sonnen={}",
                     ev, ev.lifetimeMwh() / 1e6, ev.enabled(), detecting, battery);
             Instant ir53Now = Instant.now();
             if (lastIr53Info == null || !ir53Now.isBefore(lastIr53Info.plusSeconds(600))) {
-                LOG.info("Wallbox diagnostic raw IR 53={}", ev.selectedMode());
+                LOG.info("Wallbox diagnostic IR 53={} ({})", ev.selectedMode(), ev.modeDescription());
                 lastIr53Info = ir53Now;
             }
             if (!loggedMeterCheck && ev.powerKw() > 0 && battery != null && battery.hasPowerReadings()
@@ -244,6 +281,7 @@ class WallboxControl {
                     policy.diagnostics(), ev.installedMaxAmps(), ev.evMaxAmps(), ev.appliedAmps());
             if (stopping || active != preferences) return;
             var write = writeTarget(target, active, started);
+            lastWrittenTargetAmps = write.amps();
             lastAvailableWatts = policy.availableWatts();
             result = new Sample(ev, battery, write.amps(), lastAvailableWatts, true, write.warning());
         } catch (IOException | RuntimeException ex) {
@@ -261,6 +299,39 @@ class WallboxControl {
         } catch (RestClientException | IllegalArgumentException ex) {
             LOG.warn("Wallbox Sonnen status unavailable: {}", ex.getMessage());
             return null;
+        }
+    }
+
+    private void logTarget(WallboxSettings.Mode mode, float target) {
+        Instant now = Instant.now();
+        if (lastLoggedTargetAmps == null || lastLoggedMode != mode || Math.abs(lastLoggedTargetAmps - target) > 0.001
+                || lastTargetLog == null || !now.isBefore(lastTargetLog.plusSeconds(60))) {
+            LOG.info("Wallbox setpoint: mode={} rawTargetA={} limits=[{}] finalA={} clampReason={}",
+                    mode, String.format(java.util.Locale.ROOT, "%.3f", policy.rawTargetAmps()),
+                    policy.diagnostics(), String.format(java.util.Locale.ROOT, "%.3f", target), policy.clampReason());
+            lastLoggedTargetAmps = target;
+            lastLoggedMode = mode;
+            lastTargetLog = now;
+        }
+    }
+
+    private void logReadback(ChargerReadings readings) {
+        if (lastWrittenTargetAmps == null) return;
+        Instant now = Instant.now();
+        if (lastReadbackLog == null || !now.isBefore(lastReadbackLog.plusSeconds(60))) {
+            LOG.info("Wallbox readback: lastWrittenHR8={}A IR4Applied={}A IR1028BoxLimit={}A IR2EvMax={}A IR1Phases={} IR1023HardwarePhases={} status={}",
+                    lastWrittenTargetAmps, readings.appliedAmps(), readings.installedMaxAmps(),
+                    readings.evMaxAmps(), readings.phases(), readings.hardwarePhases(), readings.status());
+            lastReadbackLog = now;
+        }
+        boolean differs = Float.isFinite(readings.appliedAmps())
+                && Math.abs(lastWrittenTargetAmps - readings.appliedAmps()) > 0.15f;
+        consecutiveTargetDeviations = differs ? consecutiveTargetDeviations + 1 : 0;
+        if (consecutiveTargetDeviations >= 2
+                && (lastDeviationLog == null || !now.isBefore(lastDeviationLog.plusSeconds(60)))) {
+            LOG.info("Box begrenzt (Load Guard/Lastplan/Custom max): HR8={}A IR4={}A IR1028={}A IR2={}A",
+                    lastWrittenTargetAmps, readings.appliedAmps(), readings.installedMaxAmps(), readings.evMaxAmps());
+            lastDeviationLog = now;
         }
     }
 
@@ -287,8 +358,9 @@ class WallboxControl {
             if (retry == 0) {
                 policy.pause();
             }
-            LOG.warn("Modbus {} rejected HR 8={} A (slave exception {}). Refreshed ceiling={} A, retry={} A.",
-                    ex.getClass().getSimpleName(), target, ex.code(), max, retry);
+            LOG.warn("Current setpoint too high: Modbus exception 12 for HR 8={} A. IR 1028 box ceiling={} A, "
+                            + "IR 2 EV max={} A, effective ceiling={} A, retry={} A.",
+                    target, fresh.installedMaxAmps(), fresh.evMaxAmps(), max, retry);
             checkPositiveWrite(retry, active, started);
             charger.setCurrent(retry);
             return new Write(retry, ex.getMessage());
