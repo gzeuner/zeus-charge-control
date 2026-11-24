@@ -37,6 +37,7 @@ final class InchModbusClient implements AutoCloseable {
     private volatile ConnectionState connectionState = ConnectionState.RECONNECTING;
     private volatile String lastError;
     private volatile String recovery;
+    private volatile String lastWriteResponse;
 
     InchModbusClient(WallboxSettings settings) {
         this.settings = settings;
@@ -48,6 +49,7 @@ final class InchModbusClient implements AutoCloseable {
     ConnectionState connectionState() { return connectionState; }
     String lastError() { return lastError; }
     String recovery() { return recovery; }
+    String lastWriteResponse() { return lastWriteResponse; }
 
     ChargerReadings read() throws IOException {
         recovery = null;
@@ -131,6 +133,7 @@ final class InchModbusClient implements AutoCloseable {
             lastAccess = Instant.now();
             recordSuccess();
         } catch (IOException failure) {
+            lastWriteResponse = writeFailure("HR 8", failure);
             recordFailure(failure);
             throw failure;
         }
@@ -161,6 +164,7 @@ final class InchModbusClient implements AutoCloseable {
             lastAccess = Instant.now();
             recordSuccess();
         } catch (IOException failure) {
+            lastWriteResponse = writeFailure("HR 2", failure);
             recordFailure(failure);
             throw failure;
         }
@@ -174,7 +178,8 @@ final class InchModbusClient implements AutoCloseable {
         if (echo.remaining() != 4 || echo.getShort() != 8 || echo.getShort() != 2) {
             throw invalidResponse("FC 16 address/count for HR 8");
         }
-        LOG.debug("Modbus FC 16 acknowledged HR 8 address=8 words=2 requested={} A", amps);
+        lastWriteResponse = "FC 16 HR 8 acknowledged (address=8, words=2)";
+        LOG.info("Modbus FC 16 acknowledged HR 8 address=8 words=2 requested={} A", amps);
     }
 
     private void writePauseCommand() throws IOException {
@@ -186,7 +191,14 @@ final class InchModbusClient implements AutoCloseable {
         if (echo.remaining() != 4 || echo.getShort() != 2 || echo.getShort() != 1) {
             throw invalidResponse("FC 16 address/count for HR 2 pause command");
         }
-        LOG.debug("Modbus FC 16 acknowledged HR 2 Pause charging address=2 words=1 value={}", value);
+        lastWriteResponse = "FC 16 HR 2 acknowledged (address=2, words=1)";
+        LOG.info("Modbus FC 16 acknowledged HR 2 Pause charging address=2 words=1 value={}", value);
+    }
+
+    private static String writeFailure(String register, IOException failure) {
+        return failure instanceof DeviceException device
+                ? "FC 16 " + register + " rejected (exception " + device.code() + ")"
+                : "FC 16 " + register + " failed (" + failure.getClass().getSimpleName() + ")";
     }
 
     private ByteBuffer exchange(int function, byte[] payload) throws IOException {

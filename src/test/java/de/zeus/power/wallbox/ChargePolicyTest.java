@@ -24,6 +24,14 @@ class ChargePolicyTest {
                 evKw, 12345, selectedMode, installed);
     }
 
+    private static ChargerReadings phaseReadings(int ir1, int hardware, int activePhases) {
+        return new ChargerReadings(4, ir1, hardware, 16, 0,
+                new ChargerReadings.Phase(230, activePhases >= 1 ? 2 : 0, 0),
+                new ChargerReadings.Phase(230, activePhases >= 2 ? 2 : 0, 0),
+                new ChargerReadings.Phase(230, activePhases >= 3 ? 2 : 0, 0),
+                0, 0, 1, 16);
+    }
+
     private static SonnenReadings battery(double pv, double house, double pac, double soc, double backup) {
         return new SonnenReadings(pv, house, pv + pac - house, pac, soc, backup);
     }
@@ -49,15 +57,16 @@ class ChargePolicyTest {
     }
 
     @Test
-    void usesActivePhaseVoltageAndPausesBelowSixAmps() {
+    void usesMeasuredActivePhasesThenHardwareFallbackAndPausesBelowSixAmps() {
         var eco = policy(ECO, true, 0);
-        for (int phase = 0; phase <= 5; phase++) {
-            var ev = charger(phase, 0, 16, 16);
-            int phaseCount = switch (phase) { case 0, 4 -> 3; case 5 -> 2; default -> 1; };
+        for (int phaseCount = 1; phaseCount <= 3; phaseCount++) {
+            var ev = phaseReadings(5, 3, phaseCount);
             double watts = 230.0 * phaseCount * 6;
             assertEquals(0, eco.target(ev, battery(watts - 1, 0, 0, 50, 0), 0));
             assertEquals(6, eco.target(ev, battery(watts, 0, 0, 50, 0), 0));
         }
+        assertEquals(3, phaseReadings(5, 3, 0).effectivePhases(1),
+                "IR 1=5 is diagnostic only; IR 1023 is the no-current calculation fallback");
     }
 
     @Test
@@ -188,8 +197,9 @@ class ChargePolicyTest {
         var settings = new WallboxSettings("localhost", 502, 1, ECO, 8000, 20, 5, 0, true,
                 2000, 2500, 3, 1, 240, 7, 12, 0);
         var policy = new ChargePolicy(settings);
-        assertEquals(7, policy.target(charger(1, 0, 16, 16), battery(1700, 0, 0, 90, 0), 0));
-        assertEquals(12, policy.target(charger(1, 0, 16, 16), battery(10000, 0, 0, 90, 0), 0));
+        var configuredPhaseFallback = phaseReadings(1, 0, 0);
+        assertEquals(7, policy.target(configuredPhaseFallback, battery(1700, 0, 0, 90, 0), 0));
+        assertEquals(12, policy.target(configuredPhaseFallback, battery(10000, 0, 0, 90, 0), 0));
     }
 
     @Test

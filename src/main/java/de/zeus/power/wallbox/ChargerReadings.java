@@ -19,13 +19,6 @@ record ChargerReadings(int status, int phases, int hardwarePhases, float evMaxAm
     int effectivePhases(int configuredPhases) {
         int measured = measuredActivePhases();
         if (measured > 0) return measured;
-        int reported = switch (phases) {
-            case 0 -> 3;
-            case 1, 2, 3 -> 1;
-            case 5 -> 2;
-            default -> 0;
-        };
-        if (reported > 0) return reported;
         return hardwarePhases >= 1 && hardwarePhases <= 3 ? hardwarePhases : configuredPhases;
     }
 
@@ -39,7 +32,6 @@ record ChargerReadings(int status, int phases, int hardwarePhases, float evMaxAm
 
     String phaseSource() {
         if (measuredActivePhases() > 0) return "measured-phase-currents>1A";
-        if (phases >= 0 && phases <= 3 || phases == 5) return "IR1";
         if (hardwarePhases >= 1 && hardwarePhases <= 3) return "IR1023";
         return "wallbox.phases";
     }
@@ -49,7 +41,19 @@ record ChargerReadings(int status, int phases, int hardwarePhases, float evMaxAm
     }
 
     String appliedAmpsRawHex() {
-        int bits = Float.floatToRawIntBits(appliedAmps);
+        return rawFloatWords(appliedAmps);
+    }
+
+    String evMaxRawHex() {
+        return rawFloatWords(evMaxAmps);
+    }
+
+    String installedMaxRawHex() {
+        return rawFloatWords(installedMaxAmps);
+    }
+
+    private static String rawFloatWords(float value) {
+        int bits = Float.floatToRawIntBits(value);
         return String.format(java.util.Locale.ROOT, "%04X %04X", (bits >>> 16) & 0xffff, bits & 0xffff);
     }
 
@@ -71,24 +75,6 @@ record ChargerReadings(int status, int phases, int hardwarePhases, float evMaxAm
             case 2 -> "Smart";
             default -> "Keine Session / unbekannt";
         };
-    }
-
-    double wattsPerAmp() {
-        double a = l1.volts(), b = l2.volts(), c = l3.volts();
-        return switch (phases) {
-            case 1 -> a;
-            case 2 -> b;
-            case 3 -> c;
-            // IR 1 does not identify the active pair. Budget for the two highest voltages.
-            case 5 -> valid(a, b, c) ? a + b + c - Math.min(a, Math.min(b, c)) : 0;
-            // During detection the eventual phase count is unknown. Budget for three.
-            case 0, 4 -> valid(a, b, c) ? a + b + c : 0;
-            default -> 0;
-        };
-    }
-
-    private static boolean valid(double a, double b, double c) {
-        return Double.isFinite(a + b + c) && a > 0 && b > 0 && c > 0;
     }
 
     float maxAmps() {

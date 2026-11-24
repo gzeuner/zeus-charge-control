@@ -32,6 +32,25 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 class WallboxControlTest {
     @Test
+    void watchdogWriteGapWarningStartsAfterEightyPercent() {
+        assertFalse(WallboxControl.watchdogWriteGapExceeded(28_000, 35));
+        assertTrue(WallboxControl.watchdogWriteGapExceeded(28_001, 35));
+    }
+
+    @Test
+    void zeroReadbackIsOnlyADeviationOnceSessionIsVisible() {
+        var noSession = new ChargerReadings(3, 4, 3, 0, 0,
+                new ChargerReadings.Phase(230, 0, 0), new ChargerReadings.Phase(230, 0, 0),
+                new ChargerReadings.Phase(230, 0, 0), 0, 0, 0, 16);
+        var activeSession = new ChargerReadings(4, 0, 3, 16, 0,
+                new ChargerReadings.Phase(230, 0, 0), new ChargerReadings.Phase(230, 0, 0),
+                new ChargerReadings.Phase(230, 0, 0), 0, 0, 1, 16);
+
+        assertFalse(WallboxControl.readbackDiffers(noSession, 16));
+        assertTrue(WallboxControl.readbackDiffers(activeSession, 16));
+    }
+
+    @Test
     void dashboardChangesTakeEffectImmediatelyAndSurviveRestart(@TempDir Path temp) throws Exception {
         Path config = temp.resolve("application.properties");
         String other = "# Standort\r\nbattery.authToken=${BATTERY_AUTH_TOKEN:}\r\n";
@@ -65,7 +84,14 @@ class WallboxControlTest {
                     mvc.perform(get("/wallbox/status"))
                             .andExpect(status().isOk())
                             .andExpect(jsonPath("$.activeMode").value("POWER"))
-                            .andExpect(jsonPath("$.lastWrittenTargetAmps").value(16.0));
+                            .andExpect(jsonPath("$.lastWrittenTargetAmps").value(16.0))
+                            .andExpect(jsonPath("$.lastCommand.command").value("HR8"))
+                            .andExpect(jsonPath("$.lastCommand.amps").value(16.0))
+                            .andExpect(jsonPath("$.lastCommand.response").value("FC 16 HR 8 acknowledged (address=8, words=2)"))
+                            .andExpect(jsonPath("$.lastWriteResponse").value("FC 16 HR 8 acknowledged (address=8, words=2)"))
+                            .andExpect(jsonPath("$.appliedAmpsRawHex").value("0000 0000"))
+                            .andExpect(jsonPath("$.keepaliveMs").value(10000))
+                            .andExpect(jsonPath("$.boxWatchdogSeconds").value(35));
                     control.update(Map.of("mode", "SMART", "smartMinUsoc", 40, "smartReservePercent", 8));
                     // Socket timeout is shorter than the regular 8 s polling period.
                     snapshot(peer, 1, 16, 16);
@@ -76,6 +102,7 @@ class WallboxControlTest {
                             .andExpect(status().isOk())
                             .andExpect(jsonPath("$.activeMode").value("SMART"))
                             .andExpect(jsonPath("$.lastWrittenTargetAmps").value(16.0))
+                            .andExpect(jsonPath("$.lastCommand.command").value("PAUSE_HR2"))
                             .andExpect(jsonPath("$.boxReportedAppliedAmps").value(16.0));
                     control.update(Map.of("enabled", false));
                     expectPauseCommand(peer, 1, false);
@@ -88,6 +115,67 @@ class WallboxControlTest {
                 assertEquals(new WallboxPreferences(false, WallboxSettings.Mode.SMART, 40, 8), status.settings());
                 assertNull(status.lastAccess());
             });
+        }
+    }
+
+    @Test
+    void modeChangePausesViaHr2AndResumesWithHr8AfterSurplusReturns(@TempDir Path temp) throws Exception {
+        AtomicInteger pv = new AtomicInteger(0);
+        var battery = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        battery.createContext("/status", exchange -> {
+            byte[] body = ("{\"Production_W\":" + pv.get()
+                    + ",\"Consumption_W\":0,\"GridFeedIn_W\":0,\"Pac_total_W\":0}")
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        battery.start();
+        try (var server = listener()) {
+            var runner = new ApplicationContextRunner().withUserConfiguration(WallboxControl.class)
+                    .withBean(RestTemplateBuilder.class, RestTemplateBuilder::new)
+                    .withPropertyValues("wallbox.enabled=true", "wallbox.mode=POWER", "wallbox.host=localhost",
+                            "wallbox.port=" + server.getLocalPort(), "wallbox.poll-interval-ms=1500",
+                            "wallbox.resume-hold-seconds=0", "wallbox.consumption-includes-wallbox=false",
+                            "wallbox.config-file=" + temp.resolve("application.properties"),
+                            "battery.url=http://localhost:" + battery.getAddress().getPort());
+            runner.run(context -> {
+                var control = context.getBean(WallboxControl.class);
+                MockMvc mvc = MockMvcBuilders.standaloneSetup(new WallboxController(control)).build();
+                try (var peer = server.accept()) {
+                    expectPauseCommand(peer, 1, false);
+                    snapshot(peer, 1, 16, 0);
+                    expectWrite(peer, 16, false);
+                    org.awaitility.Awaitility.await().until(() -> control.status().lastCommand() != null
+                            && control.status().lastCommand().command().equals("HR8"));
+                    mvc.perform(post("/wallbox/settings").contentType("application/json")
+                                    .content("{\"mode\":\"ECO\"}"))
+                            .andExpect(status().isOk())
+                            .andExpect(jsonPath("$.settings.mode").value("ECO"));
+                    snapshot(peer, 1, 16, 16);
+                    expectPauseCommand(peer, 1, false);
+                    org.awaitility.Awaitility.await().until(() -> control.status().lastCommand() != null
+                            && control.status().lastCommand().command().equals("PAUSE_HR2"));
+                    // Further low-surplus cycles read the box but must not write HR 8 again.
+                    snapshot(peer, 1, 16, 0);
+                    snapshot(peer, 1, 16, 0);
+                    pv.set(5000);
+                    snapshot(peer, 1, 16, 0);
+                    expectWrite(peer, 10.8f, false);
+                    org.awaitility.Awaitility.await().until(() -> control.status().lastCommand() != null
+                            && control.status().lastCommand().command().equals("HR8"));
+                    assertTrue(control.status().lastCommand().amps() >= 6,
+                            "resume must use an HR 8 target of at least 6 A");
+                    assertEquals("HR8", control.status().lastCommand().command());
+                    snapshot(peer, 1, 16, 10.8f);
+                    expectWrite(peer, 10.8f, false); // Active current is renewed as a keepalive each cycle.
+                    control.update(Map.of("enabled", false));
+                    expectPauseCommand(peer, 1, false);
+                }
+            });
+        } finally {
+            battery.stop(0);
         }
     }
 
@@ -107,7 +195,7 @@ class WallboxControlTest {
     }
 
     @Test
-    void enabledSpringServicePollsAndRenewsOnlyHr8WithFreshData() throws Exception {
+    void enabledSpringServicePollsHr8AndPausesWithHr2OnDataFailure() throws Exception {
         var requests = new AtomicInteger();
         var battery = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         battery.createContext("/api/v2/status", exchange -> {
@@ -251,6 +339,7 @@ class WallboxControlTest {
                     assertEquals(16, reading.evMaxAmps());
                     assertEquals(15.9f, reading.appliedAmps(), 0.01f,
                             "IR 4 Float32 must decode big-endian words at FC 04 address 4");
+                    assertEquals("417E 6666", reading.appliedAmpsRawHex());
                     assertTrue(reading.enabled());
                     assertEquals(1.25f, reading.powerKw());
                     assertEquals(0.5f, reading.l2().kw());

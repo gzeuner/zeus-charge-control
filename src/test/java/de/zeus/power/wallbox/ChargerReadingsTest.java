@@ -30,9 +30,10 @@ class ChargerReadingsTest {
     }
 
     @Test
-    void phaseSelectionPrefersMeasuredCurrentsThenIr1ThenHardwareCount() {
+    void phaseSelectionPrefersMeasuredCurrentsThenHardwareCountAndConfig() {
         assertEquals(3, reading(0, 0, 0).effectivePhases(1));
-        assertEquals(2, reading(5, 0, 4).effectivePhases(3));
+        assertEquals(3, reading(5, 0, 4).effectivePhases(1));
+        assertEquals("IR1023", reading(5, 0, 4).phaseSource());
 
         var activeThreePhase = new ChargerReadings(4, 5, 3, 16, 0,
                 new ChargerReadings.Phase(230, 15.9f, 0),
@@ -47,7 +48,7 @@ class ChargerReadingsTest {
         assertEquals(3, unknownIr1.effectivePhases(1));
         assertEquals("IR1023", unknownIr1.phaseSource());
 
-        var noReportedPhaseCount = new ChargerReadings(0, 4, 0, 0, 0,
+        var noReportedPhaseCount = new ChargerReadings(0, 5, 0, 0, 0,
                 new ChargerReadings.Phase(230, 0, 0), new ChargerReadings.Phase(230, 0, 0),
                 new ChargerReadings.Phase(230, 0, 0), 0, 0, 0, 0);
         assertEquals(1, noReportedPhaseCount.effectivePhases(1));
