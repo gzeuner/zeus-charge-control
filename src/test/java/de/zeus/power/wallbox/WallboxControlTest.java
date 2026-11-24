@@ -54,7 +54,7 @@ class WallboxControlTest {
                         .andExpect(status().isOk())
                         .andExpect(jsonPath("$.settings.mode").value("POWER"));
                 try (var peer = server.accept()) {
-                    expectWrite(peer, 0, false);
+                    expectPauseCommand(peer, 1, false);
                     snapshot(peer, 1, 16);
                     expectWrite(peer, 16, false);
                     org.awaitility.Awaitility.await().until(() -> control.status().sample() != null);
@@ -69,16 +69,16 @@ class WallboxControlTest {
                     control.update(Map.of("mode", "SMART", "smartMinUsoc", 40, "smartReservePercent", 8));
                     // Socket timeout is shorter than the regular 8 s polling period.
                     snapshot(peer, 1, 16, 16);
-                    expectWrite(peer, 0, false);
+                    expectPauseCommand(peer, 1, false);
                     org.awaitility.Awaitility.await().until(() -> control.status().activeMode() == WallboxSettings.Mode.SMART
                             && control.status().sample() != null && control.status().sample().targetAmps() == 0f);
                     mvc.perform(get("/wallbox/status"))
                             .andExpect(status().isOk())
                             .andExpect(jsonPath("$.activeMode").value("SMART"))
-                            .andExpect(jsonPath("$.lastWrittenTargetAmps").value(0.0))
+                            .andExpect(jsonPath("$.lastWrittenTargetAmps").value(16.0))
                             .andExpect(jsonPath("$.boxReportedAppliedAmps").value(16.0));
                     control.update(Map.of("enabled", false));
-                    expectWrite(peer, 0, false);
+                    expectPauseCommand(peer, 1, false);
                     assertEquals(-1, peer.getInputStream().read());
                 }
                 assertTrue(Files.readString(config).startsWith(other));
@@ -143,7 +143,7 @@ class WallboxControlTest {
                         assertNull(context.getStartupFailure());
                         try (Socket peer = server.accept()) {
                             peer.setSoTimeout(4000);
-                            expectWrite(peer, 0, false);
+                            expectPauseCommand(peer, 1, false);
                             snapshot(peer, 1, 16);
                             expectWrite(peer, 16, true);
                             snapshot(peer, 1, 6.032f); // Exception 12 refreshes the IR 1028 ceiling.
@@ -151,12 +151,82 @@ class WallboxControlTest {
                             snapshot(peer, 1, 6.032f, 6.032f);
                             expectWrite(peer, 6.0f, false); // ECO rounds the 6.032 A box ceiling down to 0.1 A.
                             snapshot(peer, 1, 6.032f, 6.0f);
-                            expectWrite(peer, 0, false);  // HTTP 503 must clear the previous target.
+                            expectPauseCommand(peer, 1, false); // HTTP 503 must pause without HR 8 = 0.
                             assertEquals(3, requests.get());
                         }
                     });
         } finally {
             battery.stop(0);
+        }
+    }
+
+    @Test
+    void minCurrentPauseStrategyHoldsSixAmpsAndManualDisableUsesHr2(@TempDir Path temp) throws Exception {
+        var battery = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        battery.createContext("/status", exchange -> {
+            byte[] body = "{\"Production_W\":0,\"Consumption_W\":0,\"GridFeedIn_W\":0,\"Pac_total_W\":0,\"USOC\":60,\"BackupBuffer\":5}"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        battery.start();
+        try (var server = listener()) {
+            var runner = new ApplicationContextRunner().withUserConfiguration(WallboxControl.class)
+                    .withBean(RestTemplateBuilder.class, RestTemplateBuilder::new)
+                    .withPropertyValues("wallbox.enabled=true", "wallbox.mode=ECO", "wallbox.host=localhost",
+                            "wallbox.port=" + server.getLocalPort(), "wallbox.pause-strategy=MIN_CURRENT",
+                            "wallbox.config-file=" + temp.resolve("application.properties"),
+                            "wallbox.poll-interval-ms=8000", "wallbox.resume-hold-seconds=0",
+                            "wallbox.consumption-includes-wallbox=false",
+                            "battery.url=http://localhost:" + battery.getAddress().getPort());
+            runner.run(context -> {
+                var control = context.getBean(WallboxControl.class);
+                assertNull(context.getStartupFailure());
+                try (var peer = server.accept()) {
+                    expectPauseCommand(peer, 1, false); // Startup/recovery always pauses safely.
+                    snapshot(peer, 1, 16);
+                    expectWrite(peer, 6, false); // Low surplus is held at min-current, never HR 8 = 0.
+                    org.awaitility.Awaitility.await().until(() -> control.status().sample() != null
+                            && Float.valueOf(6).equals(control.status().sample().targetAmps()));
+                    assertEquals(6, control.status().lastWrittenTargetAmps());
+                    control.update(Map.of("enabled", false));
+                    expectPauseCommand(peer, 1, false); // User disable is a real pause for either strategy.
+                    assertEquals(-1, peer.getInputStream().read());
+                }
+            });
+        } finally {
+            battery.stop(0);
+        }
+    }
+
+    @Test
+    void persistentHr8VsIr4DeviationWarnsWithRawWords(@TempDir Path temp) throws Exception {
+        try (var server = listener()) {
+            var runner = new ApplicationContextRunner().withUserConfiguration(WallboxControl.class)
+                    .withBean(RestTemplateBuilder.class, RestTemplateBuilder::new)
+                    .withPropertyValues("wallbox.enabled=true", "wallbox.host=localhost",
+                            "wallbox.port=" + server.getLocalPort(), "wallbox.mode=POWER",
+                            "wallbox.config-file=" + temp.resolve("application.properties"),
+                            "wallbox.poll-interval-ms=300", "battery.url=");
+            runner.run(context -> {
+                var control = context.getBean(WallboxControl.class);
+                try (var peer = server.accept()) {
+                    expectPauseCommand(peer, 1, false);
+                    snapshot(peer, 1, 16, 0);
+                    expectWrite(peer, 16, false);
+                    snapshot(peer, 1, 16, 0);
+                    expectWrite(peer, 16, false);
+                    snapshot(peer, 1, 16, 0);
+                    expectWrite(peer, 16, false);
+                    assertEquals(16, control.status().lastWrittenTargetAmps());
+                    assertNotNull(control.status().sample());
+                    assertEquals(0, control.status().sample().charger().appliedAmps());
+                    control.update(Map.of("enabled", false));
+                    expectPauseCommand(peer, 1, false);
+                }
+            });
         }
     }
 
@@ -216,13 +286,13 @@ class WallboxControlTest {
                     .run(context -> {
                         var control = context.getBean(WallboxControl.class);
                         try (var peer = server.accept()) {
-                            expectWrite(peer, 0, false);
+                            expectPauseCommand(peer, 1, false);
                             snapshot(peer, 1, 16);
                             currentWrite(peer, 16); // Charger receives the setpoint; TCP drops before its ACK.
                         }
                         long failedAt;
                         try (var peer = server.accept()) {
-                            var pause = currentWrite(peer, 0);
+                            var pause = pauseCommand(peer, 1);
                             failedAt = System.nanoTime();
                             pause.reply(peer, 0x90, new byte[]{4});
                         }
@@ -235,13 +305,13 @@ class WallboxControlTest {
                         try (var peer = server.accept()) {
                             assertTrue(System.nanoTime() - failedAt >= TimeUnit.SECONDS.toNanos(7));
                             assertEquals(lastAccess, control.status().lastAccess());
-                            expectWrite(peer, 0, false); // Recovery starts with a watchdog pause.
+                            expectPauseCommand(peer, 1, false); // Recovery starts with a watchdog pause.
                             snapshot(peer, 1, 12);
                             expectWrite(peer, 12, false); // Recomputed from new readings.
                             org.awaitility.Awaitility.await().until(() -> !control.status().pauseUnconfirmed()
                                     && Float.valueOf(12).equals(control.status().sample().targetAmps()));
                             var stopped = worker.submit(control::stop);
-                            expectWrite(peer, 0, false);
+                            expectPauseCommand(peer, 1, false);
                             stopped.get(3, TimeUnit.SECONDS);
                             assertEquals(-1, peer.getInputStream().read());
                         }
@@ -278,9 +348,9 @@ class WallboxControlTest {
              var client = new InchModbusClient(new WallboxSettings("127.0.0.1", server.getLocalPort(), 1,
                      WallboxSettings.Mode.POWER, 8000, 20, 5, 0, true, 2000, 500, 3));
              var worker = Executors.newSingleThreadExecutor()) {
-            var write = worker.submit(() -> { client.setCurrent(0); return null; });
+            var write = worker.submit(() -> { client.setCurrent(6); return null; });
             try (var peer = server.accept()) {
-                byte[] echo = currentWrite(peer, 0).frame(16, new byte[]{0, 8, 0, 2});
+                byte[] echo = currentWrite(peer, 6).frame(16, new byte[]{0, 8, 0, 2});
                 var output = peer.getOutputStream();
                 output.write(echo, 0, 4);
                 Thread.sleep(350);
@@ -331,6 +401,25 @@ class WallboxControlTest {
         assertEquals(amps, req.data.getFloat());
         assertFalse(req.data.hasRemaining());
         return req;
+    }
+
+    private static Request pauseCommand(Socket socket, int value) throws IOException {
+        Request req = request(socket, 1, 16);
+        assertEquals(2, req.data.getShort());
+        assertEquals(1, req.data.getShort());
+        assertEquals(2, req.data.get());
+        assertEquals(value, req.data.getShort());
+        assertFalse(req.data.hasRemaining());
+        return req;
+    }
+
+    private static void expectPauseCommand(Socket socket, int value, boolean reject) throws IOException {
+        Request req = pauseCommand(socket, value);
+        if (reject) {
+            req.reply(socket, 0x90, new byte[]{4});
+        } else {
+            req.reply(socket, 16, new byte[]{0, 2, 0, 1});
+        }
     }
 
     private static void expectWrite(Socket socket, float amps, boolean reject) throws IOException {

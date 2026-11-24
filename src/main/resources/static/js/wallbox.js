@@ -127,8 +127,10 @@ document.addEventListener("DOMContentLoaded", () => {
             .join(" / ")
         : "–",
       target:
-        data.lastWrittenTargetAmps === 0
-          ? "0 A · " + labels.paused
+        sample?.targetAmps === 0
+          ? data.lastWrittenTargetAmps == null
+            ? labels.paused
+            : `${quantity(data.lastWrittenTargetAmps, "A", 1)} · ${labels.paused}`
           : quantity(data.lastWrittenTargetAmps ?? sample?.targetAmps, "A", 1),
       reported: quantity(data.boxReportedAppliedAmps, "A", 1),
       phaseUse: phases[ev?.phases] || "–",

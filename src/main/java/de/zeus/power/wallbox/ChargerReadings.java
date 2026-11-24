@@ -48,6 +48,11 @@ record ChargerReadings(int status, int phases, int hardwarePhases, float evMaxAm
         return appliedAmps > 0;
     }
 
+    String appliedAmpsRawHex() {
+        int bits = Float.floatToRawIntBits(appliedAmps);
+        return String.format(java.util.Locale.ROOT, "%04X %04X", (bits >>> 16) & 0xffff, bits & 0xffff);
+    }
+
     String phaseDescription() {
         return switch (phases) {
             case 0 -> "3 (L1-L3)";

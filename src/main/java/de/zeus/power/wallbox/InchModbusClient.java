@@ -109,19 +109,19 @@ final class InchModbusClient implements AutoCloseable {
         return unit == 255 ? settings.unitId() : 255;
     }
 
-    /** Only a pause may be repeated after an ambiguous write timeout. */
+    /** Only the idempotent HR 2 pause command may be repeated after an ambiguous write timeout. */
     void confirmPause() throws IOException {
         try {
             try {
-                writeCurrent(0);
+                writePauseCommand();
             } catch (SocketTimeoutException timeout) {
                 if (settings.unitId() == 255) throw timeout;
                 int previous = unit;
                 unit = alternateUnit();
-                LOG.warn("Modbus {} while pausing unit {}; retrying zero-amp pause with unit {}",
+                LOG.warn("Modbus {} while pausing unit {}; retrying HR 2 pause command with unit {}",
                         timeout.getClass().getSimpleName(), previous, unit);
                 try {
-                    writeCurrent(0);
+                    writePauseCommand();
                 } catch (IOException retryFailure) {
                     unit = previous;
                     closeSocket();
@@ -153,7 +153,7 @@ final class InchModbusClient implements AutoCloseable {
     }
 
     void setCurrent(float amps) throws IOException {
-        if (!Float.isFinite(amps) || (amps != 0 && amps < 6) || amps > 16) {
+        if (!Float.isFinite(amps) || amps < 6 || amps > 16) {
             throw new IllegalArgumentException("Invalid HR 8 current " + amps);
         }
         try {
@@ -175,6 +175,18 @@ final class InchModbusClient implements AutoCloseable {
             throw invalidResponse("FC 16 address/count for HR 8");
         }
         LOG.debug("Modbus FC 16 acknowledged HR 8 address=8 words=2 requested={} A", amps);
+    }
+
+    private void writePauseCommand() throws IOException {
+        int value = 1;
+        LOG.info("Writing charger HR 2 Pause charging = {} (unit {})", value, unit);
+        byte[] payload = ByteBuffer.allocate(7).putShort((short) 2).putShort((short) 1)
+                .put((byte) 2).putShort((short) value).array();
+        ByteBuffer echo = exchange(16, payload);
+        if (echo.remaining() != 4 || echo.getShort() != 2 || echo.getShort() != 1) {
+            throw invalidResponse("FC 16 address/count for HR 2 pause command");
+        }
+        LOG.debug("Modbus FC 16 acknowledged HR 2 Pause charging address=2 words=1 value={}", value);
     }
 
     private ByteBuffer exchange(int function, byte[] payload) throws IOException {

@@ -108,6 +108,7 @@ wallbox.voltage=${WALLBOX_VOLTAGE:230}
 wallbox.min-current-a=${WALLBOX_MIN_CURRENT_A:6}
 wallbox.max-current-a=${WALLBOX_MAX_CURRENT_A:16}
 wallbox.grid-limit-watts=${WALLBOX_GRID_LIMIT_WATTS:0}
+wallbox.pause-strategy=${WALLBOX_PAUSE_STRATEGY:PAUSE_COMMAND}
 wallbox.config-file=${WALLBOX_CONFIG_FILE:./config/application.properties}
 
 # KOSTAL PLENTICORE / PIKO IQ read-only Modbus TCP. Fill in the IP before enabling.
