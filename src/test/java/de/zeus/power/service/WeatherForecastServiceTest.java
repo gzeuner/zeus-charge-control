@@ -21,6 +21,8 @@ class WeatherForecastServiceTest {
         ReflectionTestUtils.setField(weather, "baseUrl", "http://forecast.test");
         ReflectionTestUtils.setField(weather, "hourlyParams", "cloudcover");
         ReflectionTestUtils.setField(weather, "lookaheadHours", 2);
+        ReflectionTestUtils.setField(weather, "latitudeConfig", "40.0");
+        ReflectionTestUtils.setField(weather, "longitudeConfig", "10.0");
         ReflectionTestUtils.setField(weather, "enabled", true);
         long now = Instant.parse("2026-07-01T10:00:00Z").toEpochMilli();
         var times = LongStream.range(0, 6).map(i -> now / 1000 + i * 3600).boxed().toList();
@@ -32,5 +34,18 @@ class WeatherForecastServiceTest {
         assertEquals(Optional.of(53), weather.previewGridTarget(now, 70, 20, 10000, 4, 350));
         assertEquals(Optional.of(53), weather.previewGridTarget(now + 3_600_000, 70, 20, 10000, 4, 350));
         assertTrue(weather.previewGridTarget(now + 14_400_000, 70, 20, 10000, 4, 350).isEmpty());
+    }
+
+    @Test void disablesForecastWhenCoordinatesAreMissing() {
+        var weather = new WeatherForecastService();
+        var http = mock(RestTemplate.class);
+        ReflectionTestUtils.setField(weather, "restTemplate", http);
+        ReflectionTestUtils.setField(weather, "enabled", true);
+        ReflectionTestUtils.setField(weather, "latitudeConfig", "");
+        ReflectionTestUtils.setField(weather, "longitudeConfig", "");
+
+        assertFalse(weather.isEnabled());
+        assertTrue(weather.findSunnySlot(1_800_000, 7_200_000).isEmpty());
+        verifyNoInteractions(http);
     }
 }

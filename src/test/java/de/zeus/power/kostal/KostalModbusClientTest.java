@@ -102,7 +102,7 @@ class KostalModbusClientTest {
     }
 
     private KostalModbusClient client(ServerSocket server) {
-        return new KostalModbusClient("127.0.0.1", server.getLocalPort(), 71, 500, 500);
+        return new KostalModbusClient("localhost", server.getLocalPort(), 71, 500, 500);
     }
 
     @FunctionalInterface interface ReplyWriter { void write(int tx, DataOutputStream out) throws IOException; }

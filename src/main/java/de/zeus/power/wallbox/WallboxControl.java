@@ -29,14 +29,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 @EnableConfigurationProperties(WallboxSettings.class)
 class WallboxControl {
     private static final Logger LOG = LoggerFactory.getLogger(WallboxControl.class);
-    private enum PauseStrategy { PAUSE_COMMAND, MIN_CURRENT }
-    // The charger watchdog is 35 s; pause recovery leaves a margin for a lost ACK.
+    // Space recovery retries to avoid rapid duplicate pause commands.
     private static final long RECOVERY_SILENCE = TimeUnit.SECONDS.toNanos(7);
     private static final long MAX_SAMPLE_AGE = TimeUnit.SECONDS.toNanos(8);
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(
             Thread.ofPlatform().daemon().name("inch-wallbox").factory());
     private final WallboxSettings settings;
-    private final PauseStrategy pauseStrategy;
     private final WallboxConfigFile config;
     private volatile WallboxPreferences preferences;
     private volatile boolean stopping;
@@ -53,14 +51,12 @@ class WallboxControl {
     private volatile WallboxSettings.Mode activeMode;
     private volatile String modeSource = "config";
     private volatile Float lastWrittenTargetAmps;
+    private volatile Float lastAcceptedTargetAmps;
     private volatile LastCommand lastCommand;
-    private volatile Instant lastWriteAttempt;
+    private Instant lastHr8WriteAt;
     private final int keepaliveMs;
     private final int boxWatchdogSeconds;
     private Instant lastReadbackLog;
-    private Instant lastDeviationLog;
-    private volatile int consecutiveTargetDeviations;
-    private volatile int consecutivePauseWithCurrent;
     private volatile boolean pauseCommandActive;
     private Instant lastTargetLog;
     private Float lastLoggedTargetAmps;
@@ -73,6 +69,19 @@ class WallboxControl {
     private Long sessionStart;
     private boolean loggedMeterCheck;
     private Instant lastIr53Info;
+    private final PhaseTracker phaseTracker = new PhaseTracker();
+    private volatile int effectivePhases;
+    private volatile String phaseSource = "wallbox.phases";
+    private volatile WallboxSetpointStatus setpointStatus = WallboxSetpointStatus.KEINE_SESSION;
+    private volatile String boxModel;
+    private volatile String boxSoftwareVersion;
+    private long lastIdentityGeneration;
+    private long successfulPolls;
+    private long lastAcceptedWritePoll = -1;
+    private int acceptedWritesDuringFlow;
+    private Instant flowStarted;
+    private Instant lastIgnoredWarning;
+    private int lastPolledStatus = -1;
     private final boolean propertyEnabled;
     private boolean featureEnabled;
     private KostalInverterService kostal;
@@ -88,21 +97,11 @@ class WallboxControl {
                    @Value("${wallbox.enabled:false}") boolean enabled,
                    @Value("${wallbox.config-file:./config/application.properties}") String configFile,
                    Environment environment,
-                   @Value("${wallbox.pause-strategy:PAUSE_COMMAND}") String configuredPauseStrategy,
                    @Value("${wallbox.keepalive-ms:10000}") int keepaliveMs,
                    @Value("${wallbox.box-watchdog-seconds:35}") int boxWatchdogSeconds) throws IOException {
         this.settings = settings;
         this.propertyEnabled = enabled;
         this.featureEnabled = enabled;
-        PauseStrategy parsedPauseStrategy;
-        try {
-            parsedPauseStrategy = PauseStrategy.valueOf(
-                    configuredPauseStrategy.trim().toUpperCase(java.util.Locale.ROOT));
-        } catch (RuntimeException ex) {
-            LOG.warn("Invalid wallbox.pause-strategy {}; using PAUSE_COMMAND", configuredPauseStrategy);
-            parsedPauseStrategy = PauseStrategy.PAUSE_COMMAND;
-        }
-        this.pauseStrategy = parsedPauseStrategy;
         if (keepaliveMs < 1 || boxWatchdogSeconds < 1) throw new IllegalArgumentException("Invalid wallbox keepalive/watchdog settings");
         this.boxWatchdogSeconds = boxWatchdogSeconds;
         this.keepaliveMs = (int) Math.min(keepaliveMs, Math.max(1L, (long) boxWatchdogSeconds * 800L));
@@ -126,9 +125,9 @@ class WallboxControl {
         preferences = this.featureEnabled ? preferences : new WallboxPreferences(false, preferences.mode(),
                 preferences.smartMinUsoc(), preferences.smartReservePercent());
         charger = this.featureEnabled ? new InchModbusClient(settings) : null;
-        LOG.info("Effective wallbox settings: mode={} source={} minimum={}A maximum={}A gridLimit={}W phases={} voltage={}V pauseStrategy={} keepalive={}ms watchdog={}s",
+        LOG.info("Effective wallbox settings: mode={} source={} minimum={}A maximum={}A gridLimit={}W phases={} voltage={}V keepalive={}ms watchdog={}s",
                 preferences.mode(), modeSource, settings.minCurrentA(), settings.maxCurrentA(),
-                settings.gridLimitWatts(), settings.phases(), settings.voltage(), pauseStrategy,
+                settings.gridLimitWatts(), settings.phases(), settings.voltage(),
                 this.keepaliveMs, this.boxWatchdogSeconds);
 
         String base = batteryUrl.trim();
@@ -163,7 +162,9 @@ class WallboxControl {
                   LastCommand lastCommand, String lastWriteResponse, String appliedAmpsRawHex,
                   String ir1RawHex, String ir2RawHex, String ir53RawHex, String ir1023RawHex,
                   String ir1028RawHex, int keepaliveMs, int boxWatchdogSeconds,
-                  boolean boxCommandMismatch) {}
+                  boolean boxCommandMismatch, Float commandedTargetAmps,
+                  WallboxSetpointStatus setpointStatus, int effectivePhases, String phaseSource,
+                  String boxModel, String boxSoftwareVersion) {}
 
     synchronized Status status() {
         Instant last = charger == null ? null : charger.lastAccess();
@@ -171,7 +172,7 @@ class WallboxControl {
         boolean fallback = reference != null && !Instant.now().isBefore(reference.plusSeconds(boxWatchdogSeconds));
         ChargerReadings readings = sample != null && sample.charger() != null ? sample.charger() : lastReadings;
         Float appliedCurrent = readings == null || !Float.isFinite(readings.appliedAmps())
-                || readings.appliedAmps() <= 0 ? null : readings.appliedAmps();
+                ? null : readings.appliedAmps();
         return new Status(preferences, activeMode, modeSource, lastWrittenTargetAmps,
                 appliedCurrent, Math.min(settings.pollIntervalMs(), keepaliveMs), sample, last,
                 charger == null ? null : charger.lastSuccessfulRead(),
@@ -185,7 +186,9 @@ class WallboxControl {
                 readings == null ? null : rawWord(readings.hardwarePhases()),
                 readings == null ? null : readings.installedMaxRawHex(),
                 keepaliveMs, boxWatchdogSeconds,
-                consecutivePauseWithCurrent >= 2 || consecutiveTargetDeviations >= 2);
+                setpointStatus == WallboxSetpointStatus.BOX_IGNORIERT_SOLLWERT,
+                lastAcceptedTargetAmps, setpointStatus, effectivePhases, phaseSource,
+                boxModel, boxSoftwareVersion);
     }
 
     private static String rawWord(int value) {
@@ -250,16 +253,14 @@ class WallboxControl {
             initialPauseRequired = false;
             unconfirmedPause = null;
             pauseCommandActive = true;
-            consecutivePauseWithCurrent = 0;
-            if (pending != null) LOG.info("Wallbox confirmed HR 2 pause command. Resuming with fresh measurements.");
+            if (pending != null) LOG.info("Wallbox pause confirmed; refreshing measurements.");
             return retainedSample(battery, 0f, true, reason);
         } catch (IOException failure) {
             charger.close();
             String error = failure.getClass().getSimpleName() + ": " + failure.getMessage();
             if (reason != null && !reason.equals(error)) error = reason + " / " + error;
             unconfirmedPause = new UnconfirmedPause(System.nanoTime() + RECOVERY_SILENCE, error);
-            LOG.warn("Wallbox pause command unconfirmed [{}]. Retrying within the charger watchdog window: {}",
-                    failure.getClass().getSimpleName(), error);
+            LOG.warn("Wallbox pause not confirmed; retrying. {}", error);
             return retainedSample(battery, null, false, error);
         }
     }
@@ -271,20 +272,32 @@ class WallboxControl {
 
     private void beforeBoxWrite() {
         Instant now = Instant.now();
-        long gapMillis = lastWriteAttempt == null ? 0 : Duration.between(lastWriteAttempt, now).toMillis();
-        if (lastWriteAttempt != null && watchdogWriteGapExceeded(gapMillis, boxWatchdogSeconds)) {
-            LOG.warn("Wallbox write gap exceeded 80% of watchdog: {} ms (watchdog={} s)",
+        Instant lastAccess = charger.lastAccess();
+        long gapMillis = lastAccess == null ? 0 : Duration.between(lastAccess, now).toMillis();
+        if (lastAccess != null && watchdogWriteGapExceeded(gapMillis, boxWatchdogSeconds)) {
+            LOG.warn("Wallbox connection needs attention: no recent write for {} ms (interval={} s)",
                     gapMillis, boxWatchdogSeconds);
         }
-        lastWriteAttempt = now;
     }
 
     static boolean watchdogWriteGapExceeded(long gapMillis, int watchdogSeconds) {
         return gapMillis > (long) watchdogSeconds * 800L;
     }
 
+    static boolean shouldWriteTarget(Float lastHr8Amps, float nextWholeAmpTarget, boolean statusChanged,
+                                     Instant lastHr8WriteAt, Instant now) {
+        boolean changed = lastHr8Amps == null || Math.abs(lastHr8Amps - nextWholeAmpTarget) > 0.01f;
+        boolean refreshDue = lastHr8WriteAt == null || !now.isBefore(lastHr8WriteAt.plusSeconds(60));
+        return changed || statusChanged || refreshDue;
+    }
+
     private void rememberCommand(String command, Float amps) {
-        lastCommand = new LastCommand(command, amps, Instant.now(), charger.lastWriteResponse());
+        Instant now = Instant.now();
+        lastCommand = new LastCommand(command, amps, now, charger.lastWriteResponse());
+        lastAcceptedTargetAmps = "PAUSE_HR2".equals(command) ? 0f : amps;
+        lastAcceptedWritePoll = successfulPolls;
+        if (flowStarted != null) acceptedWritesDuringFlow++;
+        if ("HR8".equals(command)) lastHr8WriteAt = now;
     }
 
     private synchronized void publish(WallboxPreferences active, Sample result) {
@@ -298,7 +311,7 @@ class WallboxControl {
             publish(active, pauseOrWait(null, null));
             return;
         }
-        // A restart may follow a lost write ACK. Establish control before any watchdog-feeding reads.
+        // Resume control before continuing the regular polling cycle.
         if (initialPauseRequired) {
             Sample initial = pauseOrWait(null, null);
             if (unconfirmedPause != null || stopping || active != preferences) {
@@ -318,27 +331,50 @@ class WallboxControl {
         try {
             battery = readBattery();
             ev = charger.read();
+            successfulPolls++;
             lastReadings = ev;
             lastBatteryReadings = battery;
+            long connectionGeneration = charger.connectionGeneration();
+            if (connectionGeneration != lastIdentityGeneration) {
+                lastIdentityGeneration = connectionGeneration;
+                try {
+                    InchModbusClient.Identity identity = charger.readIdentity();
+                    boxModel = identity.model();
+                    boxSoftwareVersion = identity.softwareVersion();
+                    LOG.info("Wallbox self-test passed: model={} softwareVersion={}", boxModel, boxSoftwareVersion);
+                } catch (IOException identityFailure) {
+                    LOG.warn("Wallbox self-test failed after connection: {}", identityFailure.getMessage());
+                }
+            }
+            Instant wallNow = Instant.now();
+            PhaseTracker.Result phaseResult = phaseTracker.update(ev, settings.phases());
+            effectivePhases = phaseResult.phases();
+            phaseSource = phaseResult.source();
+            updateFlow(ev, wallNow);
+            boolean managedSession = managedSession(ev.status());
+            boolean statusChanged = managedSession && ev.status() != lastPolledStatus;
+            boolean sessionStarted = managedSession && !managedSession(lastPolledStatus);
+            if (sessionStarted) pauseCommandActive = false;
+            lastPolledStatus = ev.status();
             logReadback(ev);
             long now = System.nanoTime();
-            if (!ev.sessionActive()) {
+            if (!managedSession) {
                 sessionStart = null;
             } else if (sessionStart == null) {
                 sessionStart = now;
             }
-            boolean detecting = sessionStart != null && now - sessionStart < TimeUnit.SECONDS.toNanos(45);
             Double pvOverride = kostal == null ? null : kostal.usablePvPowerW();
             String pvSource = active.mode() == WallboxSettings.Mode.POWER ? null
                     : pvOverride != null ? "KOSTAL"
                     : battery != null && battery.productionW() != null ? "Sonnen" : null;
-            float target = policy.target(ev, battery, now, pvOverride);
+            float target = policy.target(ev, battery, now, pvOverride,
+                    lastAcceptedTargetAmps, phaseResult.stableMeasuredPhases());
             logTarget(active.mode(), target);
-            LOG.debug("Charger {} lifetime={} kWh on={} EV detection={} Sonnen={}",
-                    ev, ev.lifetimeMwh() / 1e6, ev.enabled(), detecting, battery);
+            LOG.debug("Wallbox status: session={} applied={} A power={} kW",
+                    ev.sessionActive(), ev.appliedAmps(), ev.powerKw());
             Instant ir53Now = Instant.now();
             if (lastIr53Info == null || !ir53Now.isBefore(lastIr53Info.plusSeconds(600))) {
-                LOG.info("Wallbox diagnostic IR 53={} ({})", ev.selectedMode(), ev.modeDescription());
+                LOG.info("Wallbox diagnostics refreshed.");
                 lastIr53Info = ir53Now;
             }
             if (!loggedMeterCheck && ev.powerKw() > 0 && battery != null && battery.hasPowerReadings()
@@ -352,16 +388,38 @@ class WallboxControl {
             LOG.debug("Wallbox rule cycle: {} installedMax={}A evMax={}A applied={}A",
                     policy.diagnostics(), ev.installedMaxAmps(), ev.evMaxAmps(), ev.appliedAmps());
             if (stopping || active != preferences) return;
-            var write = writeTarget(target, active, started);
+            var write = writeTarget(target, active, started, statusChanged);
             if (write.hr8Amps() != null) lastWrittenTargetAmps = write.hr8Amps();
             lastAvailableWatts = policy.availableWatts();
             result = new Sample(ev, battery, write.targetAmps(), lastAvailableWatts, true, write.warning(), pvSource);
+            setpointStatus = WallboxSetpointStatus.evaluate(ev.status(), lastAcceptedTargetAmps,
+                    lastCommand != null, flowStarted, Instant.now(), acceptedWritesDuringFlow, ev);
+            if (setpointStatus == WallboxSetpointStatus.BOX_IGNORIERT_SOLLWERT
+                    && (lastIgnoredWarning == null || !Instant.now().isBefore(lastIgnoredWarning.plusSeconds(300)))) {
+                LOG.warn("Wallbox übernimmt den Sollwert nicht. Bitte Ladestecker ab- und wieder anstecken.");
+                lastIgnoredWarning = Instant.now();
+            }
         } catch (IOException | RuntimeException ex) {
             policy.pause();
             LOG.warn("Wallbox Modbus cycle failed [{}]: {}", ex.getClass().getSimpleName(), ex.getMessage());
             result = pauseOrWait(battery, ex.toString());
         }
         publish(active, result);
+    }
+
+    private static boolean managedSession(int status) { return status >= 4 && status <= 7; }
+
+    private void updateFlow(ChargerReadings readings, Instant now) {
+        float total = readings.l1().amps() + readings.l2().amps() + readings.l3().amps();
+        if (managedSession(readings.status()) && Float.isFinite(total) && total > 1) {
+            if (flowStarted == null) {
+                flowStarted = now;
+                acceptedWritesDuringFlow = 0;
+            }
+        } else {
+            flowStarted = null;
+            acceptedWritesDuringFlow = 0;
+        }
     }
 
     private SonnenReadings readBattery() {
@@ -378,9 +436,8 @@ class WallboxControl {
         Instant now = Instant.now();
         if (lastLoggedTargetAmps == null || lastLoggedMode != mode || Math.abs(lastLoggedTargetAmps - target) > 0.001
                 || lastTargetLog == null || !now.isBefore(lastTargetLog.plusSeconds(60))) {
-            LOG.info("Wallbox setpoint: mode={} rawTargetA={} limits=[{}] finalA={} clampReason={}",
-                    mode, String.format(java.util.Locale.ROOT, "%.3f", policy.rawTargetAmps()),
-                    policy.diagnostics(), String.format(java.util.Locale.ROOT, "%.3f", target), policy.clampReason());
+            LOG.info("Wallbox target: mode={} current={} A", mode,
+                    String.format(java.util.Locale.ROOT, "%.3f", target));
             lastLoggedTargetAmps = target;
             lastLoggedMode = mode;
             lastTargetLog = now;
@@ -388,48 +445,22 @@ class WallboxControl {
     }
 
     private void logReadback(ChargerReadings readings) {
-        if (lastWrittenTargetAmps == null) return;
+        if (lastAcceptedTargetAmps == null) return;
         Instant now = Instant.now();
+        boolean differs = readbackDiffers(readings, lastAcceptedTargetAmps,
+                (int) Math.max(0, successfulPolls - lastAcceptedWritePoll));
         if (lastReadbackLog == null || !now.isBefore(lastReadbackLog.plusSeconds(60))) {
-            LOG.info("Wallbox readback: lastWrittenHR8={}A IR4Applied={}A IR1028BoxLimit={}A IR2EvMax={}A IR1Phases={} IR1023HardwarePhases={} status={}",
-                    lastWrittenTargetAmps, readings.appliedAmps(), readings.installedMaxAmps(),
-                    readings.evMaxAmps(), readings.phases(), readings.hardwarePhases(), readings.status());
+            LOG.info("Wallbox current: requested={} A applied={} A matches={}",
+                    lastAcceptedTargetAmps, readings.appliedAmps(), !differs);
             lastReadbackLog = now;
-        }
-        boolean currentFlowing = readings.measuredActivePhases() > 0;
-        if (pauseCommandActive) {
-            consecutivePauseWithCurrent = currentFlowing ? consecutivePauseWithCurrent + 1 : 0;
-            if (consecutivePauseWithCurrent >= 2
-                    && (lastDeviationLog == null || !now.isBefore(lastDeviationLog.plusSeconds(60)))) {
-                LOG.warn("Box übernimmt Pause nicht: HR 2 wurde bestätigt, aber Phasenstrom fließt; "
-                                + "IR4={}A rawWords=[{}] L1/L2/L3={}A/{}A/{}A IR1={} IR53={} status={}",
-                        readings.appliedAmps(), readings.appliedAmpsRawHex(), readings.l1().amps(),
-                        readings.l2().amps(), readings.l3().amps(), readings.phases(),
-                        readings.selectedMode(), readings.status());
-                lastDeviationLog = now;
-            }
-            consecutiveTargetDeviations = 0;
-            return;
-        }
-        boolean differs = readbackDiffers(readings, lastWrittenTargetAmps);
-        consecutiveTargetDeviations = differs ? consecutiveTargetDeviations + 1 : 0;
-        if (consecutiveTargetDeviations >= 2
-                && (lastDeviationLog == null || !now.isBefore(lastDeviationLog.plusSeconds(60)))) {
-            LOG.warn("Box übernimmt Sollwert nicht oder begrenzt ihn: HR8={}A IR4={}A rawWords=[{}] "
-                            + "L1/L2/L3={}A/{}A/{}A IR1={} IR53={} IR1023={} IR1028={}A IR2={}A",
-                    lastWrittenTargetAmps, readings.appliedAmps(), readings.appliedAmpsRawHex(),
-                    readings.l1().amps(), readings.l2().amps(),
-                    readings.l3().amps(), readings.phases(), readings.selectedMode(), readings.hardwarePhases(),
-                    readings.installedMaxAmps(), readings.evMaxAmps());
-            lastDeviationLog = now;
         }
     }
 
-    static boolean readbackDiffers(ChargerReadings readings, float requestedAmps) {
-        boolean sessionVisible = readings.sessionActive() || readings.selectedMode() == 1
-                || readings.selectedMode() == 2 || readings.measuredActivePhases() > 0;
-        return sessionVisible && Float.isFinite(readings.appliedAmps())
-                && Math.abs(requestedAmps - readings.appliedAmps()) > 0.15f;
+    static boolean readbackDiffers(ChargerReadings readings, Float requestedAmps, int pollsSinceAcceptedWrite) {
+        if (requestedAmps == null || pollsSinceAcceptedWrite < 2 || readings.status() < 4 || readings.status() > 7
+                || !Float.isFinite(readings.appliedAmps())) return false;
+        float expected = requestedAmps >= 6 ? (float) Math.floor(requestedAmps) : 0;
+        return Math.abs(expected - readings.appliedAmps()) > 0.1f;
     }
 
     private record Write(float targetAmps, Float hr8Amps, String warning) {}
@@ -440,63 +471,41 @@ class WallboxControl {
         }
     }
 
-    private Write writeTarget(float target, WallboxPreferences active, long started) throws IOException {
-        if (target == 0 && pauseStrategy == PauseStrategy.PAUSE_COMMAND) {
+    private Write writeTarget(float target, WallboxPreferences active, long started,
+                              boolean statusChanged) throws IOException {
+        float wholeAmps = Float.isFinite(target) && target > 0 ? (float) Math.floor(target + 1e-9) : 0;
+        if (wholeAmps < settings.minCurrentA()) {
             if (!pauseCommandActive) {
                 beforeBoxWrite();
                 charger.confirmPause();
                 rememberCommand("PAUSE_HR2", null);
             }
             pauseCommandActive = true;
-            consecutivePauseWithCurrent = 0;
             return new Write(0, null, charger.recovery());
         }
-        if (target == 0 && pauseStrategy == PauseStrategy.MIN_CURRENT
-                && "below-minimum-current".equals(policy.clampReason()) && settings.gridLimitWatts() == 0) {
-            float minimum = settings.minCurrentA();
-            checkPositiveWrite(minimum, active, started);
-            beforeBoxWrite();
-            charger.setCurrent(minimum);
-            rememberCommand("HR8", minimum);
-            pauseCommandActive = false;
-            LOG.info("Pause strategy MIN_CURRENT keeps HR 8 at {} A", minimum);
-            return new Write(minimum, minimum, charger.recovery());
-        }
-        if (target == 0) {
-            if (!pauseCommandActive) {
-                beforeBoxWrite();
-                charger.confirmPause();
-                rememberCommand("PAUSE_HR2", null);
-            }
-            pauseCommandActive = true;
-            consecutivePauseWithCurrent = 0;
-            return new Write(0, null, charger.recovery());
-        }
-        checkPositiveWrite(target, active, started);
+        checkPositiveWrite(wholeAmps, active, started);
+        Float lastHr8Amps = lastCommand != null && "HR8".equals(lastCommand.command())
+                ? lastCommand.amps() : null;
+        if (!shouldWriteTarget(lastHr8Amps, wholeAmps, statusChanged, lastHr8WriteAt, Instant.now()))
+            return new Write(wholeAmps, null, charger.recovery());
         try {
             beforeBoxWrite();
-            charger.setCurrent(target);
-            rememberCommand("HR8", target);
+            charger.setCurrent(wholeAmps);
+            rememberCommand("HR8", wholeAmps);
             pauseCommandActive = false;
-            return new Write(target, target, charger.recovery());
+            return new Write(wholeAmps, wholeAmps, charger.recovery());
         } catch (InchModbusClient.DeviceException ex) {
-            if (ex.code() != 12 || target == 0) {
-                throw ex;
-            }
+            if (ex.code() != 12) throw ex;
             ChargerReadings fresh = charger.read();
             float max = fresh.maxAmps(settings.minCurrentA(), settings.maxCurrentA());
-            float retry = fresh.sessionActive() && max < target ? max : 0;
-            if (retry == 0) {
-                policy.pause();
-            }
-            LOG.warn("Current setpoint too high: Modbus exception 12 for HR 8={} A. IR 1028 box ceiling={} A, "
-                            + "IR 2 EV max={} A, effective ceiling={} A, retry={} A.",
-                    target, fresh.installedMaxAmps(), fresh.evMaxAmps(), max, retry);
+            float retry = fresh.sessionActive() && max < wholeAmps ? (float) Math.floor(max) : 0;
+            if (retry < settings.minCurrentA()) retry = 0;
+            if (retry == 0) policy.pause();
+            LOG.warn("Wallbox rejected the target: requested={} A, retry={} A.", wholeAmps, retry);
             if (retry == 0) {
                 charger.confirmPause();
                 rememberCommand("PAUSE_HR2", null);
                 pauseCommandActive = true;
-                consecutivePauseWithCurrent = 0;
                 return new Write(0, null, ex.getMessage());
             }
             checkPositiveWrite(retry, active, started);
@@ -520,7 +529,7 @@ class WallboxControl {
         // Do not hold the status lock while the worker finishes its final pause.
         try {
             if (!scheduler.awaitTermination(4, TimeUnit.SECONDS)) {
-                LOG.warn("Wallbox shutdown deadline expired; the hardware watchdog may take over.");
+                LOG.warn("Wallbox shutdown timed out; stopping retries.");
                 scheduler.shutdownNow();
             }
         } catch (InterruptedException ex) {

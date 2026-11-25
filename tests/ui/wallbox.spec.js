@@ -26,6 +26,12 @@ test("wallbox renders status before and after the first read and recovers from H
   data.watchdogPossible = false;
   data.pauseUnconfirmed = false;
   data.pollIntervalMs = 400;
+  data.setpointStatus = "AKTIV";
+  data.commandedTargetAmps = 7;
+  data.phaseSource = "measured-phase-currents";
+  data.effectivePhases = 3;
+  data.boxModel = "ETREL INCH";
+  data.boxSoftwareVersion = "6.0.0";
   let httpFailure = false;
   await page.route(statusRoute, (route) =>
     httpFailure
@@ -41,7 +47,7 @@ test("wallbox renders status before and after the first read and recovers from H
 
   data.lastSuccessfulRead = new Date().toISOString();
   data.lastCommand = { command: "HR8", amps: 7, at: data.lastSuccessfulRead };
-  data.boxReportedAppliedAmps = null;
+  data.boxReportedAppliedAmps = 7;
   data.appliedAmpsRawHex = "0000 0000";
   data.sample = {
     connected: true,
@@ -64,13 +70,16 @@ test("wallbox renders status before and after the first read and recovers from H
   await expect(page.locator("#wbStateText")).toHaveText("Lädt");
   await expect(panel.locator('[data-metric="power"]')).toHaveText("4,83 kW");
   await expect(panel.locator('[data-metric="phaseUse"]').first()).toContainText(
-    "3 (L1, L2, L3",
+    "3 (stabil gemessen)",
   );
-  await expect(panel.locator('[data-metric="target"]')).toContainText(
-    "7,0 A (HR 8)",
+  await expect(page.locator("#wbSetpointChip")).toHaveText("Sollwert aktiv");
+  await expect(page.locator("#wbSetpointRequested")).toHaveText("7 A");
+  await expect(page.locator("#wbSetpointApplied")).toHaveText("7 A");
+  await expect(page.locator("#wbMeasuredCurrents")).toHaveText(
+    "7,0 A / 7,0 A / 7,0 A",
   );
-  await expect(panel.locator('[data-metric="reported"]')).toHaveText(
-    "nicht verfügbar",
+  await expect(panel.locator('[data-metric="lastCommand"]')).toContainText(
+    "7 A (HR 8)",
   );
   await expect(page.locator("#wbAccessLine")).toBeVisible();
   await expect(page.locator("#wbAccess")).toHaveAttribute(
@@ -78,6 +87,15 @@ test("wallbox renders status before and after the first read and recovers from H
     data.lastSuccessfulRead,
   );
   await expect(page.locator("#wbWarning")).toBeHidden();
+
+  data.setpointStatus = "BOX_IGNORIERT_SOLLWERT";
+  data.boxReportedAppliedAmps = 0;
+  await expect(page.locator("#wbSetpointChip")).toHaveText(
+    "Wallbox ignoriert Sollwert",
+  );
+  await expect(page.locator("#wbBoxIgnored")).toHaveText(
+    "Wallbox übernimmt den Sollwert nicht. Bitte Stecker ab- und wieder anstecken.",
+  );
 
   const overflowingLabels = await panel
     .locator(".wb-energy dt")
@@ -94,8 +112,11 @@ test("wallbox renders status before and after the first read and recovers from H
     amps: null,
     at: data.lastSuccessfulRead,
   };
+  data.setpointStatus = "AKTIV";
+  data.commandedTargetAmps = 0;
+  data.boxReportedAppliedAmps = 0;
   data.sample.targetAmps = 0;
-  await expect(panel.locator('[data-metric="target"]')).toContainText(
+  await expect(panel.locator('[data-metric="lastCommand"]')).toContainText(
     "Pause (HR 2)",
   );
   await expect(page.locator("#wbStateText")).toHaveText("Von App pausiert");
@@ -119,8 +140,8 @@ test("wallbox modes, Smart limits, live readings and loss of connection", async 
   const initial = {
     enabled: false,
     mode: "ECO",
-    smartMinUsoc: 20,
-    smartReservePercent: 5,
+    smartMinUsoc: 30,
+    smartReservePercent: 10,
   };
   await request.post(url, { data: initial });
   try {

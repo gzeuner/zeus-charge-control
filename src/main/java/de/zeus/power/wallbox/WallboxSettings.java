@@ -7,8 +7,8 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 @ConfigurationProperties("wallbox")
 record WallboxSettings(@DefaultValue("wallbox.local") String host, @DefaultValue("502") int port,
                        @DefaultValue("1") int unitId, @DefaultValue("POWER") String mode,
-                       @DefaultValue("8000") int pollIntervalMs, @DefaultValue("20") int smartMinUsoc,
-                       @DefaultValue("5") int smartReservePercent, @DefaultValue("16") int resumeHoldSeconds,
+                       @DefaultValue("8000") int pollIntervalMs, @DefaultValue("30") int smartMinUsoc,
+                       @DefaultValue("10") int smartReservePercent, @DefaultValue("16") int resumeHoldSeconds,
                        @DefaultValue("true") boolean consumptionIncludesWallbox,
                        @DefaultValue("2000") int connectTimeoutMs, @DefaultValue("2500") int readTimeoutMs,
                        @DefaultValue("3") int maxErrorsBeforeReconnect,

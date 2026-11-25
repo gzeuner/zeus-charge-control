@@ -1054,6 +1054,65 @@ h1 {
   color: var(--battery-text);
   background: color-mix(in srgb, var(--battery-text) 8%, transparent);
 }
+.wb-setpoint-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 11px;
+  color: var(--muted);
+  background: var(--surface-muted);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.wb-setpoint-chip[data-status="WIRD_UEBERNOMMEN"] {
+  color: #1557a0;
+  background: #e7f1ff;
+  border-color: #b6d4fe;
+}
+.wb-setpoint-chip[data-status="AKTIV"] {
+  color: #176b37;
+  background: #e8f5ec;
+  border-color: #b8dfc4;
+}
+.wb-setpoint-chip[data-status="BOX_IGNORIERT_SOLLWERT"] {
+  color: #842029;
+  background: #f8d7da;
+  border-color: #f1aeb5;
+}
+.wb-setpoint-flow {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(
+      0,
+      1.4fr
+    );
+  align-items: center;
+  gap: 10px;
+  padding: 12px 15px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-muted);
+}
+.wb-setpoint-flow > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.wb-setpoint-flow > div > span {
+  color: var(--muted);
+  font-size: 10px;
+}
+.wb-setpoint-flow b {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.wb-flow-arrow {
+  color: var(--muted);
+  font-size: 18px;
+}
 .wallbox-panel dl,
 .wallbox-panel dd {
   margin: 0;
@@ -1323,6 +1382,14 @@ h1 {
 #wbFeedback:not([hidden]) {
   margin: 10px 0 0;
 }
+.wb-box-ignored:not([hidden]) {
+  padding: 14px 16px;
+  border: 2px solid var(--danger);
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 750;
+  line-height: 1.45;
+}
 @media (max-width: 760px) {
   .wallbox-panel {
     margin-top: 17px;
@@ -1360,6 +1427,15 @@ h1 {
   }
   .wb-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .wb-setpoint-flow {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+  .wb-setpoint-flow > div:last-child {
+    grid-column: 1 / -1;
+  }
+  .wb-setpoint-flow .wb-flow-arrow:nth-of-type(2) {
+    display: none;
   }
   .wb-diagnostics {
     grid-template-columns: repeat(2, minmax(0, 1fr));

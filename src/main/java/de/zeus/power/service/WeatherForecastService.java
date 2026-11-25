@@ -3,6 +3,7 @@ package de.zeus.power.service;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
+import jakarta.annotation.PostConstruct;
 import de.zeus.power.config.LogFilter;
 import de.zeus.power.util.ChargingUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,17 +25,21 @@ import java.util.TreeMap;
 @Service
 public class WeatherForecastService {
 
-    @Value("${weather.api.enabled:true}")
+    @Value("${weather.api.enabled:false}")
     private boolean enabled;
 
     @Value("${weather.api.base-url:https://api.open-meteo.com/v1/forecast}")
     private String baseUrl;
 
-    @Value("${weather.api.latitude:52.52}")
-    private double latitude;
+    @Value("${weather.api.latitude:}")
+    private String latitudeConfig;
 
-    @Value("${weather.api.longitude:13.405}")
+    @Value("${weather.api.longitude:}")
+    private String longitudeConfig;
+
+    private double latitude;
     private double longitude;
+    private boolean configurationChecked;
 
     /** Which hourly params to request (default: cloudcover). */
     @Value("${weather.api.hourly-params:cloudcover}")
@@ -53,7 +58,40 @@ public class WeatherForecastService {
 
     private final ObjectMapper mapper = JsonMapper.builder().build();
 
-    public boolean isEnabled() { return enabled; }
+    @PostConstruct
+    void validateConfiguration() {
+        ensureConfiguration();
+    }
+
+    public boolean isEnabled() {
+        ensureConfiguration();
+        return enabled;
+    }
+
+    private synchronized void ensureConfiguration() {
+        if (configurationChecked) return;
+        configurationChecked = true;
+        if (!enabled) return;
+        try {
+            if (latitudeConfig == null || latitudeConfig.isBlank()
+                    || longitudeConfig == null || longitudeConfig.isBlank()) {
+                throw new IllegalArgumentException("coordinates are missing");
+            }
+            double configuredLatitude = Double.parseDouble(latitudeConfig.trim());
+            double configuredLongitude = Double.parseDouble(longitudeConfig.trim());
+            if (!Double.isFinite(configuredLatitude) || configuredLatitude < -90 || configuredLatitude > 90
+                    || !Double.isFinite(configuredLongitude) || configuredLongitude < -180
+                    || configuredLongitude > 180) {
+                throw new IllegalArgumentException("coordinates are invalid");
+            }
+            latitude = configuredLatitude;
+            longitude = configuredLongitude;
+        } catch (IllegalArgumentException ex) {
+            enabled = false;
+            LogFilter.logWarn(getClass(),
+                    "Weather forecast disabled: set valid weather.api.latitude and weather.api.longitude.");
+        }
+    }
 
     private record Hour(int cover, double radiation) {}
     private NavigableMap<Long, Hour> forecast = new TreeMap<>();
@@ -63,7 +101,7 @@ public class WeatherForecastService {
 
     // Publish only complete snapshots. Keep the previous forecast through short outages.
     private synchronized NavigableMap<Long, Hour> snapshot(long now) {
-        if (!enabled) return new TreeMap<>();
+        if (!isEnabled()) return new TreeMap<>();
         if (now - fetchedAt >= HOUR && now - lastAttempt >= 300_000L) {
             lastAttempt = now;
             try {

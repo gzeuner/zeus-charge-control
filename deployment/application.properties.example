@@ -10,25 +10,25 @@ spring.thymeleaf.cache=true
 # Persistent H2 storage, relative to the extracted package.
 spring.datasource.url=${SPRING_DATASOURCE_URL:jdbc:h2:file:./data/zeus-charge-control;DB_CLOSE_ON_EXIT=FALSE}
 spring.datasource.username=${SPRING_DATASOURCE_USERNAME:sa}
-spring.datasource.password=${SPRING_DATASOURCE_PASSWORD:password}
+spring.datasource.password=${SPRING_DATASOURCE_PASSWORD:}
 spring.jpa.hibernate.ddl-auto=update
 
 # Sonnen API v2. Enter the local base URL (for example http://<BATTERY_IP>/api/v2) and token.
 battery.url=${BATTERY_URL:}
 battery.authToken=${BATTERY_AUTH_TOKEN:}
 battery.time-zone=${BATTERY_TIME_ZONE:Europe/Berlin}
-battery.inverter.max.watts=${BATTERY_INVERTER_MAX_WATTS:4600}
-battery.grid.import.limit.watts=${BATTERY_GRID_IMPORT_LIMIT_WATTS:4600}
-# Match module count and usable module capacity to the installed battery.
-battery.capacity.installed-modules=${BATTERY_INSTALLED_MODULES:2}
+# Example values, please adjust to your installation.
+battery.inverter.max.watts=${BATTERY_INVERTER_MAX_WATTS:5000}
+battery.grid.import.limit.watts=${BATTERY_GRID_IMPORT_LIMIT_WATTS:5000}
+battery.capacity.installed-modules=${BATTERY_INSTALLED_MODULES:1}
 battery.capacity.module-usable-capacity-wh=${BATTERY_MODULE_USABLE_CAPACITY_WH:5000}
-# Seasonal targets are examples; tune them to your reserve and usage.
+# Example seasonal targets, please adjust to your reserve and usage.
 battery.season.winter.start-month=${BATTERY_WINTER_START_MONTH:11}
 battery.season.winter.end-month=${BATTERY_WINTER_END_MONTH:2}
-battery.season.winter.target-state-of-charge=${BATTERY_WINTER_TARGET_SOC:90}
+battery.season.winter.target-state-of-charge=${BATTERY_WINTER_TARGET_SOC:80}
 battery.season.summer.start-month=${BATTERY_SUMMER_START_MONTH:3}
 battery.season.summer.end-month=${BATTERY_SUMMER_END_MONTH:10}
-battery.season.summer.target-state-of-charge=${BATTERY_SUMMER_TARGET_SOC:70}
+battery.season.summer.target-state-of-charge=${BATTERY_SUMMER_TARGET_SOC:60}
 battery.status.cache.duration.seconds=${BATTERY_STATUS_CACHE_SECONDS:10}
 battery.config.cache.duration.seconds=${BATTERY_CONFIG_CACHE_SECONDS:300}
 battery.history.max.entries=${BATTERY_HISTORY_MAX_ENTRIES:24}
@@ -43,7 +43,8 @@ battery.nightChargingIdle=${BATTERY_NIGHT_CHARGING_IDLE:false}
 battery.handback.debounce.ms=${BATTERY_HANDBACK_DEBOUNCE_MS:60000}
 battery.setpoint.refresh.ms=${BATTERY_SETPOINT_REFRESH_MS:0}
 battery.night.state.path=${BATTERY_NIGHT_STATE_PATH:./data/night-idle.state}
-battery.rsoc.min.floor=${BATTERY_RSOC_MIN_FLOOR:15}
+# Example floor, please adjust to your battery and usage.
+battery.rsoc.min.floor=${BATTERY_RSOC_MIN_FLOOR:20}
 battery.rsoc.drop.default.per.hour=${BATTERY_RSOC_DROP_DEFAULT_PER_HOUR:3.0}
 
 # Market-price refresh and provider. Tibber needs a token; Awattar remains the fallback.
@@ -78,11 +79,11 @@ scheduling.preview.pv-kwp=${SCHEDULING_PREVIEW_PV_KWP:0}
 scheduling.preview.household-watts=${SCHEDULING_PREVIEW_HOUSEHOLD_WATTS:0}
 
 # Weather-aware charging uses the public Open-Meteo API; no API token is required.
-# Enter both numeric coordinates, then enable the feature.
+# Example: set both coordinates before enabling the feature.
 weather.api.enabled=${WEATHER_API_ENABLED:false}
 weather.api.base-url=${WEATHER_API_BASE_URL:https://api.open-meteo.com/v1/forecast}
-# weather.api.latitude=YOUR_LATITUDE
-# weather.api.longitude=YOUR_LONGITUDE
+# weather.api.latitude=<LATITUDE>
+# weather.api.longitude=<LONGITUDE>
 weather.api.hourly-params=${WEATHER_API_HOURLY_PARAMS:cloudcover}
 weather.sunny-threshold=${WEATHER_SUNNY_THRESHOLD_PERCENT:40}
 weather.lookahead.hours=${WEATHER_LOOKAHEAD_HOURS:12}
@@ -91,10 +92,13 @@ weather.wait.min.rsoc=${WEATHER_WAIT_MIN_RSOC:45}
 
 # Wallbox Modbus control. Fill in the IP and set WALLBOX_ENABLED=true only when ready to control it.
 wallbox.enabled=${WALLBOX_ENABLED:false}
-wallbox.host=${WALLBOX_HOST:<WALLBOX_IP>}
+wallbox.host=${WALLBOX_HOST:wallbox.local}
 wallbox.port=${WALLBOX_PORT:502}
 wallbox.unit-id=${WALLBOX_UNIT_ID:1}
 wallbox.mode=${WALLBOX_MODE:POWER}
+# Example Smart thresholds, please adjust to your battery settings.
+wallbox.smart-min-usoc=${WALLBOX_SMART_MIN_USOC:30}
+wallbox.smart-reserve-percent=${WALLBOX_SMART_RESERVE_PERCENT:10}
 wallbox.poll-interval-ms=${WALLBOX_POLL_INTERVAL_MS:8000}
 wallbox.keepalive-ms=${WALLBOX_KEEPALIVE_MS:10000}
 wallbox.box-watchdog-seconds=${WALLBOX_BOX_WATCHDOG_SECONDS:35}
@@ -102,15 +106,12 @@ wallbox.connect-timeout-ms=${WALLBOX_CONNECT_TIMEOUT_MS:2000}
 wallbox.read-timeout-ms=${WALLBOX_READ_TIMEOUT_MS:2500}
 wallbox.max-errors-before-reconnect=${WALLBOX_MAX_ERRORS_BEFORE_RECONNECT:3}
 wallbox.consumption-includes-wallbox=${WALLBOX_CONSUMPTION_INCLUDES_WALLBOX:true}
-wallbox.smart-min-usoc=${WALLBOX_SMART_MIN_USOC:20}
-wallbox.smart-reserve-percent=${WALLBOX_SMART_RESERVE_PERCENT:5}
 wallbox.resume-hold-seconds=${WALLBOX_RESUME_HOLD_SECONDS:16}
 wallbox.phases=${WALLBOX_PHASES:3}
 wallbox.voltage=${WALLBOX_VOLTAGE:230}
 wallbox.min-current-a=${WALLBOX_MIN_CURRENT_A:6}
 wallbox.max-current-a=${WALLBOX_MAX_CURRENT_A:16}
 wallbox.grid-limit-watts=${WALLBOX_GRID_LIMIT_WATTS:0}
-wallbox.pause-strategy=${WALLBOX_PAUSE_STRATEGY:PAUSE_COMMAND}
 wallbox.config-file=${WALLBOX_CONFIG_FILE:./config/application.properties}
 
 # KOSTAL PLENTICORE / PIKO IQ read-only Modbus TCP. Fill in the IP before enabling.
@@ -129,19 +130,19 @@ kostal.max-pv-power-w=${KOSTAL_MAX_PV_POWER_W:30000}
 # Use fresh KOSTAL PV readings in surplus control; stale/unavailable KOSTAL data falls back to Sonnen.
 kostal.pv-source=${KOSTAL_PV_SOURCE:KOSTAL}
 
-# Local quiet hours. Align these with your tariff and routine.
-night.start=${NIGHT_START:19}
+# Example quiet hours, please adjust to your routine.
+night.start=${NIGHT_START:22}
 night.end=${NIGHT_END:6}
 
-# Display-only tariff estimate. Replace defaults with your own contract charges.
+# Example surcharges, please adjust to your tariff.
 price.display.vat-rate=${PRICE_DISPLAY_VAT_RATE:0.19}
-price.display.surcharges.procurement=${PRICE_DISPLAY_PROCUREMENT:1.81}
-price.display.surcharges.grid=${PRICE_DISPLAY_GRID:7.58}
-price.display.surcharges.concession=${PRICE_DISPLAY_CONCESSION:1.59}
-price.display.surcharges.electricity-tax=${PRICE_DISPLAY_ELECTRICITY_TAX:2.05}
-price.display.surcharges.offshore=${PRICE_DISPLAY_OFFSHORE:0.941}
-price.display.surcharges.kwk=${PRICE_DISPLAY_KWK:0.446}
-price.display.surcharges.stromnev19=${PRICE_DISPLAY_STROMNEV19:1.56}
+price.display.surcharges.procurement=${PRICE_DISPLAY_PROCUREMENT:2.0}
+price.display.surcharges.grid=${PRICE_DISPLAY_GRID:5.0}
+price.display.surcharges.concession=${PRICE_DISPLAY_CONCESSION:1.5}
+price.display.surcharges.electricity-tax=${PRICE_DISPLAY_ELECTRICITY_TAX:2.0}
+price.display.surcharges.offshore=${PRICE_DISPLAY_OFFSHORE:1.0}
+price.display.surcharges.kwk=${PRICE_DISPLAY_KWK:0.5}
+price.display.surcharges.stromnev19=${PRICE_DISPLAY_STROMNEV19:1.5}
 
 # Rotating logs use the current Spring Boot property names.
 logging.file.name=${LOGGING_FILE_NAME:logs/power.log}

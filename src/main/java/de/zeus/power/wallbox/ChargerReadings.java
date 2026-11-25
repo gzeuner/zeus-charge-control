@@ -17,8 +17,6 @@ record ChargerReadings(int status, int phases, int hardwarePhases, float evMaxAm
     }
 
     int effectivePhases(int configuredPhases) {
-        int measured = measuredActivePhases();
-        if (measured > 0) return measured;
         return hardwarePhases >= 1 && hardwarePhases <= 3 ? hardwarePhases : configuredPhases;
     }
 
@@ -31,12 +29,11 @@ record ChargerReadings(int status, int phases, int hardwarePhases, float evMaxAm
     }
 
     String phaseSource() {
-        if (measuredActivePhases() > 0) return "measured-phase-currents>1A";
         if (hardwarePhases >= 1 && hardwarePhases <= 3) return "IR1023";
         return "wallbox.phases";
     }
 
-    boolean enabled() {
+    boolean boxApplyingSetpoint() {
         return appliedAmps > 0;
     }
 
@@ -64,7 +61,7 @@ record ChargerReadings(int status, int phases, int hardwarePhases, float evMaxAm
             case 2 -> "1 (L2)";
             case 3 -> "1 (L3)";
             case 4 -> "Unbekannt";
-            case 5 -> "2";
+            case 5, 6, 7 -> "2";
             default -> "Unbekannt";
         };
     }
@@ -83,25 +80,14 @@ record ChargerReadings(int status, int phases, int hardwarePhases, float evMaxAm
 
     float maxAmps(int min, int configuredMax) {
         float max = configuredMax;
-        if (plausibleCeiling(installedMaxAmps, min)) max = Math.min(max, installedMaxAmps);
-        // IR 2 is the vehicle's negotiated limit. Before a session it is commonly zero;
-        // that means "not available", not a zero-amp capability.
-        if ((sessionActive() || selectedMode == 1 || selectedMode == 2)
-                && plausibleCeiling(evMaxAmps, min)) {
-            max = Math.min(max, evMaxAmps);
-        }
+        if (validBoxCeiling(installedMaxAmps)) max = Math.min(max, installedMaxAmps);
         return max >= min ? max : 0;
     }
 
     String ignoredCeilings(int min) {
         StringBuilder ignored = new StringBuilder();
-        if (!plausibleCeiling(installedMaxAmps, min)) {
+        if (!validBoxCeiling(installedMaxAmps)) {
             ignored.append("ignored IR1028=").append(installedMaxAmps).append(" (unknown)");
-        }
-        if (!(sessionActive() || selectedMode == 1 || selectedMode == 2)) {
-            append(ignored, "ignored IR2=" + evMaxAmps + " (no session)");
-        } else if (!plausibleCeiling(evMaxAmps, min)) {
-            append(ignored, "ignored IR2=" + evMaxAmps + " (unknown)");
         }
         return ignored.toString();
     }
@@ -110,16 +96,17 @@ record ChargerReadings(int status, int phases, int hardwarePhases, float evMaxAm
         float ceiling = maxAmps(min, configuredMax);
         StringBuilder sources = new StringBuilder();
         if (ceiling == configuredMax) append(sources, "wallbox.max-current-a");
-        if (plausibleCeiling(installedMaxAmps, min) && installedMaxAmps <= ceiling)
+        if (validBoxCeiling(installedMaxAmps) && installedMaxAmps <= ceiling)
             append(sources, "IR1028");
-        if ((sessionActive() || selectedMode == 1 || selectedMode == 2)
-                && plausibleCeiling(evMaxAmps, min) && evMaxAmps <= ceiling)
-            append(sources, "IR2");
         return sources.isEmpty() ? "wallbox.max-current-a" : sources.toString();
     }
 
     private static boolean plausibleCeiling(float value, int min) {
         return Float.isFinite(value) && value >= min;
+    }
+
+    private static boolean validBoxCeiling(float value) {
+        return Float.isFinite(value) && value > 0;
     }
 
     private static void append(StringBuilder text, String value) {

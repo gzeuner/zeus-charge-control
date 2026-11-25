@@ -28,7 +28,7 @@ zeus-charge-control-<version>/
 2. Java prüfen: `java -version`. Falls `JAVA_HOME` gesetzt ist, muss auch dieses auf Java 21 oder neuer zeigen.
 3. `config/application.properties.example` nach `config/application.properties` kopieren und prüfen: Batterie-URL/-Token, Kapazität, Leistung, saisonale Ladeziele und Tarifaufschläge müssen zur Anlage passen. Alternativ die vorgesehenen Umgebungsvariablen setzen.
 4. Im Paketordner `start.bat` ausführen. Die Startdatei überschreibt keine Tokens oder vorhandenen Umgebungsvariablen.
-5. `http://127.0.0.1:8080/charging-status` öffnen. Mit `Strg+C` beenden.
+5. `http://localhost:8080/charging-status` öffnen. Mit `Strg+C` beenden.
 
 ```powershell
 Copy-Item config/application.properties.example config/application.properties
@@ -53,7 +53,7 @@ Set `JAVA_HOME` to the intended Java installation if needed. The script resolves
 
 ## Konfiguration und Betrieb / Configuration and operation
 
-- Die Vorlage bindet die UI an **127.0.0.1**. Für direkten LAN-Zugriff `SERVER_ADDRESS` bewusst anpassen, beispielsweise auf `0.0.0.0`, oder einen passend konfigurierten Reverse Proxy verwenden. Die Anwendung besitzt keine eigene Benutzeranmeldung. / The example binds to **127.0.0.1**. Deliberately configure a LAN binding or reverse proxy if needed; the application has no built-in user login.
+- Die Vorlage bindet die UI an **localhost**. Für direkten LAN-Zugriff `SERVER_ADDRESS` bewusst anpassen, beispielsweise auf `0.0.0.0`, oder einen passend konfigurierten Reverse Proxy verwenden. Die Anwendung besitzt keine eigene Benutzeranmeldung. / The example binds to **localhost**. Deliberately configure a LAN binding or reverse proxy if needed; the application has no built-in user login.
 - Ohne Batterie-URL und Token zeigt die Anwendung „Speicher nicht erreichbar“ und steuert keine Anlage. / Without battery URL and token, the application remains unconfigured and does not control hardware.
 - Die externe Konfiguration liegt unter `config/`; sämtliche übrigen Standardwerte befinden sich im JAR. Kommandozeilenargumente überschreiben die Konfiguration. / External settings are loaded from `config/`; remaining defaults stay inside the JAR. Command-line arguments take precedence.
 - Die Vorlage verwendet eine **dateibasierte H2-Datenbank** unter `data/`, aktiviert Schema-Updates und deaktiviert die H2-Webkonsole. Vor dem Einspielen vorhandener Datenbanken die Kompatibilität mit der neuen H2-/Hibernate-Version prüfen. / The example uses a **file-backed H2 database** in `data/`, enables schema updates and disables the H2 web console. Verify existing database compatibility before migration.

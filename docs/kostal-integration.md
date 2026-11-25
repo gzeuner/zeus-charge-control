@@ -1,5 +1,9 @@
 # Wallbox and KOSTAL configuration
 
+> **DE: Die Anbindung des Wechselrichters KOSTAL und der Wallbox ETREL INCH ist EXPERIMENTELL und optional. Nutzung auf eigene Verantwortung.**
+>
+> **EN: Support for the KOSTAL inverter and the ETREL INCH wallbox is EXPERIMENTAL and optional. Use at your own risk.**
+
 The wallbox and inverter features use independent switches: `wallbox.enabled` and `kostal.enabled`. Both default to `false` in the example configuration and in code. With wallbox control disabled, the application runs in monitoring mode and does not poll or control the charger. With KOSTAL disabled, PV surplus continues to use the Sonnen battery values.
 
 ## KOSTAL PLENTICORE / PIKO IQ

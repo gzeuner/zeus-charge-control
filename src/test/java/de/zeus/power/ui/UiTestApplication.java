@@ -34,16 +34,16 @@ import static org.mockito.Mockito.*;
 public class UiTestApplication {
     public static void main(String[] args) throws java.io.IOException {
         SpringApplication app = new SpringApplication(UiTestApplication.class);
-        app.setDefaultProperties(Map.of("server.address", "127.0.0.1", "server.port", "18080",
+        app.setDefaultProperties(Map.of("server.address", "localhost", "server.port", "18080",
                 "spring.datasource.url", "jdbc:h2:mem:ui-fixture", "spring.jpa.hibernate.ddl-auto", "create-drop",
                 "spring.h2.console.enabled", "false", "logging.file.name", "target/ui-test-server.log"));
         var directory = java.nio.file.Files.createTempDirectory("zeus-wallbox-ui");
         var config = directory.resolve("application.properties");
-        java.nio.file.Files.writeString(config, "# BEGIN Zeus wallbox GUI\nwallbox.enabled=false\nwallbox.mode=ECO\nwallbox.smart-min-usoc=20\nwallbox.smart-reserve-percent=5\n# END Zeus wallbox GUI\n");
+        java.nio.file.Files.writeString(config, "# BEGIN Zeus wallbox GUI\nwallbox.enabled=false\nwallbox.mode=ECO\nwallbox.smart-min-usoc=30\nwallbox.smart-reserve-percent=10\n# END Zeus wallbox GUI\n");
         directory.toFile().deleteOnExit();
         config.toFile().deleteOnExit();
         app.run("--wallbox.config-file=" + config, "--wallbox.enabled=true", "--wallbox.mode=ECO",
-                "--wallbox.host=127.0.0.1", "--wallbox.port=1", "--battery.url=http://127.0.0.1:1");
+                "--wallbox.host=localhost", "--wallbox.port=1", "--battery.url=http://localhost:1");
     }
 
     @Bean TestState testState() { return new TestState(); }

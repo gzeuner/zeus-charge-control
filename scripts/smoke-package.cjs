@@ -70,7 +70,7 @@ async function freePort() {
   const socket = net.createServer();
   await new Promise((resolve, reject) => {
     socket.once("error", reject);
-    socket.listen(0, "127.0.0.1", resolve);
+    socket.listen(0, "localhost", resolve);
   });
   const port = socket.address().port;
   await new Promise((resolve) => socket.close(resolve));
@@ -180,14 +180,14 @@ async function expectMissingConfig(kind, appDir, jdk, bash) {
 async function checkRunningPackage(kind, appDir, jdk, bash, pricePort) {
   const port = await freePort();
   const args = [
-    `--server.address=127.0.0.1`,
+    `--server.address=localhost`,
     `--server.port=${port}`,
     "--battery.url=",
     "--battery.authToken=",
     "--marketdata.source=awattar",
-    `--awattar.marketdata.url=http://127.0.0.1:${pricePort}/marketdata`,
+    `--awattar.marketdata.url=http://localhost:${pricePort}/marketdata`,
     "--awattar.authToken=",
-    `--tibber.marketdata.url=http://127.0.0.1:${pricePort}/marketdata`,
+    `--tibber.marketdata.url=http://localhost:${pricePort}/marketdata`,
     "--tibber.authToken=",
     "--weather.api.enabled=false",
     "--scheduled.job.cron=-",
@@ -211,7 +211,7 @@ async function checkRunningPackage(kind, appDir, jdk, bash, pricePort) {
         throw new Error(`${kind}: application exited (${child.exitCode})`);
       try {
         const response = await fetch(
-          `http://127.0.0.1:${port}/current-status`,
+          `http://localhost:${port}/current-status`,
           { signal: AbortSignal.timeout(1000) },
         );
         if (response.ok) {
@@ -237,7 +237,7 @@ async function checkRunningPackage(kind, appDir, jdk, bash, pricePort) {
       ["en", "Energy, beautifully in control.", "Quiet hours"],
     ]) {
       const page = await fetch(
-        `http://127.0.0.1:${port}/charging-status?lang=${lang}`,
+        `http://localhost:${port}/charging-status?lang=${lang}`,
       );
       const html = await page.text();
       assert(
@@ -248,19 +248,19 @@ async function checkRunningPackage(kind, appDir, jdk, bash, pricePort) {
         `${kind}: dashboard translation failed for ${lang}`,
       );
     }
-    const css = await fetch(`http://127.0.0.1:${port}/css/darkmode.css`);
+    const css = await fetch(`http://localhost:${port}/css/darkmode.css`);
     assert(
       css.ok && (await css.text()).includes("--battery-bg"),
       `${kind}: packaged browser asset missing`,
     );
-    const demo = await fetch(`http://127.0.0.1:${port}/__test/reset`, {
+    const demo = await fetch(`http://localhost:${port}/__test/reset`, {
       method: "POST",
     });
     assert(
       demo.status === 404,
       `${kind}: test endpoint present in deployed JAR`,
     );
-    const consoleResponse = await fetch(`http://127.0.0.1:${port}/h2-console`);
+    const consoleResponse = await fetch(`http://localhost:${port}/h2-console`);
     assert(consoleResponse.status === 404, `${kind}: H2 console was exposed`);
     const databaseName =
       kind === "jar" ? "standalone-jar" : "zeus-charge-control";
@@ -397,7 +397,7 @@ async function checkRunningPackage(kind, appDir, jdk, bash, pricePort) {
     "\nspring.messages.basename=messages\n",
   );
   const priceServer = http.createServer((request, response) => {
-    const query = new URL(request.url, "http://127.0.0.1");
+    const query = new URL(request.url, "http://localhost");
     const base = Math.max(
       Number(query.searchParams.get("start")) || 0,
       Math.floor(Date.now() / 3600000) * 3600000,
@@ -415,7 +415,7 @@ async function checkRunningPackage(kind, appDir, jdk, bash, pricePort) {
       }),
     );
   });
-  await new Promise((resolve) => priceServer.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve) => priceServer.listen(0, "localhost", resolve));
   try {
     for (const kind of kinds)
       await checkRunningPackage(

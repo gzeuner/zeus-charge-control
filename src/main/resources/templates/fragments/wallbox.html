@@ -18,6 +18,12 @@
       th:data-box-mismatch="#{wallbox.boxMismatch}"
       th:data-ignored="#{wallbox.ignored}" th:data-unavailable="#{wallbox.unavailable}"
       th:data-solar-offline="#{wallbox.solarOffline}" th:data-pause-unconfirmed="#{wallbox.pauseUnconfirmed}"
+      th:data-setpoint-none="#{wallbox.setpoint.keineSession}"
+      th:data-setpoint-pending="#{wallbox.setpoint.wirdUebernommen}"
+      th:data-setpoint-active="#{wallbox.setpoint.aktiv}"
+      th:data-setpoint-ignored="#{wallbox.setpoint.ignoriert}"
+      th:data-box-ignored="#{wallbox.boxIgnored}"
+      th:data-phase-configured="#{wallbox.phaseConfigured}"
       th:data-save-error="#{wallbox.saveError}" th:data-api-error="#{wallbox.apiError}"
       th:data-render-error="#{wallbox.renderError}"
       th:data-phase-measured-label="#{wallbox.phaseMeasured}">
@@ -56,7 +62,14 @@
         <div id="wbLive" class="wb-live" hidden>
           <section class="wb-hero" aria-label="Wallbox status">
             <div><span class="wb-kicker" th:text="#{wallbox.power}"></span><strong data-metric="power" class="wb-power">–</strong></div>
-            <div class="wb-chips"><span id="wbState" class="wb-state" data-state="idle"><i id="wbStateIcon" class="fas fa-hourglass-half" aria-hidden="true"></i><span id="wbStateText">–</span></span><span id="wbModeChip" class="wb-mode-chip">–</span></div>
+            <div class="wb-chips"><span id="wbState" class="wb-state" data-state="idle"><i id="wbStateIcon" class="fas fa-hourglass-half" aria-hidden="true"></i><span id="wbStateText"></span></span><span id="wbSetpointChip" class="wb-setpoint-chip" data-status="KEINE_SESSION"></span><span id="wbModeChip" class="wb-mode-chip"></span></div>
+          </section>
+          <section class="wb-setpoint-flow" aria-label="Wallbox setpoint and current">
+            <div><span th:text="#{wallbox.target}"></span><b id="wbSetpointRequested"></b></div>
+            <span class="wb-flow-arrow" aria-hidden="true">→</span>
+            <div><span th:text="#{wallbox.reported}"></span><b id="wbSetpointApplied"></b></div>
+            <span class="wb-flow-arrow" aria-hidden="true">→</span>
+            <div><span th:text="#{wallbox.current}"></span><b id="wbMeasuredCurrents"></b></div>
           </section>
           <section class="wb-phase-card" aria-label="Phase currents">
             <div class="wb-section-heading"><h3 th:text="#{wallbox.current}"></h3><span data-metric="phaseUse">–</span></div>
@@ -67,8 +80,6 @@
             </div>
           </section>
           <dl class="wb-metrics">
-            <div><dt th:text="#{wallbox.target}"></dt><dd data-metric="target">–</dd></div>
-            <div><dt th:text="#{wallbox.reported}"></dt><dd data-metric="reported">–</dd></div>
             <div><dt th:text="#{wallbox.boxMax}"></dt><dd data-metric="boxMax">–</dd></div>
             <div><dt th:text="#{wallbox.evMax}"></dt><dd data-metric="evMax">–</dd></div>
             <div><dt th:text="#{wallbox.available}"></dt><dd data-metric="available">–</dd></div>
@@ -93,6 +104,9 @@
               <div><dt th:text="#{wallbox.boxMaxRaw}"></dt><dd data-metric="boxMaxRaw">–</dd></div>
               <div><dt th:text="#{wallbox.hardwarePhases}"></dt><dd data-metric="hardwarePhasesRaw">–</dd></div>
               <div><dt th:text="#{wallbox.rawMode}"></dt><dd data-metric="rawMode">–</dd></div>
+              <div><dt th:text="#{wallbox.model}"></dt><dd data-metric="boxModel"></dd></div>
+              <div><dt th:text="#{wallbox.softwareVersion}"></dt><dd data-metric="softwareVersion"></dd></div>
+              <div><dt th:text="#{wallbox.lastCommand}"></dt><dd data-metric="lastCommand"></dd></div>
               <div><dt th:text="#{wallbox.hardwarePhases}"></dt><dd data-metric="hardwarePhases">–</dd></div>
               <div><dt th:text="#{wallbox.boxMax}"></dt><dd data-metric="boxMax">–</dd></div>
               <div><dt th:text="#{wallbox.lastWriteResponse}"></dt><dd data-metric="lastWriteResponse">–</dd></div>
@@ -107,7 +121,8 @@
         <span id="wbAccessLine" hidden><span th:text="#{wallbox.last}"></span> · <time id="wbAccess">–</time></span>
       </div>
       <p id="wbWarning" class="notice notice-error" role="status" hidden></p>
-      <p id="wbFallback" class="notice notice-error" role="status" hidden th:text="#{wallbox.fallback}"></p>
+      <p id="wbBoxIgnored" class="notice notice-error wb-box-ignored" role="alert" hidden th:text="#{wallbox.boxIgnored}"></p>
+      <p id="wbFallback" class="notice notice-error" role="status" hidden th:title="#{wallbox.fallbackTooltip}" th:text="#{wallbox.fallback}"></p>
     </section>
   </body>
 </html>

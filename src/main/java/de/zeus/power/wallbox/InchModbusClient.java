@@ -14,7 +14,7 @@ import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.util.concurrent.TimeUnit;
 
-/** A persistent, single-owner Modbus TCP connection to Sonnen / Etrel INCH. */
+/** A persistent, single-owner Modbus TCP connection to the ETREL INCH wallbox. */
 final class InchModbusClient implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(InchModbusClient.class);
     private static final int SLAVE_DEVICE_BUSY = 6;
@@ -28,7 +28,8 @@ final class InchModbusClient implements AutoCloseable {
     private InputStream input;
     private DataOutputStream output;
     private int transaction;
-    private int unit;
+    private final int unit;
+    private volatile long connectionGeneration;
     private int consecutiveErrors;
     private int backoffLevel;
     private long reconnectAfterNanos;
@@ -50,6 +51,26 @@ final class InchModbusClient implements AutoCloseable {
     String lastError() { return lastError; }
     String recovery() { return recovery; }
     String lastWriteResponse() { return lastWriteResponse; }
+    long connectionGeneration() { return connectionGeneration; }
+
+    record Identity(String model, String softwareVersion) {}
+
+    Identity readIdentity() throws IOException {
+        try {
+            return new Identity(readAscii(1000, 10), readAscii(1015, 5));
+        } catch (IOException failure) {
+            recordFailure(failure);
+            throw failure;
+        }
+    }
+
+    private String readAscii(int address, int words) throws IOException {
+        ByteBuffer data = readInputs(address, words);
+        byte[] bytes = new byte[data.remaining()];
+        data.get(bytes);
+        return new String(bytes, java.nio.charset.StandardCharsets.US_ASCII)
+                .replace("\0", "").trim();
+    }
 
     ChargerReadings read() throws IOException {
         recovery = null;
@@ -67,24 +88,7 @@ final class InchModbusClient implements AutoCloseable {
     }
 
     private ChargerReadings readSnapshot() throws IOException {
-        ByteBuffer connector;
-        try {
-            connector = readInputs(0, 6);
-        } catch (SocketTimeoutException timeout) {
-            if (settings.unitId() == 255) throw timeout;
-            int previous = unit;
-            unit = alternateUnit();
-            recovery = "Read timeout on unit " + previous + "; retrying unit " + unit;
-            LOG.warn("Modbus {} on unit {}; retrying documented reads with unit {}",
-                    timeout.getClass().getSimpleName(), previous, unit);
-            try {
-                connector = readInputs(0, 6);
-            } catch (IOException retryFailure) {
-                unit = previous;
-                closeSocket();
-                throw retryFailure;
-            }
-        }
+        ByteBuffer connector = readInputs(0, 6);
 
         ByteBuffer phases = readInputs(8, 20);
         long lifetime = readInputs(48, 4).getLong();
@@ -97,7 +101,7 @@ final class InchModbusClient implements AutoCloseable {
         int ir4High = Short.toUnsignedInt(connector.getShort());
         int ir4Low = Short.toUnsignedInt(connector.getShort());
         // FC 04 address 4 is words 4-5 in the block starting at address 0;
-        // ByteBuffer's default order is big-endian, matching the Etrel Float32 register order.
+        // ByteBuffer's default order is big-endian, matching the ETREL Float32 register order.
         float applied = Float.intBitsToFloat((ir4High << 16) | ir4Low);
         LOG.debug("Charger IR 4 FC 04 address=4 rawWords=[{} {}] decodedFloat32BigEndian={} A",
                 String.format(java.util.Locale.ROOT, "%04X", ir4High),
@@ -107,33 +111,14 @@ final class InchModbusClient implements AutoCloseable {
                 phases.getFloat(36), lifetime, mode, installed);
     }
 
-    private int alternateUnit() {
-        return unit == 255 ? settings.unitId() : 255;
-    }
-
     /** Only the idempotent HR 2 pause command may be repeated after an ambiguous write timeout. */
     void confirmPause() throws IOException {
         try {
-            try {
-                writePauseCommand();
-            } catch (SocketTimeoutException timeout) {
-                if (settings.unitId() == 255) throw timeout;
-                int previous = unit;
-                unit = alternateUnit();
-                LOG.warn("Modbus {} while pausing unit {}; retrying HR 2 pause command with unit {}",
-                        timeout.getClass().getSimpleName(), previous, unit);
-                try {
-                    writePauseCommand();
-                } catch (IOException retryFailure) {
-                    unit = previous;
-                    closeSocket();
-                    throw retryFailure;
-                }
-            }
+            writePauseCommand();
             lastAccess = Instant.now();
             recordSuccess();
         } catch (IOException failure) {
-            lastWriteResponse = writeFailure("HR 8", failure);
+            lastWriteResponse = writeFailure("HR 2", failure);
             recordFailure(failure);
             throw failure;
         }
@@ -164,7 +149,7 @@ final class InchModbusClient implements AutoCloseable {
             lastAccess = Instant.now();
             recordSuccess();
         } catch (IOException failure) {
-            lastWriteResponse = writeFailure("HR 2", failure);
+            lastWriteResponse = writeFailure("HR 8", failure);
             recordFailure(failure);
             throw failure;
         }
@@ -248,6 +233,7 @@ final class InchModbusClient implements AutoCloseable {
             socket = candidate;
             input = candidate.getInputStream();
             output = new DataOutputStream(candidate.getOutputStream());
+            connectionGeneration++;
             LOG.info("Modbus TCP connected to {}:{} (unit {})", settings.host(), settings.port(), unit);
         } catch (IOException failure) {
             try {

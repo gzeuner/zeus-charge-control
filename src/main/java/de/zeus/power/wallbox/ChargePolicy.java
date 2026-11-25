@@ -23,10 +23,15 @@ final class ChargePolicy {
     }
 
     float target(ChargerReadings charger, SonnenReadings battery, long nowNanos) {
-        return target(charger, battery, nowNanos, null);
+        return target(charger, battery, nowNanos, null, null, 0);
     }
 
     float target(ChargerReadings charger, SonnenReadings battery, long nowNanos, Double pvOverrideW) {
+        return target(charger, battery, nowNanos, pvOverrideW, null, 0);
+    }
+
+    float target(ChargerReadings charger, SonnenReadings battery, long nowNanos, Double pvOverrideW,
+                 Float lastWrittenTargetAmps, int stablePhases) {
         double pv = pvOverrideW != null && Double.isFinite(pvOverrideW) ? pvOverrideW
                 : battery != null && battery.productionW() != null ? battery.productionW() : Double.NaN;
         double house = battery != null && battery.consumptionW() != null ? battery.consumptionW() : Double.NaN;
@@ -57,8 +62,10 @@ final class ChargePolicy {
             case SMART -> Double.isFinite(pvSurplus) ? pvSurplus + discharge : Double.NaN;
             case ECO -> pvSurplus;
         };
-        int phases = charger == null ? settings.phases() : charger.effectivePhases(settings.phases());
-        String phaseSource = charger == null ? "wallbox.phases" : charger.phaseSource();
+        int phases = charger == null ? settings.phases()
+                : stablePhases > 0 ? stablePhases : charger.effectivePhases(settings.phases());
+        String phaseSource = charger == null ? "wallbox.phases"
+                : stablePhases > 0 ? "stable-phase-currents" : charger.phaseSource();
         double wattsPerAmp = phases * (double) settings.voltage();
         float hardwareCeiling = charger == null ? 0 : charger.maxAmps(settings.minCurrentA(), settings.maxCurrentA());
         double ceiling = hardwareCeiling;
@@ -98,41 +105,52 @@ final class ChargePolicy {
         }
         if (charger == null || !charger.acceptsSetpoint() || hardwareCeiling <= 0) {
             availableWatts = Double.isFinite(rawAvailable) ? rawAvailable : null;
-            diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, charger, rawAmps, applied, 0, houseRule);
+            diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, charger, rawAmps, applied, 0, houseRule, phases, phaseSource);
             return pause();
         }
         if (!Double.isFinite(amps)) {
             availableWatts = null;
-            diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, charger, rawAmps, applied, 0, houseRule);
+            diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, charger, rawAmps, applied, 0, houseRule, phases, phaseSource);
             return pause();
         }
-        if (mode != WallboxSettings.Mode.POWER || settings.gridLimitWatts() > 0) {
-            double rounded = Math.floor(amps * 10.0 + 1e-9) / 10.0;
-            if (rounded != amps) {
-                applied.append(" [round-down-0.1A]");
+        if (Double.isFinite(amps)) {
+            double floored = Math.floor(amps + 1e-9);
+            if ((mode == WallboxSettings.Mode.ECO || mode == WallboxSettings.Mode.SMART)
+                    && floored >= settings.minCurrentA() && lastWrittenTargetAmps != null
+                    && lastWrittenTargetAmps >= settings.minCurrentA()) {
+                double previous = Math.floor(lastWrittenTargetAmps + 1e-9);
+                if (floored > previous && amps < previous + 1.5) floored = previous;
+                else if (floored < previous && amps >= previous - 0.5) floored = previous;
+                if (floored == previous && floored != Math.floor(amps + 1e-9)) {
+                    applied.append(" [1A-hysteresis]");
+                    if ("none".equals(clampReason)) clampReason = "hysteresis";
+                }
+            }
+            if (floored != amps) {
+                applied.append(" [round-down-1A]");
                 if ("none".equals(clampReason)) clampReason = "rounding";
             }
-            amps = rounded;
+            amps = floored;
         }
         if (amps < settings.minCurrentA()) {
             clampReason = "below-minimum-current";
             availableWatts = rawAvailable;
             if (mode == WallboxSettings.Mode.POWER) {
-                diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, charger, rawAmps, applied, 0, houseRule);
+                diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, charger, rawAmps, applied, 0, houseRule, phases, phaseSource);
                 return pause();
             }
             if (lowSince == null) lowSince = nowNanos;
             long hold = TimeUnit.SECONDS.toNanos(settings.resumeHoldSeconds());
             if (nowNanos - lowSince >= hold) {
-                diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, charger, rawAmps, applied, 0, houseRule);
+                diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, charger, rawAmps, applied, 0, houseRule, phases, phaseSource);
                 return 0;
             }
             // Keep the existing setpoint during the stop hysteresis where possible.
-            float held = charger.appliedAmps() >= settings.minCurrentA()
-                    ? Math.min(charger.appliedAmps(), (float) ceiling) : 0;
+            float held = lastWrittenTargetAmps != null && lastWrittenTargetAmps >= settings.minCurrentA()
+                    ? Math.min(lastWrittenTargetAmps, (float) ceiling) : 0;
             if (held > 0) clampReason = "stop-hysteresis";
             diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, charger, rawAmps,
-                    applied.append(" [below-min=" ).append(settings.minCurrentA()).append("A, hysteresis]").toString(), held, houseRule);
+                    applied.append(" [below-min=" ).append(settings.minCurrentA()).append("A, hysteresis]").toString(), held, houseRule, phases, phaseSource);
             return held;
         }
         lowSince = null;
@@ -140,20 +158,18 @@ final class ChargePolicy {
         // The stop hysteresis above still prevents oscillation when available power falls.
         availableWatts = mode == WallboxSettings.Mode.POWER ? null
                 : Math.max(0, rawAvailable);
-        diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, charger, rawAmps, applied, amps, houseRule);
+        diagnostics = diagnostic(pv, house, houseWithoutEv, evW, pac, soc, grid, charger, rawAmps, applied, amps, houseRule, phases, phaseSource);
         return (float) amps;
     }
 
     private String diagnostic(double pv, double house, double houseWithoutEv, double evW, double pac,
                               double soc, double grid, ChargerReadings charger, double rawAmps,
-                              CharSequence limits, double target, String houseRule) {
+                              CharSequence limits, double target, String houseRule, int phases, String phaseSource) {
         return "mode=" + settings.effectiveMode() + " PV=" + round(pv) + "W house=" + round(house)
                 + "W houseWithoutWallbox=" + round(houseWithoutEv) + "W wallbox=" + round(evW)
                 + "W battery=" + round(pac) + "W USOC=" + round(soc) + "% grid=" + round(grid)
-                + "W raw=" + round(rawAmps) + "A " + houseRule + " phases=" + (charger == null
-                ? settings.phases() + " (wallbox.phases)"
-                : charger.effectivePhases(settings.phases()) + " (" + charger.phaseSource()
-                        + ", IR1=" + charger.phases() + ", IR1023=" + charger.hardwarePhases() + ")")
+                + "W raw=" + round(rawAmps) + "A " + houseRule + " phases=" + phases + " (" + phaseSource
+                + (charger == null ? "" : ", IR1=" + charger.phases() + ", IR1023=" + charger.hardwarePhases()) + ")"
                 + " voltage=" + settings.voltage() + "V battery.inverter.max.watts=" + inverterMaxWatts
                 + "W " + limits + " final=" + round(target) + "A";
     }

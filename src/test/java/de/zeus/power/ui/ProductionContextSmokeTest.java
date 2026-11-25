@@ -22,7 +22,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "spring.messages.basename=messages",
         "battery.url=", "battery.authToken=", "battery.night.state.path=target/test-production-night.state", "weather.api.enabled=false",
         "scheduled.job.cron=-", "battery.automatic.mode.check.interval=3600000",
-        "awattar.marketdata.url=http://127.0.0.1:9/disabled", "tibber.marketdata.url=http://127.0.0.1:9/disabled",
+        "awattar.marketdata.url=http://localhost:9/disabled", "tibber.marketdata.url=http://localhost:9/disabled",
         "spring.datasource.url=jdbc:h2:mem:production-smoke", "spring.jpa.hibernate.ddl-auto=create-drop",
         "spring.h2.console.enabled=false" })
 @AutoConfigureMockMvc

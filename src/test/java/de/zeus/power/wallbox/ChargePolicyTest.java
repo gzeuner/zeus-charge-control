@@ -62,19 +62,19 @@ class ChargePolicyTest {
         for (int phaseCount = 1; phaseCount <= 3; phaseCount++) {
             var ev = phaseReadings(5, 3, phaseCount);
             double watts = 230.0 * phaseCount * 6;
-            assertEquals(0, eco.target(ev, battery(watts - 1, 0, 0, 50, 0), 0));
-            assertEquals(6, eco.target(ev, battery(watts, 0, 0, 50, 0), 0));
+            assertEquals(0, eco.target(ev, battery(watts - 1, 0, 0, 50, 0), 0, null, null, phaseCount));
+            assertEquals(6, eco.target(ev, battery(watts, 0, 0, 50, 0), 0, null, null, phaseCount));
         }
         assertEquals(3, phaseReadings(5, 3, 0).effectivePhases(1),
                 "IR 1=5 is diagnostic only; IR 1023 is the no-current calculation fallback");
     }
 
     @Test
-    void everyModeRespectsEvInstallationAndHardwareCeilings() {
+    void everyModeUsesOnlyConfiguredAndIr1028Ceilings() {
         var sun = battery(40000, 0, 0, 90, 0);
         for (var mode : WallboxSettings.Mode.values()) {
             var policy = policy(mode, true, 0);
-            assertEquals(13, policy.target(charger(0, 0, 13, 16), sun, 0));
+            assertEquals(16, policy.target(charger(0, 0, 13, 16), sun, 0));
             assertEquals(10, policy.target(charger(0, 0, 16, 10), sun, 0));
             assertEquals(16, policy.target(charger(0, 0, 32, 32), sun, 0));
             assertEquals(16, policy.target(charger(0, 0, 5, 16), sun, 0));
@@ -93,11 +93,12 @@ class ChargePolicyTest {
         assertEquals(6, eco.target(ev, sun, 8 * second));
         assertEquals(6, eco.target(ev, sun, 16 * second));
         var active = new ChargerReadings(4, 0, 3, 16, 6, ev.l1(), ev.l2(), ev.l3(), 1.4f, 0, 1, 16);
-        assertEquals(6, eco.target(active, battery(4139, 0, 0, 90, 0), 24 * second));
-        assertEquals(6, eco.target(active, battery(4139, 0, 0, 90, 0), 32 * second));
-        assertEquals(0, eco.target(active, battery(4139, 0, 0, 90, 0), 40 * second));
+        assertEquals(6, eco.target(active, battery(4139, 0, 0, 90, 0), 24 * second, null, 6f, 3));
+        assertEquals(6, eco.target(active, battery(4139, 0, 0, 90, 0), 32 * second, null, 6f, 3));
+        assertEquals(0, eco.target(active, battery(4139, 0, 0, 90, 0), 40 * second, null, 6f, 3));
         assertEquals(6, eco.target(ev, sun, 48 * second));
-        assertEquals(0, eco.target(ev, battery(4139, 0, 0, 90, 0), 56 * second));
+        assertEquals(6, eco.target(ev, battery(4139, 0, 0, 90, 0), 56 * second, null, 6f, 3));
+        assertEquals(0, eco.target(ev, battery(4139, 0, 0, 90, 0), 72 * second, null, 6f, 3));
     }
 
     @Test
@@ -151,10 +152,10 @@ class ChargePolicyTest {
         var base = new WallboxSettings("localhost", 502, 1, POWER, 8000, 25, 5, 0, true,
                 2000, 2500, 3, 3, 230, 6, 16, 4600);
         var limited = new ChargePolicy(base);
-        assertEquals(6.6f, limited.target(ev, battery(0, 0, 0, 90, 5), 0), 0.01);
+        assertEquals(6, limited.target(ev, battery(0, 0, 0, 90, 5), 0), 0.01);
         assertEquals(0, limited.target(ev, battery(0, 2000, 0, 90, 5), 0));
 
-        assertEquals(6.032f, policy(POWER, true, 0)
+        assertEquals(6.0f, policy(POWER, true, 0)
                 .target(charger(0, 0, 16, 6.032f), null, 0), 0.001f);
     }
 
@@ -164,7 +165,7 @@ class ChargePolicyTest {
         var settings = new WallboxSettings("localhost", 502, 1, SMART, 8000, 20, 5, 0, true);
         var smart = new ChargePolicy(settings, 3000);
         var loadedEv = charger(0, 4, 16, 16);
-        assertEquals(7.3f, smart.target(loadedEv, battery(2800, 4720, 4000, 92, 5), 0), 0.01);
+        assertEquals(7, smart.target(loadedEv, battery(2800, 4720, 4000, 92, 5), 0), 0.01);
         assertEquals(0, smart.target(loadedEv, battery(2800, 4720, 4000, 19, 5), 0));
     }
 
@@ -176,7 +177,7 @@ class ChargePolicyTest {
         float fromMeteredHouse = includes.target(ev, battery(5000, 4720, 0, 90, 5), 0);
         float fromSeparateHouse = separate.target(ev, battery(5000, 720, 0, 90, 5), 0);
         assertEquals(fromSeparateHouse, fromMeteredHouse);
-        assertEquals(6.2f, fromMeteredHouse, 0.01);
+        assertEquals(6, fromMeteredHouse, 0.01);
     }
 
     @Test
@@ -186,9 +187,9 @@ class ChargePolicyTest {
                 new ChargerReadings.Phase(230, 0, 0), new ChargerReadings.Phase(230, 0, 0),
                 4, 0, 1, 16);
         long sec = TimeUnit.SECONDS.toNanos(1);
-        assertEquals(10, eco.target(active, battery(3000, 0, 0, 90, 0), 0));
-        assertEquals(10, eco.target(active, battery(1000, 0, 0, 90, 0), sec));
-        assertEquals(0, eco.target(active, battery(1000, 0, 0, 90, 0), 16 * sec));
+        assertEquals(10, eco.target(active, battery(3000, 0, 0, 90, 0), 0, null, 10f, 3));
+        assertEquals(10, eco.target(active, battery(1000, 0, 0, 90, 0), sec, null, 10f, 3));
+        assertEquals(0, eco.target(active, battery(1000, 0, 0, 90, 0), 16 * sec, null, 10f, 3));
         assertEquals(0, eco.target(charger(3, 0, 16, 16), battery(1000, 0, 0, 90, 0), 20 * sec));
     }
 
@@ -210,15 +211,31 @@ class ChargePolicyTest {
                 charger(3, 0, 4, 0, 0, 0), null, 0)); // IR 1028=0 is unknown too.
 
         var eco = policy(ECO, true, 0);
-        assertEquals(8.1f, eco.target(waiting, battery(5600, 0, 0, 90, 0), 0), 0.01);
+        assertEquals(8, eco.target(waiting, battery(5600, 0, 0, 90, 0), 0), 0.01);
     }
 
     @Test
-    void negotiatedEvMaximumIsUsedOnlyWhenAChargingSessionExists() {
+    void ir2IsDisplayOnlyAndNeverLimitsTheSetpoint() {
         var power = policy(POWER, true, 0);
-        assertEquals(16, power.target(charger(3, 0, 4, 0, 13, 16), null, 0));
-        assertEquals(13, power.target(charger(4, 1, 4, 0, 13, 16), null, 0));
+        assertEquals(16, power.target(charger(3, 0, 4, 0, 6.1f, 16), null, 0));
+        assertEquals(16, power.target(charger(4, 1, 4, 0, 6.1f, 16), null, 0));
+        assertEquals(10, power.target(charger(4, 1, 4, 0, 6.1f, 10), null, 0));
         assertEquals(16, power.target(charger(4, 1, 4, 0, Float.NaN, 0), null, 0));
+    }
+
+    @Test
+    void hr8TargetsAreFlooredAndEcoHysteresisKeepsTheSameInteger() {
+        var eco = policy(ECO, false, 0);
+        var ev = charger(4, 1, 16, 0, 16, 16);
+        assertEquals(6, eco.target(ev, battery(6.4 * 690, 0, 0, 90, 0), 0, null, 6f, 3));
+        assertEquals(6, eco.target(ev, battery(6.6 * 690, 0, 0, 90, 0), 1, null, 6f, 3));
+        assertEquals(6, eco.target(ev, battery(7.4 * 690, 0, 0, 90, 0), 2, null, 6f, 3));
+        assertEquals(7, eco.target(ev, battery(7.6 * 690, 0, 0, 90, 0), 3, null, 6f, 3));
+        assertEquals(7, eco.target(ev, battery(6.6 * 690, 0, 0, 90, 0), 4, null, 7f, 3));
+        assertEquals(6, eco.target(ev, battery(6.4 * 690, 0, 0, 90, 0), 5, null, 7f, 3));
+
+        var pause = policy(ECO, false, 0);
+        assertEquals(0, pause.target(ev, battery(5.9 * 690, 0, 0, 90, 0), 0, null, 6f, 3));
     }
 
     @Test
@@ -227,7 +244,7 @@ class ChargePolicyTest {
                 2000, 2500, 3, 1, 230, 6, 16, 0);
         var eco = new ChargePolicy(settings);
         var unknownPhasesButThreePhaseHardware = charger(3, 0, 4, 0, 0, 16);
-        assertEquals(8.1f, eco.target(unknownPhasesButThreePhaseHardware,
+        assertEquals(8, eco.target(unknownPhasesButThreePhaseHardware,
                 battery(5600, 0, 0, 90, 0), 0), 0.01);
     }
 
@@ -240,7 +257,7 @@ class ChargePolicyTest {
                 new ChargerReadings.Phase(230, 15.9f, 0),
                 new ChargerReadings.Phase(230, 15.9f, 0),
                 11.07f, 0, 1, 16);
-        assertEquals(6.6f, new ChargePolicy(settings)
+        assertEquals(6.0f, new ChargePolicy(settings)
                 .target(ev, battery(4565, 0, 0, 90, 0), 0), 0.01);
     }
 }

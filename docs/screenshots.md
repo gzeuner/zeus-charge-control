@@ -26,4 +26,4 @@ npx playwright install chromium
 npm run screenshots
 ```
 
-The script prepares test classes, starts an isolated server at `127.0.0.1:18080`, captures all five themes at both sizes and stops its server. Dates follow the fixture's current time, so screenshots are reproducible through the same workflow rather than byte-identical across different days. Automated functional assertions and axe checks are the regression gates; these full-page captures are review artifacts, not pixel-baseline assertions.
+The script prepares test classes, starts an isolated server at `localhost:18080`, captures all five themes at both sizes and stops its server. Dates follow the fixture's current time, so screenshots are reproducible through the same workflow rather than byte-identical across different days. Automated functional assertions and axe checks are the regression gates; these full-page captures are review artifacts, not pixel-baseline assertions.

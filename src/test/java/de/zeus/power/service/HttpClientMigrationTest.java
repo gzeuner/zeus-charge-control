@@ -16,7 +16,7 @@ class HttpClientMigrationTest {
     @Test void operatingModeWritesAreRejectedWithoutContactingTheBattery() {
         var service = new BatteryCommandService(new WebConfig().restTemplateBuilder());
         ReflectionTestUtils.setField(service, "url", "http://battery.test/api/v2");
-        ReflectionTestUtils.setField(service, "authToken", "test-token");
+        ReflectionTestUtils.setField(service, "authToken", "${BATTERY_AUTH_TOKEN:}");
         service.init();
         var server = MockRestServiceServer.createServer((RestTemplate) ReflectionTestUtils.getField(service, "restTemplate"));
         for (String mode : java.util.List.of("1", "2", "10", "11")) {
@@ -31,11 +31,11 @@ class HttpClientMigrationTest {
     @Test void sonnenStatusPreservesCaseSensitiveJsonPropertiesAndAuthentication() {
         var service = new BatteryCommandService(new WebConfig().restTemplateBuilder());
         ReflectionTestUtils.setField(service, "url", "http://battery.test/api/v2");
-        ReflectionTestUtils.setField(service, "authToken", "test-token");
+        ReflectionTestUtils.setField(service, "authToken", "${BATTERY_AUTH_TOKEN:}");
         service.init();
         RestTemplate client = (RestTemplate) ReflectionTestUtils.getField(service, "restTemplate");
         var server = MockRestServiceServer.createServer(client);
-        server.expect(requestTo("http://battery.test/api/v2/status")).andExpect(header("Auth-Token", "test-token"))
+        server.expect(requestTo("http://battery.test/api/v2/status")).andExpect(header("Auth-Token", "${BATTERY_AUTH_TOKEN:}"))
                 .andRespond(withSuccess("""
                     {"RSOC":64,"RemainingCapacity_Wh":6400,"Production_W":3200,"Consumption_W":1160,
                      "Pac_total_W":2040,"BatteryCharging":true,"BatteryDischarging":false,"OperatingMode":"2",
@@ -51,7 +51,7 @@ class HttpClientMigrationTest {
     @Test void acLimitPreservesOtherLimitsAndOnlyWritesTheInverterField() {
         var service = new BatteryCommandService(new WebConfig().restTemplateBuilder());
         ReflectionTestUtils.setField(service, "url", "http://battery.test/api/v2");
-        ReflectionTestUtils.setField(service, "authToken", "test-token");
+        ReflectionTestUtils.setField(service, "authToken", "${BATTERY_AUTH_TOKEN:}");
         service.init();
         var client = (RestTemplate) ReflectionTestUtils.getField(service, "restTemplate");
         var server = MockRestServiceServer.createServer(client);
@@ -59,7 +59,7 @@ class HttpClientMigrationTest {
         server.expect(requestTo(limits)).andRespond(withSuccess("{\"p_gcp_max_import_limit\":200}", MediaType.APPLICATION_JSON));
         server.expect(requestTo(limits)).andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
         server.expect(requestTo(limits)).andExpect(method(org.springframework.http.HttpMethod.PUT))
-                .andExpect(header("Auth-Token", "test-token"))
+                .andExpect(header("Auth-Token", "${BATTERY_AUTH_TOKEN:}"))
                 .andExpect(content().json("{\"duration\":\"PT15S\",\"p_bess_inv_max_import_limit\":0}",
                         org.springframework.test.json.JsonCompareMode.STRICT))
                 .andRespond(withSuccess());
@@ -92,7 +92,7 @@ class HttpClientMigrationTest {
     @Test void batteryUnavailableReturnsFailureInsteadOfThrowing() {
         var service = new BatteryCommandService(new WebConfig().restTemplateBuilder());
         ReflectionTestUtils.setField(service, "url", "http://battery.test/api/v2");
-        ReflectionTestUtils.setField(service, "authToken", "test-token");
+        ReflectionTestUtils.setField(service, "authToken", "${BATTERY_AUTH_TOKEN:}");
         service.init();
         var server = MockRestServiceServer.createServer((RestTemplate) ReflectionTestUtils.getField(service, "restTemplate"));
         server.expect(requestTo("http://battery.test/api/v2/status")).andRespond(withServerError());

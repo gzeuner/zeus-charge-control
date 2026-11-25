@@ -109,8 +109,8 @@ test("price basis changes cards, charts and tables consistently, including negat
 }) => {
   await openDashboard(page);
   await page.locator("#priceModeToggle").check();
-  await expect(page.locator("#currentPriceValue")).toHaveText("26,19");
-  await expect(page.locator("#cheapestPriceValue")).toHaveText("21,23");
+  await expect(page.locator("#currentPriceValue")).toHaveText("26,08");
+  await expect(page.locator("#cheapestPriceValue")).toHaveText("21,12");
   for (const label of await page.locator(".price-basis").allTextContents())
     expect(label).toBe("Gesamt · inkl. MwSt.");
   await expect
@@ -119,11 +119,11 @@ test("price basis changes cards, charts and tables consistently, including negat
         () => Chart.getChart("marketPricesChart").data.datasets[0].data[0].y,
       ),
     )
-    .toBe(4.27);
+    .toBe(4.17);
   await page.locator("#toggleMarketPrices").click();
   await expect(
     page.locator("#marketPricesTbody tr").first().locator("td").last(),
-  ).toHaveText("4,27");
+  ).toHaveText("4,17");
   await page.reload();
   await expect(page.locator("#priceModeToggle")).toBeChecked();
   await page.locator("#priceModeToggle").uncheck();

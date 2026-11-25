@@ -117,13 +117,16 @@ Die Anwendung:
 ## 🔧 Batterie-Konfiguration
 
 Die Anwendung muss an deine reale Batterie angepasst werden. Besonders wichtig sind die Adresse deiner Batterie, die Authentifizierung und die technischen Leistungsdaten.
+Die folgenden neutralen Beispielwerte entsprechen den Variablen der Deployment-Vorlage. Bitte passe sie an deine Anlage an.
 
 ```properties
 battery.url=${BATTERY_URL:}
 battery.authToken=${BATTERY_AUTH_TOKEN:}
 
-battery.inverter.max.watts=${BATTERY_INVERTER_MAX_WATTS:4600}
-battery.max.capacity.wh=${BATTERY_MAX_CAPACITY_WH:10000}
+battery.inverter.max.watts=${BATTERY_INVERTER_MAX_WATTS:5000}
+battery.grid.import.limit.watts=${BATTERY_GRID_IMPORT_LIMIT_WATTS:5000}
+battery.capacity.installed-modules=${BATTERY_INSTALLED_MODULES:1}
+battery.capacity.module-usable-capacity-wh=${BATTERY_MODULE_USABLE_CAPACITY_WH:5000}
 ```
 
 ### Was bedeuten diese Werte?
@@ -133,36 +136,36 @@ battery.max.capacity.wh=${BATTERY_MAX_CAPACITY_WH:10000}
 | `battery.url` | Adresse deiner Sonnen-Batterie im lokalen Netzwerk oder erreichbaren Netz |
 | `battery.authToken` | Token für den Zugriff auf die Sonnen API |
 | `battery.inverter.max.watts` | Maximale Lade-/Entladeleistung des Wechselrichters in Watt |
-| `battery.max.capacity.wh` | Nutzbare oder konfigurierte Batteriekapazität in Wattstunden |
+| `battery.grid.import.limit.watts` | Beispielgrenze für den Netzbezug der Batterie in Watt |
+| `battery.capacity.installed-modules` | Anzahl der Beispielmodule |
+| `battery.capacity.module-usable-capacity-wh` | Nutzbare Beispielkapazität pro Modul in Wattstunden |
 
 👉 **Diese Werte müssen zu deiner realen Installation passen.**  
 Falsche Kapazitäten, falsche Leistungswerte oder eine falsche API-Adresse können zu unzuverlässigen Ladeentscheidungen führen.
 
 ---
 
-### Sonnen / Etrel INCH per Modbus TCP
+### Optionale Wallbox- und KOSTAL-Anbindung
 
-`WALLBOX_MODE` wählt `ECO` (nur PV-Überschuss), `SMART` (PV plus zulässige Batterieentladung) oder `POWER` (maximaler konfigurierter Strom, Standardmodus mit 16 A). ECO und SMART stoppen bei weniger als `wallbox.min-current-a` erst nach `wallbox.resume-hold-seconds`; sobald mindestens der Mindeststrom verfügbar ist, starten sie ohne zusätzliche Wiederanlauf-Verzögerung. POWER ignoriert PV- und Batterie-Leistungsgrenzen, außer wenn das optionale Hauslimit aktiv ist. `battery.grid.import.limit.watts` begrenzt ausschließlich die Batterie-Steuerung. `wallbox.grid-limit-watts` (0 = aus) begrenzt in allen Modi den Haus-Netzbezug anhand der Hauslast ohne Wallbox sowie PV- und gemessener Batterieleistung. `wallbox.phases`, `wallbox.voltage`, `wallbox.min-current-a` und `wallbox.max-current-a` bestimmen die Stromumrechnung; EV- und Installationsgrenzen gelten zusätzlich. Die PV-Quelle folgt `kostal.pv-source` mit Sonnen-Fallback. Für positive Sollwerte muss an der Box Power/Fast eingestellt sein. IR 53 wird als Rohwert angezeigt; seine Bedeutung wird nicht angenommen.
+> **Die Anbindung des Wechselrichters KOSTAL und der Wallbox ETREL INCH ist EXPERIMENTELL und optional. Nutzung auf eigene Verantwortung.**
 
-Beim Start gilt die Reihenfolge gespeicherte GUI-Auswahl > `WALLBOX_MODE` > Property-Default (`POWER`). UI-Wechsel werden in `wallbox.config-file` gespeichert, ohne vorhandene Property-Platzhalter zu ersetzen. Das Dashboard zeigt den vom Regel-Thread aktiven Modus, den zuletzt geschriebenen HR-8-Sollwert und den von der Box gemeldeten angewendeten Strom.
+Die Wallbox-Steuerung ist optional und standardmäßig ausgeschaltet. Aktiviere sie in der privaten Konfiguration, nachdem Hostname und Port geprüft sind. Modus und Smart-Grenzen lassen sich im Dashboard ändern und werden gespeichert. Eine gespeicherte Auswahl hat Vorrang vor `WALLBOX_MODE` und dem Property-Standard.
 
-Die Phasenzahl für die Stromberechnung kommt zuerst aus den Phasenströmen (Phase aktiv bei >1 A), dann aus IR 1 (`0` = 3 Phasen, `1`–`3` = je eine Phase L1–L3, `5` = 2 Phasen), IR 1023 und zuletzt `wallbox.phases`. Das Dashboard zeigt den gemessenen Phasenverbrauch und den Rohwert von IR 1 separat. IR 4 wird per FC 04 ab Adresse 4 als zwei Big-Endian-Worte (Float32) gelesen; das DEBUG-Log enthält beide Rohwörter in Hex und den dekodierten Wert. Die Diagnose zeigt außerdem IR 2 als EV-Maximalstrom, IR 1028 als Box-Stromdeckel sowie IR 53 als Rohwert und Text (`1` Fast, `2` Smart, sonst unbekannt/keine Session). Eine FC-16-Bestätigung von HR 8 bestätigt die Modbus-Annahme des Schreibens, nicht den tatsächlich fließenden Strom. Bei einer Abweichung werden IR 4 und die drei Phasenströme nach mehreren Regelzyklen gemeinsam geloggt. Ein bisheriger Live-Befund im Fast-Modus mit abweichendem HR-8-Sollwert und höheren Phasenströmen belegt nicht, dass Fast niedrigere Sollwerte ignoriert; dieses Verhalten bleibt mit den neuen Rücklese-Diagnosen zu prüfen. Exception 12 („Current setpoint too high“) löst einen frischen Read aus; der Retry bleibt auf den gemeldeten Box- und EV-Grenzen.
+- **ECO** nutzt PV-Überschuss, ohne die Batterie gezielt zu entladen.
+- **SMART** ergänzt den PV-Überschuss um erlaubte Batterieentladung bis zur eingestellten SoC-Reserve.
+- **POWER** strebt den konfigurierten maximalen Ladestrom unabhängig vom PV-Überschuss an; ein aktiviertes Hauslimit gilt weiterhin.
 
-Beim Aktivieren und beim Start mit eingeschalteter Steuerung beginnt Zeus mit dem HR-2-Pausebefehl. Erst nach dessen Bestätigung liest Zeus die Messwerte und berechnet den ersten Ladesollwert. HR 8 enthält ausschließlich positive Sollströme ab 6 A.
+ECO und SMART passen den Sollstrom in ganzen Ampere mit Hysterese an. Reicht die verfügbare Leistung länger als die konfigurierte Pausenverzögerung nicht für den Mindeststrom, pausiert die App. Sobald wieder genug Leistung verfügbar ist, setzt sie das Laden fort.
 
-Im Dashboard unter **Wallbox** lassen sich die Steuerung einschalten, der Lademodus wechseln und die beiden Smart-Grenzen bearbeiten. Änderungen lösen sofort einen neuen Regelzyklus aus. Zeus speichert die vier GUI-Werte in einem markierten Abschnitt der externen `./config/application.properties` und liest sie beim Start wieder ein. Der Dienst benötigt Schreibzugriff auf das Verzeichnis. Für eine bestehende Konfiguration an einem anderen Ort lässt sich der Pfad mit `wallbox.config-file` angeben.
+Beim Start und nach einem Neuaufbau der Verbindung führt die App einen lesenden Selbsttest aus. Modell und gemeldete Software-Version erscheinen in den Diagnose-Logs und im Diagnosebereich des Dashboards.
 
-Beim Ausschalten der Steuerung, bei Regelpausen und beim regulaeren Beenden fordert Zeus eine Pause ueber FC 16 / HR 2 (ein Register, Wert 1) an. `wallbox.pause-strategy=PAUSE_COMMAND` ist der Standard. Mit `MIN_CURRENT` haelt Zeus bei Regelpausen stattdessen `wallbox.min-current-a` (standardmaessig 6 A); manuelles Ausschalten, Start-Synchronisierung und Fehler-Recovery pausieren weiterhin ueber HR 2. Zeus schreibt in jedem Regelzyklus einen Sollwert als Keepalive; das Intervall ist hoechstens 8 s. Nach 35 Sekunden ohne bestaetigten Modbus-Zugriff kann die Wallbox ihren eingestellten 6-A-Rueckfallstrom verwenden. Das Dashboard zeigt den Zeitpunkt des letzten vollstaendigen erfolgreichen Reads und kennzeichnet einen moeglichen Rueckfall. Die drei Iststroeme sind die Messwerte fuer L1, L2 und L3.
+Ein Status-Chip zeigt, ob noch keine Session besteht, der Sollwert übernommen wird, aktiv ist oder ignoriert wird. Erkennt die App, dass die Wallbox trotz fließendem Strom nicht auf den Sollwert reagiert, zeigt sie eine rote Warnung mit der Empfehlung, den Ladestecker einmal abzuziehen und wieder anzustecken. Sie versucht keine automatische Gegenmaßnahme.
 
-HR 8 wird ausschliesslich fuer positive Stromvorgaben (FC 16, Adresse 8, zwei Big-Endian-Worte) verwendet; eine Pause schreibt HR 2, und der letzte bestaetigte Box-Befehl samt Uhrzeit erscheint im Dashboard. Bei Fortsetzen wird der positive HR-8-Sollwert erneut geschrieben. `wallbox.keepalive-ms` (Standard 10000) wird durch das Regelintervall begrenzt; `wallbox.box-watchdog-seconds` (Standard 35) setzt den Watchdog-Hinweis und ab 80 % ohne Schreibvorgang eine WARN. Ein IR-4-Wert von 0 oder nicht endlichem Wert gilt als nicht verfuegbar; die Rohworte bleiben in den Details sichtbar. Die Phasenanzeige nutzt nur gemessene Stroeme ueber 1 A und zeigt ohne aktive Phase einen Strich. Fuer die Berechnung gilt: gemessene Phasen, dann IR 1023, zuletzt `wallbox.phases`; IR 1 bleibt Diagnose-Rohwert.
+Die überarbeiteten Widgets zeigen Sollwert, angewendeten Strom und gemessene Ströme für L1/L2/L3 in einer Zeile. Die Phasenanzeige nutzt stabilisierte Messungen. Im Diagnosebereich stehen Modell, Version, der höchste gemessene Strom der Session und weitere Rohwerte.
 
-Bei Modbus-Fehlern bleiben die letzten gültigen Messwerte sichtbar. Zeus versucht, den HR-2-Pausebefehl zu senden und startet automatische Wiederverbindungsversuche. Nach drei aufeinanderfolgenden Fehlern wird die Verbindung mit Backoff neu aufgebaut. Ist die Pause unbestätigt, wartet Zeus mindestens 7 Sekunden und versucht im nächsten Regelzyklus, spätestens nach 8 Sekunden, erneut HR 2; positive Sollwerte bleiben bis zur bestätigten Pause und einem vollständigen neuen Messzyklus gesperrt. Eine Modbus-Bestätigung quittiert das Schreiben. Den tatsächlich fließenden Strom zeigen die Phasenmesswerte.
+Die KOSTAL-Anbindung bleibt lesend. Ist KOSTAL als PV-Quelle gewählt und liefert keine frischen Daten, nutzt die App den Sonnen-Wert. Der Fallback-Hinweis erklärt, dass das Überwachungsintervall aus der App-Konfiguration stammt; den Rückfallstrom konfigurierst du direkt an der Wallbox.
 
-Mit `WALLBOX_ENABLED=true` uebernimmt Zeus die Stromvorgabe an Anschluss 1. In der Wallbox Power/Fast waehlen, die Sonnen-Systemkommunikation eingeschaltet lassen und die Kommunikationsueberwachung passend zum 35-s-Watchdog (z. B. 30 s) mit 6-A-Rueckfallstrom stellen. Zeus haelt eine persistente Modbus-TCP-Verbindung und schreibt hoechstens alle 8 s den Sollstrom oder Pausebefehl. Connect-Timeout, Read-Timeout und Fehlergrenze lassen sich ueber `wallbox.connect-timeout-ms` (2000 ms), `wallbox.read-timeout-ms` (2500 ms) und `wallbox.max-errors-before-reconnect` (3) einstellen. Waehrend der ersten ca. 45 s kann die Fahrzeugerkennung die Uebernahme verzoegern.
-
-`WALLBOX_MODE` wählt `ECO` (Dach-PV), `SMART` (Dach-PV plus Hausspeicher bis zur konfigurierten SoC-Reserve) oder `POWER` (bis 11 kW). Unter 6 A stoppt Zeus nach der konfigurierten Stopp-Hysterese; bei ausreichender Leistung startet die Regelung ohne zusätzliche Startverzögerung. Nutze `deployment/application.properties.example` als Vorlage für die private `config/application.properties` und setze eigene Anlagenwerte.
-
-Bei stabiler Ladung den Protokolleintrag „Check meter wiring“ prüfen. Entspricht der Hausverbrauch ungefähr der Standortbilanz (PV + Batterieentladung − Netzeinspeisung), ist die Wallbox enthalten. Ist er um die EV-Leistung geringer, `WALLBOX_CONSUMPTION_INCLUDES_WALLBOX=false` setzen. Bei 0 W EV-Leistung ist die Zuordnung offen.
+Verwende `deployment/application.properties.example` als Startpunkt. Die Vorlage nutzt `WALLBOX_ENABLED`, `WALLBOX_HOST`, `WALLBOX_PORT`, `KOSTAL_ENABLED`, `KOSTAL_HOST` und `KOSTAL_PORT`. Setze lokale Ziele nur privat mit Platzhaltern wie `<WALLBOX_IP>`, `<INVERTER_IP>` und `<PORT>`.
 
 ## 📊 RSOC – was ist das?
 
@@ -298,7 +301,7 @@ Unter Windows wählt dieses Skript ein passendes JDK für den Prozess aus (zuers
 .\scripts\verify.ps1 -Preview     # isolierte Vorschau mit Beispieldaten auf Port 18080
 ```
 
-Vorschau: **http://127.0.0.1:18080/charging-status?lang=de**. Sie verwendet ausschließlich simulierte Dienste und verbindet sich mit keiner Batterie. Mit `Strg+C` beenden. Diese Vorschau und ihre Test-Endpunkte sind nicht im ausgelieferten JAR enthalten.
+Vorschau: **http://localhost:18080/charging-status?lang=de**. Sie verwendet ausschließlich simulierte Dienste und verbindet sich mit keiner Batterie. Mit `Strg+C` beenden. Diese Vorschau und ihre Test-Endpunkte sind nicht im ausgelieferten JAR enthalten.
 
 Plattformübergreifend, mit korrekt gesetztem `JAVA_HOME` und Node.js ≥ 22 für die GUI-Tests:
 
@@ -310,7 +313,7 @@ npm run test:ui
 npm run format:check
 ```
 
-Unter Linux bei Bedarf `npx playwright install --with-deps chromium` verwenden. Der Playwright-Server bindet nur an `127.0.0.1:18080`; der Port muss frei sein. Tests laufen auf echten Spring-/Thymeleaf-Seiten mit simulierten Hardwarediensten. Automatische Accessibility-Checks ergänzen die Funktionsprüfungen; sie ersetzen keine vollständige manuelle Barrierefreiheitsprüfung.
+Unter Linux bei Bedarf `npx playwright install --with-deps chromium` verwenden. Der Playwright-Server bindet nur an `localhost:18080`; der Port muss frei sein. Tests laufen auf echten Spring-/Thymeleaf-Seiten mit simulierten Hardwarediensten. Automatische Accessibility-Checks ergänzen die Funktionsprüfungen; sie ersetzen keine vollständige manuelle Barrierefreiheitsprüfung.
 
 Screenshots neu erzeugen: `npm run screenshots`. Alle zehn Aufnahmen liegen in [`images/screenshots`](./images/screenshots) und sind als Beispieldaten gekennzeichnet. Browserbibliotheken werden lokal ausgeliefert; Node.js und ein CDN sind für den Produktivbetrieb nicht erforderlich. Nach Paketupdates die eingebundenen Dateien mit `npm run vendor` synchronisieren.
 
@@ -515,13 +518,16 @@ The application:
 ## 🔧 Battery Configuration
 
 The application must be adapted to your real battery installation. The battery address, authentication and technical performance values are especially important.
+The neutral example values below match the deployment template. Please adjust them to your installation.
 
 ```properties
 battery.url=${BATTERY_URL:}
 battery.authToken=${BATTERY_AUTH_TOKEN:}
 
-battery.inverter.max.watts=${BATTERY_INVERTER_MAX_WATTS:4600}
-battery.max.capacity.wh=${BATTERY_MAX_CAPACITY_WH:10000}
+battery.inverter.max.watts=${BATTERY_INVERTER_MAX_WATTS:5000}
+battery.grid.import.limit.watts=${BATTERY_GRID_IMPORT_LIMIT_WATTS:5000}
+battery.capacity.installed-modules=${BATTERY_INSTALLED_MODULES:1}
+battery.capacity.module-usable-capacity-wh=${BATTERY_MODULE_USABLE_CAPACITY_WH:5000}
 ```
 
 ### What do these values mean?
@@ -531,34 +537,36 @@ battery.max.capacity.wh=${BATTERY_MAX_CAPACITY_WH:10000}
 | `battery.url` | Address of your Sonnen battery in the local or reachable network |
 | `battery.authToken` | Token for accessing the Sonnen API |
 | `battery.inverter.max.watts` | Maximum charging/discharging power of the inverter in watts |
-| `battery.max.capacity.wh` | Usable or configured battery capacity in watt-hours |
+| `battery.grid.import.limit.watts` | Example battery grid import limit in watts |
+| `battery.capacity.installed-modules` | Number of example modules |
+| `battery.capacity.module-usable-capacity-wh` | Example usable capacity per module in watt-hours |
 
 👉 **These values must match your real installation.**  
 Incorrect capacities, incorrect power values or a wrong API address may result in unreliable charging decisions.
 
 ---
 
-### Sonnen / Etrel INCH over Modbus TCP
+### Optional Wallbox and KOSTAL integrations
 
-On enable, including startup with control enabled, Zeus first sends the HR 2 pause command. Only after the charger acknowledges it does Zeus read measurements and calculate its first charging target. HR 8 contains only positive current targets of at least 6 A.
+> **Support for the KOSTAL inverter and the ETREL INCH wallbox is EXPERIMENTAL and optional. Use at your own risk.**
 
-Use **Wallbox** on the dashboard to enable control, switch modes and edit the two Smart limits. Changes trigger a fresh control cycle immediately. Zeus saves the four GUI settings in a marked section of external `./config/application.properties` and reloads them on startup. The service needs write access to the directory. Set `wallbox.config-file` to use an existing configuration in another location.
+Wallbox control is optional and disabled by default. Enable it in the private configuration after checking the hostname and port. The dashboard lets you change the mode and Smart limits and saves those choices. A saved dashboard choice takes precedence over WALLBOX_MODE and the property default.
 
-Switching control off, low-power rule pauses and orderly shutdown request a pause with FC 16 / HR 2 (one register, value 1). `wallbox.pause-strategy=PAUSE_COMMAND` is the default. `MIN_CURRENT` instead holds `wallbox.min-current-a` (6 A by default) during rule pauses; manual disable, startup synchronization and error recovery still pause through HR 2. Zeus writes a target each control cycle as a keepalive, no more than 8 s apart. After 35 seconds without confirmed Modbus access, the charger may use its configured 6 A fallback. The dashboard shows the time of the last complete successful read and flags a possible fallback. The three measured currents correspond to L1, L2 and L3.
+- **ECO** uses PV surplus without deliberately discharging the battery.
+- **SMART** combines PV surplus with permitted battery discharge down to the configured SoC reserve.
+- **POWER** aims for the configured maximum charging current regardless of PV surplus; an enabled site limit still applies.
 
-HR 8 is used only for positive current targets (FC 16, address 8, two big-endian words); pausing writes HR 2, and the last acknowledged box command and its time appear in the dashboard. Resuming writes the positive HR 8 target again. `wallbox.keepalive-ms` defaults to 10000 and is capped by the control poll interval; `wallbox.box-watchdog-seconds` defaults to 35 and sets the watchdog notice and an 80-percent write-gap WARN. An IR 4 value of zero or a non-finite value is shown as unavailable while its raw words remain in Details. Phase use counts only measured currents above 1 A and shows a dash when no phase is active. Calculation fallback is measured phases, then IR 1023, then `wallbox.phases`; IR 1 remains a raw diagnostic.
+ECO and SMART adjust the target in whole amps with hysteresis. If available power stays below the configured minimum current for the configured pause delay, the app pauses charging. It resumes as soon as enough power is available again.
 
-An orderly shutdown also requests a pause when control is enabled. On Modbus errors, Zeus keeps the last valid charger readings visible and retries automatically. After three consecutive errors, it reconnects with backoff. If a pause is unconfirmed, Zeus waits at least 7 seconds and requests 0 A again in the next control cycle, no later than 8 seconds; positive targets remain blocked until the pause is acknowledged and a complete new measurement cycle succeeds. A Modbus acknowledgement confirms the register write. The phase measurements show the current actually flowing.
+At startup and after reconnecting, the app runs a read-only self-test. The reported model and software version appear in the diagnostic logs and the dashboard diagnostics panel.
 
-Set `WALLBOX_ENABLED=true` to control connector 1. Select Power/Fast in the charger, keep Sonnen system communication enabled, and set the web UI communication monitor to suit the 35 s watchdog (for example 30 s) with a 6 A fallback. Zeus keeps one persistent Modbus TCP connection and writes the target or pause command at most every 8 s. Configure the connect timeout, read timeout and error threshold with `wallbox.connect-timeout-ms` (2000 ms), `wallbox.read-timeout-ms` (2500 ms) and `wallbox.max-errors-before-reconnect` (3). The EV can take about 45 s to apply a setpoint at session start.
+A status chip shows whether there is no session, the setpoint is being applied, it is active, or the wallbox is ignoring it. If the app detects that current is still flowing while the wallbox does not respond to the target, it shows a prominent red warning recommending that you unplug and reconnect the charging connector once. The app does not take automatic corrective action.
 
-Set `WALLBOX_MODE` to `ECO` for PV surplus only, `SMART` for PV plus allowed battery discharge, or `POWER` for the configured maximum current (16 A by default and the default mode). Eco and Smart stop below `wallbox.min-current-a` only after `wallbox.resume-hold-seconds`; when enough power is available, they start without an additional resume delay. Power ignores PV and battery power limits unless the optional site limit is active. `battery.grid.import.limit.watts` controls battery behavior only. `wallbox.grid-limit-watts` (0 = off) limits site grid import in every mode using house consumption without the wallbox, PV and measured battery power. Configure current conversion with `wallbox.phases`, `wallbox.voltage`, `wallbox.min-current-a` and `wallbox.max-current-a`; EV and installation limits still apply. The PV source follows `kostal.pv-source` with Sonnen fallback. The charger must be set to Power/Fast for positive targets. IR 53 is shown as a raw diagnostic value only; its meaning is not assumed. Start from `deployment/application.properties.example` and provide your own charger hostname, Sonnen URL and site settings in private `config/application.properties`.
+The updated widgets show the requested target, the current applied by the wallbox, and measured L1/L2/L3 currents on one line. The phase display waits for stable measurements. Diagnostics include the model, version, the highest current measured in the session, and other raw readings.
 
-At startup, mode precedence is saved GUI selection > `WALLBOX_MODE` > property default (`POWER`). UI changes are saved to `wallbox.config-file` without replacing existing property placeholders. The dashboard shows the active mode from the control thread, the last HR 8 target written and the current reported by the charger.
+KOSTAL integration remains read-only. If KOSTAL is selected as the PV source and fresh data is unavailable, the app falls back to Sonnen data. The fallback notice explains that the monitored interval comes from app configuration; configure the fallback current on the wallbox itself.
 
-For current calculation, Zeus first counts phase currents above 1 A, then falls back to IR 1 (`0` = three phases, `1`–`3` = one phase on L1–L3, `5` = two phases), IR 1023 and finally `wallbox.phases`. The dashboard shows measured phase use and the raw IR 1 value separately. IR 4 is read with FC 04 from address 4 as two big-endian Float32 words; the DEBUG log includes both raw words in hex and the decoded value. Diagnostics also show IR 2 as EV maximum current, IR 1028 as the charger current ceiling, and IR 53 as both its raw value and a label (`1` Fast, `2` Smart, otherwise unknown/no session). An FC 16 acknowledgement for HR 8 confirms Modbus accepted the write, not the current actually flowing. If readback differs after multiple cycles, Zeus logs IR 4 and all three phase currents together. A live Fast-mode observation with a different HR 8 target and higher phase currents does not prove Fast ignores lower setpoints; validate that behavior with the new readback diagnostics. Exception 12 (“Current setpoint too high”) triggers a fresh read; the retry respects the reported charger and EV limits.
-
-During stable charging, compare the values in the “Check meter wiring” log entry. If consumption matches the site balance (PV + signed battery discharge − signed grid export), leave `WALLBOX_CONSUMPTION_INCLUDES_WALLBOX=true`. If consumption is lower by approximately the measured EV load, set it to `false`. An idle EV gives the same result for either wiring.
+Use deployment/application.properties.example as a starting point. It uses `WALLBOX_ENABLED`, `WALLBOX_HOST`, `WALLBOX_PORT`, `KOSTAL_ENABLED`, `KOSTAL_HOST` and `KOSTAL_PORT`. Set local targets only in private configuration using placeholders such as `<WALLBOX_IP>`, `<INVERTER_IP>` and `<PORT>`.
 
 ## 📊 RSOC – what does it mean?
 
@@ -692,7 +700,7 @@ On Windows, the helper selects a suitable JDK for the process, preferring `.tool
 .\scripts\verify.ps1 -Preview     # isolated sample-data preview on port 18080
 ```
 
-Preview: **http://127.0.0.1:18080/charging-status?lang=en**. It uses simulated services and never connects to a battery. Stop with `Ctrl+C`. The preview and its test endpoints are excluded from the release JAR.
+Preview: **http://localhost:18080/charging-status?lang=en**. It uses simulated services and never connects to a battery. Stop with `Ctrl+C`. The preview and its test endpoints are excluded from the release JAR.
 
 Cross-platform, with the correct `JAVA_HOME` and Node.js ≥ 22 for browser tests:
 
@@ -704,7 +712,7 @@ npm run test:ui
 npm run format:check
 ```
 
-On Linux, use `npx playwright install --with-deps chromium` if browser system packages are missing. Port `127.0.0.1:18080` must be available. Tests exercise real Spring/Thymeleaf pages with simulated hardware services. Automated accessibility checks complement functional tests and do not constitute a complete manual accessibility audit.
+On Linux, use `npx playwright install --with-deps chromium` if browser system packages are missing. Port `localhost:18080` must be available. Tests exercise real Spring/Thymeleaf pages with simulated hardware services. Automated accessibility checks complement functional tests and do not constitute a complete manual accessibility audit.
 
 Regenerate all ten labelled sample screenshots with `npm run screenshots`; files are in [`images/screenshots`](./images/screenshots). Browser dependencies ship locally, so production requires neither Node.js nor a CDN. Run `npm run vendor` after browser package upgrades to update checked-in assets.
 

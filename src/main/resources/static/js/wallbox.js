@@ -30,18 +30,6 @@ document.addEventListener("DOMContentLoaded", () => {
     return number(value) === null ? "–" : format(value, digits) + " " + unit;
   }
 
-  function measuredPhaseUse(ev) {
-    const active = [ev?.l1, ev?.l2, ev?.l3]
-      .map((phase, index) => ({ phase, line: `L${index + 1}` }))
-      .filter(
-        ({ phase }) => number(phase?.amps) !== null && number(phase.amps) > 1,
-      );
-    if (!active.length) {
-      return "–";
-    }
-    return `${active.length} (${active.map(({ line }) => line).join(", ")}; ${labels.phaseMeasured})`;
-  }
-
   function controls(ready) {
     for (const control of [toggle, ...modes, ...smart.elements]) {
       control.disabled = !ready || saving;
@@ -98,6 +86,16 @@ document.addEventListener("DOMContentLoaded", () => {
     state.dataset.state = stateInfo.kind;
     byId("wbStateIcon").className = "fas " + stateInfo.icon;
     text("wbModeChip", data.activeMode || settings.mode);
+    const setpointChip = byId("wbSetpointChip");
+    const setpointStatus = data.setpointStatus || "KEINE_SESSION";
+    const setpointLabels = {
+      KEINE_SESSION: labels.setpointNone,
+      WIRD_UEBERNOMMEN: labels.setpointPending,
+      AKTIV: labels.setpointActive,
+      BOX_IGNORIERT_SOLLWERT: labels.setpointIgnored,
+    };
+    setpointChip.dataset.status = setpointStatus;
+    text("wbSetpointChip", setpointLabels[setpointStatus] || labels.setpointNone);
     text(
       "wbLink",
       data.featureEnabled === false
@@ -122,12 +120,17 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     byId("wbFallback").hidden = !data.watchdogPossible;
     text("wbFallback", labels.fallback.replace("{seconds}", data.boxWatchdogSeconds));
+    const boxIgnored = setpointStatus === "BOX_IGNORIERT_SOLLWERT";
+    byId("wbBoxIgnored").hidden = !boxIgnored;
+    text("wbBoxIgnored", boxIgnored ? labels.boxIgnored : "");
     const warnings = [sample?.error || data.modbusError];
     if (data.pauseUnconfirmed) warnings.unshift(labels.pauseUnconfirmed);
-    if (data.boxCommandMismatch) warnings.unshift(labels.boxMismatch);
     if (settings.enabled && ev && !battery) warnings.push(labels.solarOffline);
     message("wbWarning", warnings.filter(Boolean).join(" · "));
 
+    const currentLine = ev
+      ? ["l1", "l2", "l3"].map((key) => quantity(ev[key]?.amps, "A", 1)).join(" / ")
+      : labels.unavailable;
     const command = data.lastCommand;
     let lastCommandText = labels.unavailable;
     if (command) {
@@ -137,12 +140,18 @@ document.addEventListener("DOMContentLoaded", () => {
         : "–";
       lastCommandText = command.command === "PAUSE_HR2"
         ? labels.pauseCommand + " · " + time
-        : quantity(command.amps, "A", 1) + " (HR 8) · " + time;
+        : quantity(command.amps, "A", 0) + " (HR 8) · " + time;
     }
+    text("wbSetpointRequested", data.commandedTargetAmps == null
+      ? labels.unavailable : quantity(data.commandedTargetAmps, "A", 0));
+    text("wbSetpointApplied", data.boxReportedAppliedAmps == null
+      ? labels.unavailable : quantity(data.boxReportedAppliedAmps, "A", 0));
+    text("wbMeasuredCurrents", currentLine);
     const values = {
+      boxModel: data.boxModel || labels.unavailable,
+      softwareVersion: data.boxSoftwareVersion || labels.unavailable,
+      lastCommand: lastCommandText,
       power: quantity(ev?.powerKw, "kW", 2),
-      target: lastCommandText,
-      reported: data.boxReportedAppliedAmps == null ? labels.unavailable : quantity(data.boxReportedAppliedAmps, "A", 1),
       phaseUse: "–",
       hardwarePhases: quantity(ev?.hardwarePhases, "phases"),
       evMax: quantity(ev?.evMaxAmps, "A", 1),
@@ -169,7 +178,10 @@ document.addEventListener("DOMContentLoaded", () => {
         : "–",
     };
     if (ev) {
-      values.phaseUse = measuredPhaseUse(ev);
+      const source = data.phaseSource === "measured-phase-currents"
+        ? labels.phaseMeasured
+        : data.phaseSource === "IR1023" ? "IR 1023" : labels.phaseConfigured;
+      values.phaseUse = `${data.effectivePhases || ev.hardwarePhases} (${source})`;
       values.phaseRaw = ev.phases + " / 0x" + data.ir1RawHex + " (" + (phases[ev.phases] || "Unbekannt") + ")";
       for (const key of ["l1", "l2", "l3"]) {
         const amps = number(ev[key]?.amps);

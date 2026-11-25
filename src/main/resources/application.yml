@@ -1,11 +1,12 @@
 price:
   display:
     vatRate: 0.19
+    # Example surcharges; adjust them to the applicable tariff.
     surcharges:
-      procurement: 1.81
-      grid: 5.19
-      concession: 1.59
-      electricityTax: 2.05
-      offshore: 0.941
-      kwk: 0.446
-      stromnev19: 1.56
+      procurement: 2.0
+      grid: 5.0
+      concession: 1.5
+      electricityTax: 2.0
+      offshore: 1.0
+      kwk: 0.5
+      stromnev19: 1.5

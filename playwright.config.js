@@ -8,7 +8,7 @@ module.exports = defineConfig({
   expect: { timeout: 7000 },
   reporter: [["list"], ["html", { open: "never" }]],
   use: {
-    baseURL: "http://127.0.0.1:18080",
+    baseURL: "http://localhost:18080",
     locale: "de-DE",
     timezoneId: "Europe/Berlin",
     trace: "retain-on-failure",
@@ -30,7 +30,7 @@ module.exports = defineConfig({
   ],
   webServer: {
     command: "node scripts/ui-test-server.cjs",
-    url: "http://127.0.0.1:18080/charging-status",
+    url: "http://localhost:18080/charging-status",
     reuseExistingServer: false,
     timeout: 90000,
   },
